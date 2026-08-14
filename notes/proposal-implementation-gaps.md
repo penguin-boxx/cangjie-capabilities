@@ -16,7 +16,7 @@ milestone), (D) proposal features not yet implemented (roadmap ledger).
 | A4 | §3.9 derives the primary-ctor ban from modes (primaries are `~local`) | Ban enforced directly, pre-Modal | Ruling 12, forward-compatible. |
 | A5 | §4.2 spawn safety comes from Modal's spawn rule | Lexical rule: spawn bodies start with an empty capability scope stack | Ruling 5 — simplest sound equivalent pre-Modal. |
 | A6 | §8 anticipates effects integration | try/handle, perform, resume are ignored entirely by capability checking | Ruling 4 (superseded by later directive: effects checking is a LATER milestone, after stdlib cleanup). |
-| A7 | §6.4 splits checked/unchecked | M3 shipped all-checked; §6.4 in flight | Ruling 1 — transitional, closes with the current milestone. |
+| ~~A7~~ | §6.4 splits checked/unchecked | CLOSED 2026-08-15: std.core UncheckedException + exemptions implemented | — |
 | A8 | (not in proposal) | `throws` banned on foreign funcs AND CFunc types | Author ruling (M2 round). Proposal could state this; §5.2 interop may revisit. |
 | A9 | §3.10.2 rule 3 mentions error/warn levels per package | Implemented as per-invocation `--enable-checked-exceptions[=error|warn]` + `chexc` warn group | Ruling 8. Per-package level recording arrives with metadata (D5). |
 
@@ -52,6 +52,7 @@ milestone), (D) proposal features not yet implemented (roadmap ledger).
 
 - §6.3 capability parameter inference (red tests committed; miss-handler seam ready)
 - §6.1 capability list aliases; §6.2 exception conversions; §6.5 adapter generation
+- §3.9 captures: IMPLEMENTED pre-Modal (A3/A4 describe the mode-dependent parts still deferred)
 - §3.10.2 package metadata (canonical form, levels, ABI epoch) — with C1–C3
 - §5.1/§5.2 checked↔unchecked interop defaults, assumption imports, boundary function values
 - §4 Modal integration (waiting on upstream per ruling 14) and §5.5's intra-function checks (see A2)

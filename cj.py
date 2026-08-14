@@ -27,6 +27,8 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 IMAGE = "cangjie-dev"
 WORK = "/work"  # mount point of ROOT inside the container
+# Parallelism for builds and test runs (container is capped to the same number).
+JOBS = 8
 
 _docker_ok = None
 
@@ -64,6 +66,9 @@ def docker_run(script, cwd=WORK, interactive=False):
     flags = ["-it"] if interactive else ["-i"]
     cmd = [
         "docker", "run", "--rm", *flags,
+        # Hard cap: whatever a build tool decides internally, the container cannot use
+        # more than JOBS cores.
+        f"--cpus={JOBS}",
         "-v", f"{ROOT}:{WORK}",
         "-w", cwd,
         IMAGE,
@@ -93,7 +98,7 @@ def cmd_sh(args):
 
 
 def build_compiler(args):
-    jobs = f" -j {args.jobs}" if args.jobs else ""
+    jobs = f" -j {args.jobs or JOBS}"
     link_jobs = f" --link-jobs {args.link_jobs}" if args.link_jobs else ""
     tests = " --no-tests" if args.no_tests else ""
     script = f"""set -ex
@@ -120,7 +125,11 @@ python3 build.py build -t {args.build_type} \\
     --target-lib={WORK}/cangjie_runtime/runtime/output \\
     --target-lib=$OPENSSL_PATH
 python3 build.py install
-cp -R output/* {WORK}/cangjie_compiler/output/
+# Copy per directory: a single `cp -R output/*` across the bind mount has been observed
+# to die with SIGSEGV part-way, leaving the SDK half-updated.
+for d in output/*/; do
+    cp -RL "$d" {WORK}/cangjie_compiler/output/
+done
 """
     return docker_run(script, cwd=COMPONENT_DIRS["std"])
 
@@ -173,7 +182,7 @@ def cmd_test(args):
                     f.write(entry + "\n")
                 f.write("\n".join(stock_lines[exclude_start:]) + "\n")
             testlist = f"{WORK}/logs/llt_filtered_testlist"
-        jobs = args.jobs or 8
+        jobs = args.jobs or JOBS
         # Unique temp dir per run: permission-test cases leave chmod-000 dirs behind,
         # which crash the framework's end-of-run rmtree on a reused dir.
         run_id = time.strftime("%Y%m%d-%H%M%S")
@@ -202,7 +211,7 @@ def cmd_test(args):
         return docker_run(
             f"source {WORK}/cangjie_compiler/output/envsetup.sh && "
             f"export LD_LIBRARY_PATH={WORK}/cangjie_compiler/output/third_party/llvm/lib:$LD_LIBRARY_PATH && "
-            "python3 build.py test",
+            f"CTEST_PARALLEL_LEVEL={JOBS} python3 build.py test",
             cwd=COMPONENT_DIRS["compiler"])
     print(f"error: no direct test runner wired for '{args.component}' yet; "
           "runtime/std/stdx are tested via the cangjie_test suites",
@@ -251,7 +260,7 @@ def main():
     sp.add_argument("-t", "--build-type", default="release",
                     choices=["release", "debug", "relwithdebinfo"])
     sp.add_argument("-j", "--jobs", type=int, default=0,
-                    help="parallel jobs (0 = tool default)")
+                    help="parallel jobs (0 = {JOBS}, leaving a core free)".replace("{JOBS}", str(JOBS)))
     sp.add_argument("--link-jobs", type=int, default=2,
                     help="parallel link jobs for the compiler build (default 2, "
                          "linking LLVM is memory-hungry)")
@@ -265,7 +274,7 @@ def main():
                     help="llt only: testlist entries (dirs or .cj paths relative to "
                          "cangjie_test/testsuites/LLT) to run instead of the full list")
     sp.add_argument("-j", "--jobs", type=int, default=0,
-                    help="llt only: parallel jobs (default 8)")
+                    help="llt only: parallel jobs (default {JOBS})".replace("{JOBS}", str(JOBS)))
     sp.set_defaults(func=cmd_test)
 
     sp = sub.add_parser("clean", help="clean build artifacts")
