@@ -411,3 +411,76 @@ fmt before build). 8. Update notes/proposal-implementation-gaps.md. 9. Commit
 per-repo, review-sized, gate tallies in message. 10. Push `chexc` to `capabilities`
 on every touched repo. 11. Report: files+rationale, tallies, deviations (explicitly
 flag ANY spec interpretation you had to make — the author reads these).
+
+---
+
+# ADDENDUM (2026-08-15): the four author-requested features
+
+Order (author-confirmed): §6.3 inference → §6.1 aliases → §5.2.2 assumption imports →
+cjo serialization → §6.2 conversions (branch `chexc-conversions`) → §6.5 adapt (branch
+`chexc-adapt`). Decisions and their rationale: notes/autonomous-decisions.md.
+Red tests for all four are COMMITTED (13 cases): CheckedExceptions/{aliases,assume,
+conversions,adapt}.
+
+## TASK A — §6.1 capability list aliases (→ chexc)
+
+Target: `compiler/CheckedExceptions/aliases` 4/4.
+Spec: proposal §6.1 (grep "### 6.1"). Decisions D2, D3.
+
+Anchors researched:
+- Alias types are `TypeAliasTy` (include/cangjie/AST/Types.h:952); `TypeManager::
+  ObtainsAliasType` / `ObtainsAliasTypeOfRefType` (src/Sema/TypeManager.cpp:2526) resolve
+  an alias RefType to its target ty. Tuple target ⇒ `TupleTy` (Types.h:639).
+- Clause elaboration sites (where the expansion belongs): `TypeCheckUtil::
+  GetFuncBodyCapTys` and `GetDeclCapturesCapTys` (src/Sema/TypeCheckUtil.cpp), plus
+  `PreCheck.cpp GetTyFromASTType(FuncType&)` for functional types, and the validator
+  `ChkThrowsClauseTypes` (src/Sema/TypeChecker.cpp ~:196).
+Steps: after a clause entry's Ty is elaborated, if it resolves (through aliases) to a
+TupleTy, splice its element tys into the capability list, recursively, with a visited set
+over TypeAliasDecls for cycle detection (dedicated diagnostic on cycle). Validate elements
+with the existing per-entry rules AFTER expansion (so `alias_neg.cj` reports on elements).
+Keep the alias usable as an ordinary tuple type elsewhere — do not change ObtainsAliasType.
+
+## TASK B — §5.2.2 assumption imports (→ chexc)
+
+Target: `compiler/CheckedExceptions/assume` 3/3 (multi-package: see the DEPENDENCE/EXEC
+lines in the tests; a support package legacy_db.pkg.cj is compiled without the flag).
+Spec: proposal §5.2.2 (line ~1098). Decisions D4, D5, D6.
+
+Anchors researched:
+- `ImportSpec` already carries `annotations` (include/cangjie/AST/Node.h:2962-2966).
+- Annotation kinds: `AnnotationKind` (Node.h:536); name→kind map `NAME_TO_ANNO_KIND`
+  (include/cangjie/Parse/Parser.h ~:50); per-kind parsing switch in
+  src/Parse/ParseAnnotations.cpp (~:360, see the WHEN and DEPRECATED cases);
+  `ASTChecker.cpp:132` and `ASTHasher.cpp:817` have per-kind switches to extend.
+Steps: add `ASSUME_THROWS` kind + "AssumeThrows" mapping; parse a bracketed TYPE list
+(like the clause parser — reuse ParseThrowsClause's element parsing, or parse args and
+resolve RefExprs as types); bare form ⇒ `Exception`. Elaborate the list once (aliases
+apply, TASK A). Store per imported package name in the package context. In
+CapabilityCheck::HandleCall, when the callee decl's `fullPackageName` matches an assumed
+package, demand the assumed list too (D6: only direct calls into that package). Diagnostic
+mentions the assumption's origin (D5). Never serialize (consumer-local).
+
+## TASK C — cjo serialization (→ chexc) — see TASK 4 above, unchanged, but note:
+inferred lists (§6.3) are intra-package truth; exported surface is explicit-only by
+§6.3.1, so serialize capTys as they stand after inference, in canonical form (§3.10.2
+rule 1). Also serialize `captures` clauses (§3.9 classes are exported).
+
+## TASK D — §6.2 exception conversions (→ NEW BRANCH `chexc-conversions`)
+
+Target: `compiler/CheckedExceptions/conversions` 4/4. Spec §6.2 entirely (§6.2.1 rules
+1–6 are the test matrix). Decisions D7–D11.
+Requires: `Convertible<From, To>` interface in std.core (runtime repo) + a SETTABLE
+`Exception.cause` (author ruling; `suppressed` deferred — record as a gap).
+Shape: CapabilityCheck records conversion sites (pure check, D7); a new desugar step in
+DESUGAR_AFTER_SEMA synthesizes `try { e } catch (eFrom: From) { let eTo =
+To.convertFrom(eFrom); if (eTo.cause is None) { eTo.cause = eFrom }; throw eTo }`.
+Rule 6 needs demands tagged with their origin (storage vs call) — add a DemandKind to the
+CapabilityDemand struct when implementing §3.9 captures demands (they are the storage ones).
+
+## TASK E — §6.5 adapt (→ NEW BRANCH `chexc-adapt`, on top of D)
+
+Target: `compiler/CheckedExceptions/adapt` 2/2. Spec §6.5. Decision D12.
+NOTE: the proposal explicitly defers this feature; it is built at author request as an
+experimental extension. Synthesize a capturing class (reusing §3.9), forwarding methods,
+`captures` = union of forwarded `throws` lists; result demands those at the adapt site.
