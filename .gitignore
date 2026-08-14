@@ -1,0 +1,12 @@
+cangjie_compiler/
+cangjie_runtime/
+cangjie_stdx/
+cangjie_build/
+cangjie_test/
+cangjie_test_framework/
+wizzerinus-cjc-implicits/
+wizzerinus-implicits-regression/
+logs/
+.ccache/
+.serena/
+cases_without_level.txt
