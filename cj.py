@@ -119,9 +119,13 @@ cp -R output/common/linux_{args.build_type}_$ARCH/runtime {WORK}/cangjie_compile
 
 
 def build_std(args):
+    # The stdlib sources carry `throws` clauses (migration phase 2), which only parse with the
+    # feature enabled; warn severity keeps not-yet-annotated flows building. Permanent since the
+    # first clause landed -- building without these flags fails at parse.
     script = f"""set -ex
 source {WORK}/cangjie_compiler/output/envsetup.sh
 python3 build.py build -t {args.build_type} \\
+    --build-args=--experimental --build-args=--enable-checked-exceptions=warn \\
     --target-lib={WORK}/cangjie_runtime/runtime/output \\
     --target-lib=$OPENSSL_PATH
 python3 build.py install
