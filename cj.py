@@ -125,11 +125,9 @@ python3 build.py build -t {args.build_type} \\
     --target-lib={WORK}/cangjie_runtime/runtime/output \\
     --target-lib=$OPENSSL_PATH
 python3 build.py install
-# Copy per directory: a single `cp -R output/*` across the bind mount has been observed
-# to die with SIGSEGV part-way, leaving the SDK half-updated.
-for d in output/*/; do
-    cp -RL "$d" {WORK}/cangjie_compiler/output/
-done
+# Stream the tree instead of copying: `cp -R`/`cp -RL` across this bind mount has been
+# observed to die with SIGSEGV part-way, leaving the SDK half-updated.
+(cd output && tar cf - .) | (cd {WORK}/cangjie_compiler/output && tar xf -)
 """
     return docker_run(script, cwd=COMPONENT_DIRS["std"])
 
