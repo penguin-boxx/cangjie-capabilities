@@ -67,17 +67,25 @@ wherever a type or callee expression is RECONSTRUCTED by machinery predating the
 
 | # | Defect | Kind | Status |
 |---|---|---|---|
-| MF11 | `throws`/`captures` are hard keywords under the flag; §10 requires soft keywords. `std.unittest.mock` declares `public func throws(...)` ×6 — blocks the stdlib cleanup milestone at PARSE time | loud, blocking | FIXING |
-| MF5 | class `captures` supplied to static bodies, finalizers, static field initializers (§3.9 rule 1) | silent unsoundness | FIXING |
-| MF7 | inference is blind to the enclosing class's `captures`: eligible members of a capturing class get the captured requirement as their inferred list | wrong diagnostics | FIXING |
-| MF10 | §6.3.4 occurs check runs on graph construction, not intra-SCC; rejects ordinary generic code (`wrap<T>` calling `sink<Array<T>>`) and cannot fire on its own motivating case | loud false positive | FIXING |
-| MF1 | property-accessor `throws` clauses dropped at every use site (desugared callee type built cap-free) | silent unsoundness | open |
-| MF6 | a primary constructor's `throws` clause is parsed then discarded by DesugarPrimaryCtor | silent + spurious errors | open |
-| MF2 | inferred lists never written back into FuncTy, so every non-call use (function value, join, return) drops them | silent unsoundness | open |
-| MF3 | type variables reachable only through capTys are never substituted (GetAllGenericTys is typeArgs-only) | unsound accept + false reject | open |
-| MF4 | inferred lists demanded un-instantiated at generic call sites | silent unsoundness | open |
-| MF8 | §3.8 override checking never sees inferred lists (static `redef` path) | silent unsoundness | open |
-| MF9 | §3.8 override checking never applied to property accessors | silent unsoundness | open |
+| ~~MF11~~ | `throws`/`captures` are hard keywords under the flag; §10 requires soft keywords. `std.unittest.mock` declares `public func throws(...)` ×6 — blocks the stdlib cleanup milestone at PARSE time | loud, blocking | FIXED |
+| ~~MF5~~ | class `captures` supplied to static bodies, finalizers, static field initializers (§3.9 rule 1) | silent unsoundness | FIXED |
+| ~~MF7~~ | inference is blind to the enclosing class's `captures`: eligible members of a capturing class get the captured requirement as their inferred list | wrong diagnostics | FIXED |
+| ~~MF10~~ | §6.3.4 occurs check runs on graph construction, not intra-SCC; rejects ordinary generic code (`wrap<T>` calling `sink<Array<T>>`) and cannot fire on its own motivating case | loud false positive | FIXED |
+| ~~MF1~~ | property-accessor `throws` clauses dropped at every use site (desugared callee type built cap-free) | silent unsoundness | FIXED |
+| ~~MF6~~ | a primary constructor's `throws` clause is parsed then discarded by DesugarPrimaryCtor | silent + spurious errors | FIXED |
+| MF2 | inferred lists never written back into FuncTy, so every non-call use (function value, join, return) drops them | silent unsoundness | FIXED |
+| ~~MF3~~ | type variables reachable only through capTys are never substituted (GetAllGenericTys is typeArgs-only) | unsound accept + false reject | FIXED |
+| ~~MF4~~ | inferred lists demanded un-instantiated at generic call sites | silent unsoundness | FIXED |
+| MF8 | §3.8 override checking never sees inferred lists (static `redef` path) | silent unsoundness | FIXED |
+| ~~MF9~~ | §3.8 override checking never applied to property accessors | silent unsoundness | FIXED |
+
+**Status 2026-08-15: all 11 findings addressed.** Nine fixed outright. MF8 narrowed: static
+class members require explicit clauses instead of being inferred (sound; the post-inference
+re-check that would let them be inferred is follow-up). MF2 fixed in part: inferred lists are
+written into declaration types; demanding at function-value formation was excluded after the
+adversarial review disproved its premise (notes/batch2-guide.md section 5).
+Two latent bugs found by the review and fixed alongside: neither hand-written ThrowsClause
+copier carried the `...` marker.
 
 Refuted claims (do NOT re-investigate): see section 4 of notes/audit-report.md — 15 entries,
 including "property desugar happens after the pass" (false: it runs inside SEMA),
