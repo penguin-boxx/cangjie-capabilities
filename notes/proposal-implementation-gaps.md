@@ -76,6 +76,15 @@ installed, not inside the region it protects.
 
 Pre-existing: the ignore-handlers ruling meant nothing had ever looked inside such a region.
 
+### E3. `@AssumeThrows` changes are invisible to incremental compilation (found 2026-08-15, OPEN)
+
+`HashImportSpec` (src/Parse/ASTHasher.cpp) hashes the import's kind, paths, identifier and
+alias — not its annotations. Changing or removing an assumption list therefore changes no
+hash, and an incremental build does not re-check the file's declarations against the new
+obligations. Same defect family as review finding F1 (performs clause not hashed). Fix is
+small (hash the annotations in HashImportSpec) and needs a red-first incremental test;
+scheduled for the next compiler change window rather than mid-gate.
+
 ## D. Not yet implemented (roadmap ledger, no divergence intended)
 
 - §6.3 capability parameter inference (red tests committed; miss-handler seam ready)
