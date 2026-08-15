@@ -76,17 +76,24 @@ installed, not inside the region it protects.
 
 Pre-existing: the ignore-handlers ruling meant nothing had ever looked inside such a region.
 
-### E3. `@AssumeThrows` changes are invisible to incremental compilation (found 2026-08-15, OPEN)
+### E3. `@AssumeThrows` changes are invisible to incremental compilation (found 2026-08-15, FIXED)
 
 `HashImportSpec` (src/Parse/ASTHasher.cpp) hashes the import's kind, paths, identifier and
 alias — not its annotations. Changing or removing an assumption list therefore changes no
 hash, and an incremental build does not re-check the file's declarations against the new
 obligations. Same defect family as review finding F1 (performs clause not hashed). Fix is
 small (hash the annotations in HashImportSpec) and needs a red-first incremental test;
-scheduled for the next compiler change window rather than mid-gate. NOTE after the C2
-investigation: the fix must go into the hash that feeds spreading (see the corrected C2 entry
--- SigHash vs HashMemberSignature), not merely into HashImportSpec; verify with a red-first
-incremental test like incr_caps2.
+FIXED in compiler 85c06a22: the annotations are hashed in `HashImportSpec`, which feeds
+`HashSpecs` -- a mismatch there rolls the package back to a full compilation, so the fix
+inherits the granularity import changes already have (coarse, safe, and independent of how
+Q1's per-file vs per-package scoping is ruled). Unlike C2 this did NOT need the SigHash
+family: import specs invalidate wholesale rather than by declaration.
+
+Test-validity note: the first `incr_assume` draft PASSED against the unfixed compiler
+because its two versions differed by more than the annotation (added comments shifted
+declaration positions, re-checking the file for unrelated reasons). Confirmed via the
+`.cached` decision log, which listed `run` and `main` as changed when a pure annotation edit
+should list nothing. The corrected pair differs on line 1 alone.
 
 ## D. Not yet implemented (roadmap ledger, no divergence intended)
 
