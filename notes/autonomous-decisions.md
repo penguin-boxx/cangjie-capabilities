@@ -120,3 +120,32 @@ Groups: `aliases/`, `assume/`, `conversions/`, `adapt/`.
 Per the directive: if a feature cannot be finished, its work is committed on a branch
 `chexc-<feature>` (not `chexc`), the reason recorded here and in the gaps ledger, and the
 next feature is started. `chexc` stays green at every commit.
+
+## D15 §5.2.2: the annotation is per file, and only `import` may carry it
+
+`@AssumeThrows` is recorded per FILE, not per package: imports are file-scoped in CangJie,
+so the file that wrote the import is exactly the scope of the consumer's trust claim. A
+call is matched against the claim of `ce.curFile` (falling back to the file of the
+enclosing declaration, for call sites rebuilt by a desugar that dropped `curFile`).
+
+The claim is registered under every name `ImportContent::GetPossiblePackageNames()` yields,
+so `import legacy.db.*`, `import legacy.db` and `import legacy.db.query` all match a callee
+whose `fullPackageName` is `legacy.db`, and matching is exact on the callee's package —
+no prefix matching, so a subpackage is not covered by its parent's assumption.
+
+Placing it anywhere else is an ERROR (`sema_chexc_assume_throws_not_on_import`) rather than
+being ignored: an inert annotation reads as a claim that is being honoured. The parser
+accepts it on an import only when `--enable-checked-exceptions` is on; without the flag it
+takes the pre-existing "unexpected annotation on import" path.
+
+## D16 §5.2.2: `@AssumeThrows` with no list assumes `Exception`; the demand is a union
+
+Both the bare form and an empty bracket list mean `Exception` (the proposal specifies the
+bare form; an explicit `[]` is treated identically rather than given a second meaning).
+Assumed entries are UNIONED into the call's demand list, never appended blindly — the
+proposal's "assumptions only add obligations relative to the read-as-empty default" — so
+assuming a type a checked dependency already declares changes nothing.
+
+Assumed requirements reach inference through the same path as declared ones: the map is
+built once per package and shared with the inferencer's checkers, so a clause-free internal
+function calling into an assumed package has those types inferred into its list.

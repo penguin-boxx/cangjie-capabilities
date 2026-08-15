@@ -48,13 +48,26 @@ milestone), (D) proposal features not yet implemented (roadmap ledger).
 | C10 | `--enable-chexc` alias retained alongside canonical `--enable-checked-exceptions` | Not in proposal; convenience | Keep or drop at author's pleasure |
 | C11 | ASTWriter exports capturing/clause-bearing generic/inline bodies without the clause nodes (silent) | Related to C1/C5; no crash observed | Serialization milestone |
 
+## C'. Open questions awaiting the author (see notes/author-questions.md)
+
+Proposal-text ambiguities where the implementation picked a reading. Not divergences:
+each is a defensible reading of text that does not decide the point. Q1 (assumption
+imports per file vs per package), Q2 (`@AssumeThrows[]`), Q3 (subpackage coverage),
+Q4 (function values from an assumed package), Q5 (misplaced annotation is an error).
+
+## C''. Upstream defects found while implementing (not caused by this work)
+
+| # | Defect | How it surfaced | Status |
+|---|---|---|---|
+| U1 | `IsLegalAccess` (`src/Sema/TypeCheckUtil.cpp:1643`) dereferences `node.curFile->curPackage` guarded only by `CJC_ASSERT`, which compiles out in release — while guarding the same pointer correctly at 1633 and 1653. Any AST node reaching type-legality checking without a file becomes `Internal Compiler Error: null pointer` with no source location. | An `@AssumeThrows` annotation's type nodes had no `curFile`: `AddCurFile` sets it on the `ImportSpec` but never descends into it, since an import is not a `Decl` and the walker's annotation branch does not apply. A `typealias` entry returned early at line 1622 and never touched `curFile`, so only entries naming a class crashed. | Worked around at our end (`AddCurFile` now walks import annotations, `src/AST/Utils.cpp`) — correct independently. The unguarded deref itself is untouched and would bite the next caller; upstream fix is a real null check. |
+
 ## D. Not yet implemented (roadmap ledger, no divergence intended)
 
 - §6.3 capability parameter inference (red tests committed; miss-handler seam ready)
 - §6.1 capability list aliases; §6.2 exception conversions; §6.5 adapter generation
 - §3.9 captures: IMPLEMENTED pre-Modal (A3/A4 describe the mode-dependent parts still deferred)
 - §3.10.2 package metadata (canonical form, levels, ABI epoch) — with C1–C3
-- §5.1/§5.2 checked↔unchecked interop defaults, assumption imports, boundary function values
+- §5.1/§5.2 checked↔unchecked interop defaults and boundary function values (§5.2.2 assumption imports: IMPLEMENTED; open readings in notes/author-questions.md Q1–Q4)
 - §4 Modal integration (waiting on upstream per ruling 14) and §5.5's intra-function checks (see A2)
 - §7 spawn/Future beyond the lexical rule; §8 extensions (incl. effects — later milestone by directive)
 - Stdlib migration (§5.3): inventory drafted, 18 UNCERTAIN awaiting author; one-pass cleanup after §6.3

@@ -209,7 +209,10 @@ def cmd_test(args):
         return docker_run(
             f"source {WORK}/cangjie_compiler/output/envsetup.sh && "
             f"export LD_LIBRARY_PATH={WORK}/cangjie_compiler/output/third_party/llvm/lib:$LD_LIBRARY_PATH && "
-            f"CTEST_PARALLEL_LEVEL={JOBS} python3 build.py test",
+            # Half the jobs, not JOBS: every MacroTest case shells out to cjc, which parallelises
+            # internally, so ctest -j{JOBS} on a {JOBS}-CPU container oversubscribes and
+            # MacroTest.NoErrorInLSPMacro fails spuriously (it passes alone and at -j4).
+            f"CTEST_PARALLEL_LEVEL={max(1, JOBS // 2)} python3 build.py test",
             cwd=COMPONENT_DIRS["compiler"])
     print(f"error: no direct test runner wired for '{args.component}' yet; "
           "runtime/std/stdx are tested via the cangjie_test suites",
