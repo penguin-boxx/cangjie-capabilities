@@ -26,6 +26,10 @@ From the workdir root:
 - `./cj.py build compiler` — incremental compiler build (ccache warm). SLOW even so.
 - `./cj.py build std` — stdlib rebuild + SDK refresh (needed only when stdlib changes).
 - `./cj.py test compiler` — compiler unittests (ctest). Expect 49/49.
+  IMPORTANT: MacroTest compiles against the installed SDK, so after any compiler build the
+  stdlib must be rebuilt (`./cj.py build std`) before ctest will pass — otherwise MacroTest
+  fails spuriously with "Send exit stg false". Do this once per milestone gate, not per
+  iteration.
 - `./cj.py test llt --filter <paths...> -j N` — LLT groups.
   Full regression gate: `./cj.py test llt --filter compiler/Parser compiler/Sema -j 8`
   → must be 3934/3934 (baseline: notes/test-baseline.md; singleton fails near
