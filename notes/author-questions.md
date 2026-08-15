@@ -119,7 +119,24 @@ Better decided before the serialization milestone fixes what crosses package bou
 
 ---
 
-## Q5 §5.2.2 — Should a misplaced `@AssumeThrows` be an error? · RATIFIED (self, D15)
+## Q5 §6.2.1 — Do conversions apply to `throw` expressions, or to calls only? · OPEN
+
+**Planned (P-C1 in conversions-adapt-plan.md):** uniformly — call demands, `throw`-expression
+demands, and assumed demands all attempt conversion; captures and effect demands never do.
+
+**The tension.** §6.2.1 opens with "for each call site `e`", but §3.3's general rule says
+"if no suitable capability is found, exception conversions are attempted as a last resort",
+which covers demands generally, and §5.2.2 explicitly says assumed requirements participate.
+A raw `throw eFrom` with only a `To` capability in scope converts coherently
+(`try { throw eFrom } catch ...` — the degenerate wrap), and excluding it would make
+`throw e` and `call-that-throws e` behave differently for no user-visible reason.
+
+**Cost of changing.** Narrowing to calls-only later is a small resolver filter; widening is
+what is implemented. Ask: confirm uniform, or restrict to calls.
+
+---
+
+## Q6 §5.2.2 — Should a misplaced `@AssumeThrows` be an error? · RATIFIED (self, D15)
 
 **Implemented:** error `sema_chexc_assume_throws_not_on_import`.
 
