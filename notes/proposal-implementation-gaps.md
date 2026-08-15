@@ -61,6 +61,21 @@ Q4 (function values from an assumed package), Q5 (misplaced annotation is an err
 |---|---|---|---|
 | U1 | `IsLegalAccess` (`src/Sema/TypeCheckUtil.cpp:1643`) dereferences `node.curFile->curPackage` guarded only by `CJC_ASSERT`, which compiles out in release — while guarding the same pointer correctly at 1633 and 1653. Any AST node reaching type-legality checking without a file becomes `Internal Compiler Error: null pointer` with no source location. | An `@AssumeThrows` annotation's type nodes had no `curFile`: `AddCurFile` sets it on the `ImportSpec` but never descends into it, since an import is not a `Decl` and the walker's annotation branch does not apply. A `typealias` entry returned early at line 1622 and never touched `curFile`, so only entries naming a class crashed. | Worked around at our end (`AddCurFile` now walks import annotations, `src/AST/Utils.cpp`) — correct independently. The unguarded deref itself is untouched and would bite the next caller; upstream fix is a real null check. |
 
+### E2. Try/handle regions were never capability-checked (found 2026-08-15, fixed)
+
+The earlier ruling to ignore effect-handler clauses left a hole wider than intended. With a
+'handle' clause present the parser rebuilds the try block as a lambda, and sema types THAT copy;
+the original 'TryExpr::tryBlock' keeps untyped nodes. Every demand site is guarded by
+'Ty::IsTyCorrect', so walking the untyped copy raised nothing at all -- silently dropping
+EXCEPTION demands as well as effect ones, for any try that carried a 'handle' clause.
+
+Found while implementing 8.2: a call requiring 'GetNumber' inside 'try { } handle (_: OtherCmd)'
+compiled clean. Fixed by walking whichever copy carries the types, and by walking handler bodies
+outside the try's own supply scope, as 'catch' bodies already are -- a handler runs where it was
+installed, not inside the region it protects.
+
+Pre-existing: the ignore-handlers ruling meant nothing had ever looked inside such a region.
+
 ## D. Not yet implemented (roadmap ledger, no divergence intended)
 
 - §6.3 capability parameter inference (red tests committed; miss-handler seam ready)

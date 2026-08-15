@@ -109,11 +109,17 @@ construction demands those capabilities at the `adapt` site (§6.5 rules 2–3) 
 already-implemented §3.9 path. Method matching is by name and signature up to `throws`
 lists (rule 1). Identity caveats (rule 4) are accepted as documented.
 
-## D13 Test-first for every feature
+## D13 Test-first for every feature (REVISED 2026-08-15 by author directive)
 
-Each feature gets a red-first LLT group under `compiler/CheckedExceptions/` committed
-before implementation, positive and negative cases both, following the existing convention.
-Groups: `aliases/`, `assume/`, `conversions/`, `adapt/`.
+Each feature gets an LLT group under `compiler/CheckedExceptions/`, positive and negative
+cases both. Tests are still written FIRST and run red locally to confirm they discriminate,
+but a group is COMMITTED only once it passes: a committed suite must be all-green.
+
+Author directive 2026-08-15: do not commit cases for unimplemented features. Red-first
+groups for `conversions/` and `adapt/` were removed (test repo de3f1e3377) and will land on
+`chexc-conversions` / `chexc-adapt` with their implementations. Rationale: standing expected
+failures train the reader to skim past failures, which is exactly how a real regression gets
+waved through -- and this session had five of them in every run.
 
 ## D14 Stuck-work policy
 
@@ -149,3 +155,27 @@ assuming a type a checked dependency already declares changes nothing.
 Assumed requirements reach inference through the same path as declared ones: the map is
 built once per package and shared with the inferencer's checkers, so a clause-free internal
 function calling into an assumed package has those types inferred into its list.
+
+## D17 §8.2: `performs` reuses the capability list; the kinds are kept apart by type
+
+`performs H` entries go into the SAME `FuncTy::capTys` as `throws E` entries rather than a
+parallel `performTys`. This is sound because the two hierarchies are disjoint: an entry is an
+effect requirement iff its type is a subtype of `std.core.Command`, and an exception requirement
+iff it is a subtype of `Exception`. A `catch` therefore cannot discharge a `perform` demand and a
+`handle` cannot discharge a `throw`, since discharge is by subtyping and no type is under both
+roots. Interning, instantiation, functional-type subtyping (`IsCapTysSubsumed` is set-based) and
+cjo serialization then work for effects with no further change.
+
+The §9.1 policy table differences are enforced with an `IsCommandTy` predicate at the few points
+that care:
+- inference (§6.3) never infers an effect requirement — Command-typed residuals are excluded from
+  collection, so an undeclared `perform` is REPORTED rather than silently inferred;
+- `main`'s default handler covers exceptions only — an effect requirement reaching `main` is an
+  error, since there is no default effect handler;
+- the unchecked escape hatch (§6.4) and conversions (§6.2) are exception-only, which falls out
+  for free: `IsUncheckedExceptionTy` is false for a Command, and conversions match on Exception.
+
+**Migration note.** Under evidence passing (§8.2) effect capabilities become real runtime values
+while exception capabilities stay erased, so at that point the lists MUST be split — the shared
+representation is valid only while both are phantom. Recorded in the gaps ledger so the split is
+not forgotten.
