@@ -179,3 +179,15 @@ that care:
 while exception capabilities stay erased, so at that point the lists MUST be split — the shared
 representation is valid only while both are phantom. Recorded in the gaps ledger so the split is
 not forgotten.
+
+## D18 §1.1/§6.4: the Error hierarchy never demands; exemption is dual-root-bounded
+
+`Error <: ToString` is a separate root from `Exception`; the proposal's §1.1 split
+(fail-fast for bugs — Midori's Error Model citation) means Error throws are never
+statically tracked. `Demand` exempts class types that are under NEITHER tracked root:
+not `Exception` (throws) and not `Command` (performs). The second condition is
+essential, not defensive — commands are also classes outside the Exception root, and
+the first version of this exemption silenced every effect demand; the performs negative
+tests caught it in one build cycle. Type parameters keep demanding: a generic clause
+entry only instantiates where the clause was legal. Found by the stdlib warn-mode
+migration (std.core's own OutOfMemoryError throws warned).
