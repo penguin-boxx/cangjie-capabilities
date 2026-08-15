@@ -85,6 +85,54 @@ set, `ReflectException` stays checked as umbrella. Needs your call because it re
   **Recommendation:** unchecked, as framework machinery (consistent with the phase-1
   unittest re-parents).
 
+## Q-STD-5 · The io stream interfaces — the ecosystem-shaping decision
+
+After three annotation rings, exactly six fs/io sites remain warning, and they are all
+interface-bound: `File.read/write/seek/close` (IOStream, Seekable, Resource) and
+`ByteBuffer.seek`, `ChainedInputStream.read`. Annotating an implementation whose interface
+method has no clause violates §3.8 (an override may not require more than the declaration
+it implements), so the clause must go on the INTERFACE — `InputStream.read`,
+`OutputStream.write`, `Seekable.seek`, `Resource.close` in `libs/std/io/stream.cj`.
+
+That is the single highest-leverage decision in the whole migration: those four methods are
+the contract every stream in the ecosystem implements. Options:
+
+1. **`throws IOException` on the interface methods.** Honest — a stream read genuinely can
+   fail — and makes every IO consumer statically account for it. Cost: every implementation
+   and every call site in the ecosystem is affected at once. This is the "IO is checked"
+   world the proposal is arguably for.
+2. **Leave the interfaces clause-free; make IO failures unchecked.** Zero ecosystem churn,
+   but concedes that the largest recoverable-error domain in the standard library is
+   outside the system, which undercuts the feature's main use case.
+3. **Wait for §8.3 (discharge by eta-expansion) / capability-polymorphic interfaces.** The
+   proposal's §8.3 sketches coercion; a `throws`-polymorphic `read` (Swift's `rethrows`
+   shape) would let `File.read` declare and in-memory streams not. Not specified today.
+
+**Recommendation: (1), but only as a deliberate ecosystem-wide decision, not a migration
+side effect.** Until ruled, the six sites stay warnings.
+
+## Q-STD-6 · `Iterator.next()` blocks throwing iteration entirely
+
+`StringReader`'s two `next()` methods warn and cannot be annotated: `next()` comes from the
+core `Iterator<T>` protocol, which has no clause, so §3.8 forbids adding one in the
+implementation. Consequence: **no iterator anywhere can perform checked-throwing work**, so
+`for (x in stream)` over anything fallible is impossible in checked code — the iteration is
+either unchecked or must be rewritten as explicit calls.
+
+This is precisely Swift's `rethrows` problem. A general answer needs capability
+polymorphism over the protocol (`Iterator<T> throws E`), which is beyond the current
+proposal. Ruling needed on whether iteration is in scope for the checked world at all; the
+same argument applies to `Collection`, `Iterable`, and anything else with a fixed protocol.
+
+## Q-STD-7 · unittest acquires fs obligations (23 sites)
+
+Annotating fs made `std.unittest` warn at 23 sites where the framework touches the
+filesystem (report writing, temp dirs). Annotating them would put `FSException` in the test
+framework's public API, which every user test signature would then have to account for.
+**Recommendation:** unittest catches and wraps internally (framework machinery, consistent
+with the phase-1 re-parents), rather than propagating. Needs a ruling because it is API
+surface, not a mechanical fact.
+
 ## Bookkeeping
 
 - The inventory needs follow-up rows for the std.ast family and every type in Q-STD-2/3
