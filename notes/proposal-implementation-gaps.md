@@ -37,7 +37,7 @@ milestone), (D) proposal features not yet implemented (roadmap ledger).
 | # | Artifact | Impact | Fix by |
 |---|---|---|---|
 | C1 | cjo serialization DROPS capTys (FuncTyInfo untouched); §3.10.2 requires full clause metadata | Cross-package `throws` checking is silently absent: imported decls arrive cap-free | Serialization milestone (after §6.3 per roadmap) |
-| C2 | Incremental compilation path (`PreSetDeclType` skips cached tys) loses caps | Same as C1 for incremental builds | Serialization milestone |
+| C2 | Incremental compilation loses caps — TWO directions. Caller-changed direction closed by the serialization milestone (SemaTy cache carries capTys; `incr_caps`). Callee-changed direction found still open 2026-08-15: a clause-only change classified as a 'body' change and never spread to callers, for `throws` and `performs` alike — `DeclHash.sig` comes from `ASTHasher::SigHash`, which hashed no function clauses (the clause hashing sat in `HashMemberSignature`, which feeds the virtual/API hashes instead). Fixed by hashing both clauses in `SigHash`; pinned by `incr_caps2` + `incr_performs`, both verified red first | Was: silent stale obligations on incremental rebuilds | CLOSED (both directions) |
 | C3 | capTys interning keeps written order — `throws (A,B)` and `throws (B,A)` are distinct (mutually subtyped) types; §3.10.2 rule 1 wants canonical normal form in metadata | Harmless in-memory (set semantics live in subsumption); metadata canonicalization pending | Serialization milestone |
 | C4 | `...` marker parse-rejected EVERYWHERE (proposal allows it on non-exported decls, §6.3.5) | `throws A, ...` unusable until inference | §6.3 (lift for decls only; stays banned in types per §3.4) |
 | C5 | Macro NodeFormat does not serialize ThrowsClause — macros cannot emit `throws` clauses | Macro-generated checked APIs impossible | Deferred (original plan M6); test exists in colleague's suite as precedent |
@@ -83,7 +83,10 @@ alias — not its annotations. Changing or removing an assumption list therefore
 hash, and an incremental build does not re-check the file's declarations against the new
 obligations. Same defect family as review finding F1 (performs clause not hashed). Fix is
 small (hash the annotations in HashImportSpec) and needs a red-first incremental test;
-scheduled for the next compiler change window rather than mid-gate.
+scheduled for the next compiler change window rather than mid-gate. NOTE after the C2
+investigation: the fix must go into the hash that feeds spreading (see the corrected C2 entry
+-- SigHash vs HashMemberSignature), not merely into HashImportSpec; verify with a red-first
+incremental test like incr_caps2.
 
 ## D. Not yet implemented (roadmap ledger, no divergence intended)
 
