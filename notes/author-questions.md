@@ -124,7 +124,7 @@ Better decided before the serialization milestone fixes what crosses package bou
 **Planned (P-C1 in conversions-adapt-plan.md):** uniformly — call demands, `throw`-expression
 demands, and assumed demands all attempt conversion; captures and effect demands never do.
 
-**The tension.** §6.2.1 opens with "for each call site `e`", but §3.3's general rule says
+**The tension.** §8.10.1 opens with "for each call site `e`", but §3.3's general rule says
 "if no suitable capability is found, exception conversions are attempted as a last resort",
 which covers demands generally, and §5.2.2 explicitly says assumed requirements participate.
 A raw `throw eFrom` with only a `To` capability in scope converts coherently

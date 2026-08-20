@@ -72,7 +72,7 @@ Parser:
   `ParseTypeWithParen` (:206-224) lookahead: after `)`, contextual `throws` also selects the
   func-type path; parse clause then require `->` (reuse `parse_expected_arrow_in_func_type`).
   Right-associativity: clause binds to the arrow it precedes (§3.4).
-- Reject `...` marker in functional types (parse it only to diagnose per §3.4/§6.3.5, or leave
+- Reject `...` marker in functional types (parse it only to diagnose per §3.4/§6.2.5, or leave
   for later — decide: parse-and-reject gives better errors).
 Tests: parser unittests (ParserTest) + PrintNode round-trip; negative cases (clause on
 variables, missing arrow, etc.).
@@ -130,11 +130,11 @@ Tests: Sema unittests (TypeCheckerTest pattern) for subtyping matrix, overload r
 override matrix, generic-inference neutrality.
 
 ### M3+ author rulings (2026-08-14, user-confirmed):
-1. M3 is all-checked (every Exception needs a capability under the flag); §6.4
+1. M3 is all-checked (every Exception needs a capability under the flag); §6.3
    UncheckedException follows immediately as its own small milestone (std.core class +
    throw-site exemption + §3.2 rule 5).
-2. ROADMAP REORDERED by author: M3 (§3.3/§3.5 checking) → §6.4 unchecked → **§3.9 class
-   capturing** → §6.3 capability parameter inference → M4 cjo serialization (cross-package)
+2. ROADMAP REORDERED by author: M3 (§3.3/§3.5 checking) → §6.3 unchecked → **§3.9 class
+   capturing** → §6.2 capability parameter inference → M4 cjo serialization (cross-package)
    → §5.5 escape checks. (Supersedes the original M4-next ordering.)
 3. Diagnostics omit `@ local!` until Modal lands: "Cannot find a capability for `E`
    (of type `CanThrow<E>`) in the current scope. Required by `f(...)` on N:M."
@@ -148,8 +148,8 @@ override matrix, generic-inference neutrality.
    via option kind FLAG_WITH_ARG (bare = error; committed tests stay valid). Register
    capability diagnostics under a `chexc` warn group so `-Woff chexc` composes when in
    warn mode.
-9. §6.4 classification principle: contract/state → unchecked (inventory file for
-   line-by-line review prepared during M3). §6.3.6: `...` stays banned on public decls.
+9. §6.3 classification principle: contract/state → unchecked (inventory file for
+   line-by-line review prepared during M3). §6.2.6: `...` stays banned on public decls.
 10. **NO hand-written escape analysis before Modal lands** (author ruling, supersedes
     §5.5's intra-function check for the prototype): no use-after-try or
     assignment-out-of-try checks for ANY capability carrier — literals or capturing
@@ -174,10 +174,10 @@ Red-first tests committed under CheckedExceptions/captures/ (3 pos + 3 neg).
    the runtime GitHub repo); warnings needing design decisions go to a file for the user
    (notes/stdlib-migration-questions.md). Consequences: M3 builds a warn-mode switch from
    day one (--chexc-warn: capability diagnostics as warnings, or per-package severity —
-   decide in M3). Sequencing assumption (correct me if wrong): cleanup runs AFTER §6.4
-   (else every internal runtime-error throw warns) and ideally after §6.3 inference
+   decide in M3). Sequencing assumption (correct me if wrong): cleanup runs AFTER §6.3
+   (else every internal runtime-error throw warns) and ideally after §6.2 inference
    (non-public stdlib decls then need no explicit clauses — far fewer edits). So:
-   M3 → §6.4 → §3.9 → §6.3 → stdlib cleanup → …
+   M3 → §6.3 → §3.9 → §6.2 → stdlib cleanup → …
 7. **Effect-handler checking comes after the stdlib cleanup** (supersedes ruling 4's
    "not considered" as a LATER milestone, not never): integrate checking with the in-tree
    try/handle+perform/resume feature per proposal §8 — needs a §8 read + design round with
@@ -196,7 +196,7 @@ Red-first tests committed under CheckedExceptions/captures/ (3 pos + 3 neg).
     catch-pattern type (`ChkTryExprCatchPatterns` result shape, TryExpr.cpp:287; E1|E2 → two);
     catch/finally OUTSIDE; try-with-resources initializers INSIDE (:20); lambda bodies get
     the literal's FuncTy capTys.
-  - Demands: `ThrowExpr` → thrown type (unchecked exemption comes with §6.4 — for now all
+  - Demands: `ThrowExpr` → thrown type (unchecked exemption comes with §6.3 — for now all
     Exceptions checked under the flag); `CallExpr` → resolved callee FuncTy capTys with
     instantiation applied (verify what ce.ty/resolvedFunction hold post-Sema; fall back to
     the PostCheckCallExpr hook at TypeCheckCall.cpp:2856 to RECORD demands if post-pass
@@ -207,7 +207,7 @@ Red-first tests committed under CheckedExceptions/captures/ (3 pos + 3 neg).
     captures milestone if ctor scopes are trivial now); static/top-level initializers have no
     scope.
   - Resolution: demand satisfied iff ∃ supply S: demanded <: S. First match; no ambiguity.
-  - Miss-handler interface (THE §6.3 seam): `onMiss(demand) -> report | collect`. Base: report
+  - Miss-handler interface (THE §6.2 seam): `onMiss(demand) -> report | collect`. Base: report
     with proposal's message ("Cannot find a capability for `E` (of type `CanThrow<E> @ local!`)
     in the current scope. Required by `f(42)` on N:M."). Mode/`local!` wording kept even though
     modes aren't implemented — it matches the proposal; revisit if confusing pre-Modal.

@@ -1,4 +1,4 @@
-# Implementation plan: §6.2 conversions (`chexc-conversions`) and §6.5 adapt (`chexc-adapt`)
+# Implementation plan: §8.10 conversions (`chexc-conversions`) and §8.11 adapt (`chexc-adapt`)
 
 Date: 2026-08-15. Base: compiler `85c06a22`, runtime `066a5ab`, tests `85018920dc`.
 Both features are "serious prototypes" per the author directive: own branches, based on
@@ -34,17 +34,17 @@ drift here would make nesting order disagree with exported metadata.
 
 ---
 
-## Part 1 · §6.2 Exception conversions → branch `chexc-conversions`
+## Part 1 · §8.10 Exception conversions → branch `chexc-conversions`
 
-### 1.1 Semantics being implemented (proposal §6.2.1–6.2.4, exact)
+### 1.1 Semantics being implemented (proposal §8.10.1–6.2.4, exact)
 
 - Last-resort step on a **missed demand**: rule 1 — an available capability wins, no
   conversion considered. Rule 2 — exactly one visible `Convertible<From, To>` whose target
   capability is suitably in scope ⇒ wrap the site. Rule 3 — two or more applicable ⇒
   **ambiguous conversion** error. Rule 4 — `From` matched exactly (no variance). Rule 5 —
   no chaining. Rule 6 — `captures` demands (capturing ctors, adapt) never convert.
-- Unchecked `To` (§6.2.4): target gate trivially satisfied — fires anywhere `From` misses.
-- Inference (§6.3 sentence + §6.2.4): inside an inference-eligible declaration the
+- Unchecked `To` (§8.10.4): target gate trivially satisfied — fires anywhere `From` misses.
+- Inference (§6.2 sentence + §8.10.4): inside an inference-eligible declaration the
   resolver consults only **explicit-source scopes** (enclosing try-catch, literal
   expectation) or unchecked targets; the decl's own growing list is never a target. Net
   effect on the inferred list: removal of the source type.
@@ -58,7 +58,7 @@ drift here would make nesting order disagree with exported metadata.
 
 - **P-C1 · Which demands convert.** Call-site demands AND `throw`-expression demands, both
   including assumption-import demands (§5.2.2 says assumed requirements participate).
-  §6.2.1's text says "call site"; §3.3's says "if no suitable capability is found …
+  §8.10.1's text says "call site"; §3.3's says "if no suitable capability is found …
   attempted as a last resort", which covers demands generally. Implemented uniformly
   (a `throw` is the degenerate call); ratify as **Q5** in author-questions.md. Excluded:
   captures demands (rule 6), effect demands (`Command` — `Convertible` is Exception-bounded),
@@ -88,7 +88,7 @@ drift here would make nesting order disagree with exported metadata.
   (iterate supplies, test conformance) wrongly explodes under a `catch (Exception)`.
 - **P-C5 · Scope provenance.** `SupplyScope` gains a source tag
   (`DeclClause | TryCatch | Literal | Captures | InferredAugment`); collect-mode target
-  search admits `TryCatch | Literal` only (§6.2.4). Reporting mode admits all.
+  search admits `TryCatch | Literal` only (§8.10.4). Reporting mode admits all.
 
 ### 1.3 Task list
 
@@ -121,7 +121,7 @@ drift here would make nesting order disagree with exported metadata.
   precedent: `DesugarForPropDecl`.
 - T1.9 Diagnostics: `sema_chexc_ambiguous_conversion` (+ candidate notes). Backlog note:
   "a conversion exists but its target is not in scope" hint on the ordinary miss.
-- T1.10 The §6.2.3 lints (orphan-prone, public-conversion) — **explicitly out of scope**;
+- T1.10 The §8.10.3 lints (orphan-prone, public-conversion) — **explicitly out of scope**;
   ledger entry.
 
 **Tests (restore 4 preserved + new; all committed green):**
@@ -131,33 +131,33 @@ drift here would make nesting order disagree with exported metadata.
   (outer target catches first) AND `cause` chain identity. · Unchecked target fires with
   no scope gate. · Cause preset by user `convertFrom` is not overwritten. · Inference
   interaction: non-public clause-free callee → source type inferred, NO conversion (the
-  §6.2.4 closing example, both directions: with explicit try-catch source in scope the
+  §8.10.4 closing example, both directions: with explicit try-catch source in scope the
   conversion DOES fire and the inferred list shrinks). · Assumed-demand conversion
   (`@AssumeThrows` + Convertible). · Cross-package `Convertible` (public extend crosses
   cjo; consumer converts). · Step-1 no-rewrite semantics (direct capability present ⇒
   original handler sees the exception — runtime assert, strengthens the preserved neg).
 - T1.13 Risk probe (cheap, before finishing): extends hashing × incremental — does a new
   `Convertible` extend in a dependency dirty the consumer? If not, ledger entry E4
-  (compilation is import-sensitive per §6.2.3, so staleness here is real).
+  (compilation is import-sensitive per §8.10.3, so staleness here is real).
 
 **Gates:** CheckedExceptions + Parser + Sema + IncrementalCompilation LLT, ctest, std API
 smoke (core/fs/io/mock), fmt. Effort: **L** (the largest remaining feature).
 
 ### 1.4 Recorded gaps (ledger entries on landing)
 - `suppressed` chain for throwing `convertFrom` (D10 deferral) — synthesized code omits it.
-- §6.2.3 lints; metadata recording of public conversions beyond the existing extend export.
+- §8.10.3 lints; metadata recording of public conversions beyond the existing extend export.
 - Q5 (= P-C1) pending ratification.
 
 ---
 
-## Part 2 · §6.5 adapt → branch `chexc-adapt`
+## Part 2 · §8.11 adapt → branch `chexc-adapt`
 
 ### 2.1 Semantics (proposal rules 1–4, D12)
 
 `adapt<I>(x)`: intrinsic declared in std.core. Rule 1 — every abstract method of `I` has a
 name+signature match in `x`'s type *up to throws lists* (modes: pre-Modal, ignored). Rule 2
 — the residual union (below) must be capability-covered at the adapt site; conversions
-never apply (rule 6 of §6.2.1). Rule 3 — expands to a synthesized capturing class whose
+never apply (rule 6 of §8.10.1). Rule 3 — expands to a synthesized capturing class whose
 `captures` lists the requirements; result `I` (the `@ local!` region half is pre-Modal
 deferred, same caveat as all of §3.9). Rule 4 — identity caveats documented, tested, accepted.
 

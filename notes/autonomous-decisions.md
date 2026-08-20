@@ -5,23 +5,23 @@ record core decisions. Each states the decision, why, and how to reverse it. Aut
 skim; anything marked ⚠ is a judgment call I would most like reviewed.
 
 AUTHOR-CONFIRMED ORDER (2026-08-15):
-1. §6.3 inference → `chexc`
+1. §6.2 inference → `chexc`
 2. §6.1 aliases → `chexc`
 3. §5.2.2 assumption imports → `chexc`
 4. cjo serialization / package metadata (closes gaps C1–C3) → `chexc`
    — author moved this AHEAD of conversions and adapt
-5. §6.2 exception conversions → branch `chexc-conversions` (on top of chexc)
-6. §6.5 adapt → branch `chexc-adapt` (on top of the above)
+5. §8.10 exception conversions → branch `chexc-conversions` (on top of chexc)
+6. §8.11 adapt → branch `chexc-adapt` (on top of the above)
 Features 5 and 6 stay on separate branches by author ruling: both synthesize runtime
-constructs, and §6.5 is explicitly deferred by the proposal itself.
+constructs, and §8.11 is explicitly deferred by the proposal itself.
 
 ---
 
-## D1 §6.5 adapt and §6.2 conversions live on separate branches (author ruling)
+## D1 §8.11 adapt and §8.10 conversions live on separate branches (author ruling)
 
-§6.5 opens: "Automatic adaptation is **not** proposed for the initial design … This section
-records the intended shape of the extension." Author ruling 2026-08-15: implement both §6.5
-and §6.2 on their own branches on top of `chexc` (`chexc-adapt`, `chexc-conversions`), so
+§8.11 opens: "Automatic adaptation is **not** proposed for the initial design … This section
+records the intended shape of the extension." Author ruling 2026-08-15: implement both §8.11
+and §8.10 on their own branches on top of `chexc` (`chexc-adapt`, `chexc-conversions`), so
 neither speculative feature lands on the main line. `chexc` therefore carries only the
 proposal's initial-design features. Reverse by deleting the branches.
 
@@ -65,7 +65,7 @@ not re-examined (they are unchecked code). This matches "imposed as a throws lis
 call into that package" read literally. It also means assumption imports do not compose
 transitively through re-exports — flagged because the spec does not discuss re-exports.
 
-## D7 §6.2: conversions are decided in CapabilityCheck, applied in a later desugar
+## D7 §8.10: conversions are decided in CapabilityCheck, applied in a later desugar
 
 Capability checking runs before DESUGAR_AFTER_SEMA and must stay a pure check (architecture
 invariant). So the miss path records a *conversion site* (call, From, To, the `convertFrom`
@@ -73,39 +73,39 @@ declaration) instead of mutating the AST; a new desugar step in DESUGAR_AFTER_SE
 the recorded calls in the synthesized `try/catch`. This keeps the "no type mutation during
 checking" property that inference relies on.
 
-## D8 §6.2: lookup is exact-From, single-step, and requires the target in scope
+## D8 §8.10: lookup is exact-From, single-step, and requires the target in scope
 
-Implemented exactly as §6.2.1 rules 1–5: capability present → no conversion considered;
+Implemented exactly as §8.10.1 rules 1–5: capability present → no conversion considered;
 otherwise find visible `Convertible<From, To>` whose `To` capability IS in an active scope;
 exactly one → convert; several → ambiguity error; none → the ordinary missing-capability
 error. `From` matched by type identity, never by subtyping (rule 4). No chaining (rule 5).
 
-## D9 §6.2: `captures` requirements never convert
+## D9 §8.10: `captures` requirements never convert
 
 Rule 6: conversion is not attempted for requirements arising from a capturing constructor
 (or `adapt`), because the capability would be stored rather than used during the call. In
 the implementation these demands are tagged at their origin (`DemandKind::Storage`) and the
 conversion step skips them.
 
-## D10 §6.2: settable `cause` is added to std.core; `suppressed` is deferred (author ruling)
+## D10 §8.10: settable `cause` is added to std.core; `suppressed` is deferred (author ruling)
 
-Per §6.2.2, the generated handler is
+Per §8.10.2, the generated handler is
 `let eTo = To.convertFrom(eFrom); if (eTo.cause is None) { eTo.cause = eFrom }; throw eTo`.
 Author ruling 2026-08-15: add a settable `cause` to std.core Exception (needed for the
-core feature); DEFER `suppressed` — the `convertFrom`-throws case of §6.2.2 is recorded as
+core feature); DEFER `suppressed` — the `convertFrom`-throws case of §8.10.2 is recorded as
 a gap instead of adding a second stdlib API.
 
-## D11 §6.2: multiple converted requirements nest in canonical order, outermost first
+## D11 §8.10: multiple converted requirements nest in canonical order, outermost first
 
-§6.2.1 requires deterministic nesting. Canonical order = the normalized-list order of
+§8.10.1 requires deterministic nesting. Canonical order = the normalized-list order of
 §3.10.2 rule 1 (subsumed entries dropped, remainder sorted by type name), which is also
 what the serialization milestone will use.
 
-## D12 ⚠ §6.5: `adapt<I>(x)` synthesizes a capturing class, reusing §3.9 machinery
+## D12 ⚠ §8.11: `adapt<I>(x)` synthesizes a capturing class, reusing §3.9 machinery
 
 The synthesized class implements `I`, holds `x` in a field, forwards each method, and
 carries a `captures` clause with the union of the forwarded methods' `throws` lists — so
-construction demands those capabilities at the `adapt` site (§6.5 rules 2–3) through the
+construction demands those capabilities at the `adapt` site (§8.11 rules 2–3) through the
 already-implemented §3.9 path. Method matching is by name and signature up to `throws`
 lists (rule 1). Identity caveats (rule 4) are accepted as documented.
 
@@ -168,11 +168,11 @@ cjo serialization then work for effects with no further change.
 
 The §9.1 policy table differences are enforced with an `IsCommandTy` predicate at the few points
 that care:
-- inference (§6.3) never infers an effect requirement — Command-typed residuals are excluded from
+- inference (§6.2) never infers an effect requirement — Command-typed residuals are excluded from
   collection, so an undeclared `perform` is REPORTED rather than silently inferred;
 - `main`'s default handler covers exceptions only — an effect requirement reaching `main` is an
   error, since there is no default effect handler;
-- the unchecked escape hatch (§6.4) and conversions (§6.2) are exception-only, which falls out
+- the unchecked escape hatch (§6.3) and conversions (§8.10) are exception-only, which falls out
   for free: `IsUncheckedExceptionTy` is false for a Command, and conversions match on Exception.
 
 **Migration note.** Under evidence passing (§8.2) effect capabilities become real runtime values
@@ -180,7 +180,7 @@ while exception capabilities stay erased, so at that point the lists MUST be spl
 representation is valid only while both are phantom. Recorded in the gaps ledger so the split is
 not forgotten.
 
-## D18 §1.1/§6.4: the Error hierarchy never demands; exemption is dual-root-bounded
+## D18 §1.1/§6.3: the Error hierarchy never demands; exemption is dual-root-bounded
 
 `Error <: ToString` is a separate root from `Exception`; the proposal's §1.1 split
 (fail-fast for bugs — Midori's Error Model citation) means Error throws are never

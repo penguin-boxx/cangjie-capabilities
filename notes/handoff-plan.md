@@ -93,7 +93,7 @@ From the workdir root:
   src/Sema/CapabilityCheck/CapabilityCheck.cpp (~410 lines; its header comment
   documents the rule set — READ IT FIRST). Interface:
   `CapabilityDemand{exceptionTy, demandSite, requiredBy}`,
-  `CapabilityMissHandler{HandleMiss}` (abstract — the §6.3 seam),
+  `CapabilityMissHandler{HandleMiss}` (abstract — the §6.2 seam),
   `ReportCapabilityMissHandler` (diag; error-or-warning),
   `CheckCapabilities(TypeManager&, const ImportManager&, Package&, handler)`.
   Supplies: FuncBody clause caps (TypeCheckUtil::GetFuncBodyCapTys); LambdaExpr's
@@ -113,10 +113,10 @@ From the workdir root:
 
 ---
 
-## TASK 1 — §6.4 UncheckedException
+## TASK 1 — §6.3 UncheckedException
 
 Target: `compiler/CheckedExceptions/unchecked` 4/4 (now 1/4 vacuous-pass).
-Proposal: §6.4 (grep "### 6.4" in the proposal) + §3.2 rule 5.
+Proposal: §6.3 (grep "### 6.4" in the proposal) + §3.2 rule 5.
 Author rulings: 1 (M3 was all-checked; this task ends that), 9 (classification
 principle; the re-parenting sweep is Task 5's job, NOT this one — the user's review
 of notes/stdlib-exception-inventory.md is still pending).
@@ -223,11 +223,11 @@ a captures clause changes). Do not let the captures supplies leak into nested
 LOCAL functions declared inside methods?? They DO see enclosing scopes lexically
 (M3 behavior for try/clause scopes) — keep captures consistent with that: lexical.
 
-## TASK 3 — §6.3 capability parameter inference
+## TASK 3 — §6.2 capability parameter inference
 
 Target: `compiler/CheckedExceptions/inference` 5/5 (now 2/5: public_neg legitimately
 green, poly_recursion_neg vacuous).
-Proposal: §6.3 ENTIRE section, re-read carefully — esp. 6.3.1 (eligibility), 6.3.2
+Proposal: §6.2 ENTIRE section, re-read carefully — esp. 6.3.1 (eligibility), 6.3.2
 (what is inferred, incl. the discharge rule), 6.3.4 (least fixpoint + the
 no-evolving-list-as-conversion-target monotonicity rule + POLYMORPHIC RECURSION
 rejection), 6.3.5 (`...` and `throws ()`).
@@ -274,7 +274,7 @@ Steps:
       supplies). THEN run the normal report pass over the whole package.
 4. `throws ()` is already authoritative-empty (M2 elaborates it) — verify inference
    skips such decls (they have a clause).
-5. Monotonicity rule (6.3.4, conversions): conversions (§6.2) do not exist yet;
+5. Monotonicity rule (6.3.4, conversions): conversions (§8.10) do not exist yet;
    leave a NORMATIVE comment at the miss-resolution point that when conversions
    arrive they must not target any in-flight SCC member's list.
 6. Tests: inference/ 5/5. infer_recursion.cj's pong MUST infer {B} only (partial
@@ -345,10 +345,10 @@ Steps:
    unaffected). Collect ALL warnings to a file.
 3. Triage every warning: (a) obvious fixes — add `throws` clauses to non-public
    helpers ONLY where inference doesn't cover them (inference exists by now — most
-   internal warnings should vanish via §6.3), add clauses to public API where the
+   internal warnings should vanish via §6.2), add clauses to public API where the
    checked exception is clearly part of the contract, add local try/catch where the
    code already handles-and-continues; (b) anything requiring API judgment (public
-   signature changes, wrap-vs-propagate decisions, §6.2-conversion-shaped patterns)
+   signature changes, wrap-vs-propagate decisions, §8.10-conversion-shaped patterns)
    goes to notes/stdlib-migration-questions.md — one entry per item: location,
    warning, options, recommendation. Do NOT make public-API judgment calls yourself.
 4. Whole stdlib in ONE pass (author ruling 13) — iterate until the warn build's
@@ -395,7 +395,7 @@ only after explicit author rulings.
 - Diagnostics polish (gaps C7/C8): dedicated §3.6 inference-failure wording; unify
   Ty-name vs source-text printing.
 - C10: drop or keep the `--enable-chexc` alias — author's call.
-- §6.1 aliases and §6.2 conversions: unscheduled; §6.2 interacts with §6.3's
+- §6.1 aliases and §8.10 conversions: unscheduled; §8.10 interacts with §6.2's
   monotonicity rule (see Task 3 step 5's comment) — bring to the author before
   starting.
 - Modal integration: WAITING on upstream (ruling 14). When it lands: phantom-filter
@@ -420,8 +420,8 @@ flag ANY spec interpretation you had to make — the author reads these).
 
 # ADDENDUM (2026-08-15): the four author-requested features
 
-Order (author-confirmed): §6.3 inference → §6.1 aliases → §5.2.2 assumption imports →
-cjo serialization → §6.2 conversions (branch `chexc-conversions`) → §6.5 adapt (branch
+Order (author-confirmed): §6.2 inference → §6.1 aliases → §5.2.2 assumption imports →
+cjo serialization → §8.10 conversions (branch `chexc-conversions`) → §8.11 adapt (branch
 `chexc-adapt`). Decisions and their rationale: notes/autonomous-decisions.md.
 Red tests for all four are COMMITTED (13 cases): CheckedExceptions/{aliases,assume,
 conversions,adapt}.
@@ -466,13 +466,13 @@ package, demand the assumed list too (D6: only direct calls into that package). 
 mentions the assumption's origin (D5). Never serialize (consumer-local).
 
 ## TASK C — cjo serialization (→ chexc) — see TASK 4 above, unchanged, but note:
-inferred lists (§6.3) are intra-package truth; exported surface is explicit-only by
-§6.3.1, so serialize capTys as they stand after inference, in canonical form (§3.10.2
+inferred lists (§6.2) are intra-package truth; exported surface is explicit-only by
+§6.2.1, so serialize capTys as they stand after inference, in canonical form (§3.10.2
 rule 1). Also serialize `captures` clauses (§3.9 classes are exported).
 
-## TASK D — §6.2 exception conversions (→ NEW BRANCH `chexc-conversions`)
+## TASK D — §8.10 exception conversions (→ NEW BRANCH `chexc-conversions`)
 
-Target: `compiler/CheckedExceptions/conversions` 4/4. Spec §6.2 entirely (§6.2.1 rules
+Target: `compiler/CheckedExceptions/conversions` 4/4. Spec §8.10 entirely (§8.10.1 rules
 1–6 are the test matrix). Decisions D7–D11.
 Requires: `Convertible<From, To>` interface in std.core (runtime repo) + a SETTABLE
 `Exception.cause` (author ruling; `suppressed` deferred — record as a gap).
@@ -482,9 +482,9 @@ To.convertFrom(eFrom); if (eTo.cause is None) { eTo.cause = eFrom }; throw eTo }
 Rule 6 needs demands tagged with their origin (storage vs call) — add a DemandKind to the
 CapabilityDemand struct when implementing §3.9 captures demands (they are the storage ones).
 
-## TASK E — §6.5 adapt (→ NEW BRANCH `chexc-adapt`, on top of D)
+## TASK E — §8.11 adapt (→ NEW BRANCH `chexc-adapt`, on top of D)
 
-Target: `compiler/CheckedExceptions/adapt` 2/2. Spec §6.5. Decision D12.
+Target: `compiler/CheckedExceptions/adapt` 2/2. Spec §8.11. Decision D12.
 NOTE: the proposal explicitly defers this feature; it is built at author request as an
 experimental extension. Synthesize a capturing class (reusing §3.9), forwarding methods,
 `captures` = union of forwarded `throws` lists; result demands those at the adapt site.

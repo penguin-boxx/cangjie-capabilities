@@ -1,6 +1,6 @@
 # Prototype → production gap analysis
 
-Date: 2026-08-15. Premise: the proposal stabilizes roughly as written (with the Q1–Q4 and
+Date: 2026-08-15 (section numbers updated to the 2026-08-20 proposal revision). Premise: the proposal stabilizes roughly as written (with the Q1–Q4 and
 inventory rulings folded in). This maps what separates the `chexc` branch from an
 implementation that could ship in the official toolchain. Effort classes: S (days),
 M (weeks), L (months), XL (joint effort with another feature's timeline).
@@ -16,7 +16,7 @@ cost lives.
 
 ## 1. What transfers as-is (the asset list)
 
-- **The pipeline shape.** `capability-blind types → capability parameters (6.3) →
+- **The pipeline shape.** `capability-blind types → capability parameters (§6.2) →
   clause completion → capability arguments → scope check` is a production-shaped pass
   order; it was chosen precisely so inference never entangles type checking.
 - **The miss-handler seam.** One walker, parameterized over what happens to a miss:
@@ -116,7 +116,7 @@ maintenance trap.
   `h`"). Retrofit is straightforward in the collecting handler but costs memory; design it,
   don't bolt it on.
 - Type rendering: diagnostics print internal names (`Class-MyExc<Int64>`) — C8.
-- No fix-its; no "a conversion exists (§6.2)" notes; no localization.
+- No fix-its; no "a conversion exists (§8.10)" notes; no localization.
 - The `chexc` warn group exists and works; keep.
 
 ## 7. Performance (unknown → must be measured, M to react)
@@ -149,7 +149,7 @@ is not stabilized.
 
 ## 10. What the prototype should NOT try to close
 
-Worth saying explicitly: the remaining §6.2/§6.5/§8.3–8.5 features, the R6 site audit, and
+Worth saying explicitly: the remaining §8.10/§8.11/§8.3–8.5 features, the R6 site audit, and
 the diagnostics polish are all *cheaper to redo on the production base* than to perfect
 here if the base refactors of §2 happen. The prototype's job — de-risking the semantics,
 finding the 20+ defects the ledger records, proving the pipeline order, and producing the

@@ -25,7 +25,7 @@ Both hand-enumerated `ThrowsClause` copiers have drifted on the same field. `AST
 *Write:* insert immediately after line 401, before the `for (auto& capType : node.capTypes)` loop:
 ```cpp
     // The `...` marker decides whether inference stays enabled for the declaration
-    // (proposal 6.3.5); it is a plain ThrowsClause member, not a Node-level field, so
+    // (proposal 6.2.5); it is a plain ThrowsClause member, not a Node-level field, so
     // CopyNodeField does not carry it.
     ret->hasEllipsis = node.hasEllipsis;
 ```
@@ -215,9 +215,9 @@ All three edits in `.../include/cangjie/Sema/CapabilityCheck.h`.
 *Write:*
 ```cpp
 /**
- * Capability lists inferred for declarations without an authoritative clause (proposal 6.3).
+ * Capability lists inferred for declarations without an authoritative clause (proposal 6.2).
  * CompleteInferredCapabilityTypes writes each list into its declaration's functional type
- * (proposal 6.3.3), so the declaration's own type is the single source of its list. The map
+ * (proposal 6.2.3), so the declaration's own type is the single source of its list. The map
  * remains the source at CALL SITES: a call's callee expression type was formed during type
  * check, before inference ran, and is never re-typed.
  */
@@ -230,7 +230,7 @@ using InferredCapabilities = std::unordered_map<Ptr<AST::FuncDecl>, std::vector<
 ```cpp
 /**
  * Complete the clause components of the types of the declarations covered by @p inferred
- * (proposal 6.3.3: 'capability parameters -> clause components of types -> capability arguments';
+ * (proposal 6.2.3: 'capability parameters -> clause components of types -> capability arguments';
  * notes/architecture.md:82-83 'write inferred lists into decl signatures, then run the checking
  * step uniformly'). Each declaration's functional type is re-interned through
  * TypeManager::GetFunctionTy with its inferred entries appended, so the declaration's own type
@@ -257,8 +257,8 @@ All in `.../src/Sema/CapabilityCheck/CapabilityCheck.cpp`. **Apply bottom-up (E5
 *Write:* replace that sentence with
 ```
  * The checking walker itself mutates no type; declaration types are completed beforehand by
- * CompleteInferredCapabilityTypes (proposal 6.3.3). Unsatisfied demands go to a
- * CapabilityMissHandler â the seam where capability-parameter inference (proposal 6.3)
+ * CompleteInferredCapabilityTypes (proposal 6.2.3). Unsatisfied demands go to a
+ * CapabilityMissHandler â the seam where capability-parameter inference (proposal 6.2)
  * collects residual demands.
 ```
 *Why:* `notes/handoff-plan.md` Â§0.4 designates this header as the module's documented rule set, read first.
@@ -288,9 +288,9 @@ All in `.../src/Sema/CapabilityCheck/CapabilityCheck.cpp`. **Apply bottom-up (E5
 *Write:*
 ```cpp
                 // The declaration's COMPLETED type is the single source of its capability list
-                // (proposal 6.3.3, written by CompleteInferredCapabilityTypes). Two exceptions,
+                // (proposal 6.2.3, written by CompleteInferredCapabilityTypes). Two exceptions,
                 // both phase-independent by construction: while collecting a declaration's own
-                // residual demands its in-flight list must not supply (proposal 6.3.2), so only
+                // residual demands its in-flight list must not supply (proposal 6.2.2), so only
                 // the written clause is read; and a lambda literal's FuncBody shares the
                 // LambdaExpr's ty, already pushed by the LAMBDA_EXPR case.
                 auto caps = (!fb.funcDecl || fb.funcDecl == collectingFor)
@@ -319,7 +319,7 @@ All in `.../src/Sema/CapabilityCheck/CapabilityCheck.cpp`. **Apply bottom-up (E5
             demands = TypeCheckUtil::GetInstantiatedAccessorCapTys(
                 typeManager, *ce.resolvedFunction, receiverTy);
         }
-        // A callee whose list was INFERRED (proposal 6.3) carries it beside the AST: this call
+        // A callee whose list was INFERRED (proposal 6.2) carries it beside the AST: this call
         // site's type was formed during type check, before inference ran, so completing the
         // declaration's type cannot reach it. UNIONED, not appended: MF4 will instantiate these
         // entries, after which they can become pointer-identical to 'funcTy->capTys'.
@@ -408,7 +408,7 @@ void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCap
     }
 }
 ```
-*Why:* the missing Â§6.3.3 phase. The holder set is complete and was established by reading every writer of a declaration's `FuncTy`: nothing else holds it â `PropDecl` derives from `VarDecl` so its own ty is the property's value type and its accessors appear in the map in their own right; `FuncBody::retType` carries only `retTy`; `paramLists[0]->ty` is a `TupleTy`; `MacroDecl`/`MainDecl` are not `FuncDecl` and are never collected; `FuncParam::desugarDecl` default-value functions are never in the map; instantiated clones do not exist yet (GENERIC_INSTANTIATION is two stages later) and `PartialInstantiation` carries capTys through `TyInstantiator`; `Symbol` caches no ty.
+*Why:* the missing Â§6.2.3 phase. The holder set is complete and was established by reading every writer of a declaration's `FuncTy`: nothing else holds it â `PropDecl` derives from `VarDecl` so its own ty is the property's value type and its accessors appear in the map in their own right; `FuncBody::retType` carries only `retTy`; `paramLists[0]->ty` is a `TupleTy`; `MacroDecl`/`MainDecl` are not `FuncDecl` and are never collected; `FuncParam::desugarDecl` default-value functions are never in the map; instantiated clones do not exist yet (GENERIC_INSTANTIATION is two stages later) and `PartialInstantiation` carries capTys through `TyInstantiator`; `Symbol` caches no ty.
 *Build detail:* `<algorithm>` is already included (line 36).
 
 ---
@@ -432,7 +432,7 @@ void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCap
 
 ### Group 7 â ledger (`/home/penguin/Projs/effects-research/cangjie/notes/proposal-implementation-gaps.md`)
 
-**E7.1 â line 42, row C4.** Currently: "`...` marker parse-rejected EVERYWHERE". **This is stale and must be corrected in this commit**, or a reviewer will reject E0.1 as unreachable dead code. `ParseThrowsClause`'s `diagnoseEllipsis` lambda (`src/Parse/ParseType.cpp:282-292`) sets `clause->hasEllipsis = true` whenever `isDeclClause`, and `ParseFuncBody` always passes `true` (`ParseDecl.cpp:2330`, `:2338`). Rewrite as: "`...` accepted on declarations (Â§6.3.5), rejected in functional types (Â§3.4) â as intended; **CLOSED**."
+**E7.1 â line 42, row C4.** Currently: "`...` marker parse-rejected EVERYWHERE". **This is stale and must be corrected in this commit**, or a reviewer will reject E0.1 as unreachable dead code. `ParseThrowsClause`'s `diagnoseEllipsis` lambda (`src/Parse/ParseType.cpp:282-292`) sets `clause->hasEllipsis = true` whenever `isDeclClause`, and `ParseFuncBody` always passes `true` (`ParseDecl.cpp:2330`, `:2338`). Rewrite as: "`...` accepted on declarations (Â§6.2.5), rejected in functional types (Â§3.4) â as intended; **CLOSED**."
 
 **E7.2 â rows MF6 (line 75) and MF1 (line 74):** mark FIXED. **Row MF2 (line 76):** keep OPEN with the note "write-back landed (Part A); the non-call demand rule (function values, joins, returns) remains â see Unresolved #2."
 
@@ -489,7 +489,7 @@ All under `/home/penguin/Projs/effects-research/cangjie/cangjie_test/testsuites/
 
 ### MF1
 
-**1. `scopes/prop_accessor_demand_neg.cj`** â pins MF1 across all four dispatch kinds of `DesugarForPropDecl` and both accessors. `public` accessors so Â§6.3 inference cannot mask the result (`DeclAttributeChecker.cpp:137-138` does `fd->CloneAttrs(*fd->propDecl)`; `IsEligible` rejects PUBLIC at `CapabilityCheck.cpp:589`).
+**1. `scopes/prop_accessor_demand_neg.cj`** â pins MF1 across all four dispatch kinds of `DesugarForPropDecl` and both accessors. `public` accessors so Â§6.2 inference cannot mask the result (`DeclAttributeChecker.cpp:137-138` does `fd->CloneAttrs(*fd->propDecl)`; `IsEligible` rejects PUBLIC at `CapabilityCheck.cpp:589`).
 ```cangjie
 // Checked exceptions (Â§3.2/Â§3.3): a property accessor's 'throws' clause is demanded at every
 // use site â read, write, compound assign and inc/dec, qualified and unqualified.

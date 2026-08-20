@@ -1,4 +1,4 @@
-# Stdlib exception inventory (for §6.4 unchecked classification)
+# Stdlib exception inventory (for §6.3 unchecked classification)
 
 Prepared during M3 per author ruling 9. Source: `cangjie_runtime/stdlib/libs/std` (plus the
 vendored flatbuffers copy), enumerated via `grep -rn '<: Exception'` and one follow-up level
@@ -6,7 +6,7 @@ of subclassing. Classification principle (author ruling): **contract / state / i
 arithmetic / unwrap → unchecked; I/O, parse, net, concurrency-wait → checked.** Lines marked
 UNCERTAIN need author judgment. Paths are relative to `cangjie_runtime/stdlib/`.
 
-Notes on mechanics: under §6.4, "unchecked" means the class (and hence all its subclasses)
+Notes on mechanics: under §6.3, "unchecked" means the class (and hence all its subclasses)
 becomes a subtype of `UncheckedException`; a checked subclass of an unchecked class is
 impossible. Conflicts of that kind are called out explicitly below.
 
@@ -74,7 +74,7 @@ impossible. Conflicts of that kind are called out explicitly below.
 | MisMatchException (<: ReflectException) | checked, UNCERTAIN | libs/std/reflect/exception.cj:39 | type mismatch on reflective use — follows parent |
 | IllegalSetException (<: ReflectException) | checked, UNCERTAIN | libs/std/reflect/exception.cj:53 | setting immutable member — contract-flavored, follows parent |
 | IllegalTypeException (<: ReflectException) | checked, UNCERTAIN | libs/std/reflect/exception.cj:67 | follows parent |
-| InvocationTargetException (<: ReflectException) | checked, UNCERTAIN | libs/std/reflect/exception.cj:81 | wrapper around the target's exception — interacts with §6.2 conversions; needs its own design note |
+| InvocationTargetException (<: ReflectException) | checked, UNCERTAIN | libs/std/reflect/exception.cj:81 | wrapper around the target's exception — interacts with §8.10 conversions; needs its own design note |
 
 ## std.runtime (introspection; internal classes)
 
@@ -121,6 +121,6 @@ impossible. Conflicts of that kind are called out explicitly below.
   MacroContextException, FlatBuffersException (both copies), ReflectException + its 5
   subclasses, MemoryInfoException, ProfilingInfoException, UnittestTimeoutException,
   JsonException, DataModelException.
-- Structural conflict to resolve for §6.4: IllegalFormatException (parse-flavored) sits under
-  unchecked IllegalArgumentException; InvocationTargetException interacts with §6.2
+- Structural conflict to resolve for §6.3: IllegalFormatException (parse-flavored) sits under
+  unchecked IllegalArgumentException; InvocationTargetException interacts with §8.10
   conversions.

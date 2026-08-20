@@ -1,7 +1,7 @@
 # Architecture sketch: checked exceptions (§3.1–3.8, extensible to §6.x)
 
 Goal: implement the base design (§3.1–3.8) with stage separation that later accommodates
-capability parameter inference (§6.3), conversions (§6.2), aliases (§6.1), captures (§3.9),
+capability parameter inference (§6.2), conversions (§8.10), aliases (§6.1), captures (§3.9),
 and Modal escape analysis (§4) without restructuring.
 
 ## Load-bearing observations from the proposal
@@ -10,10 +10,10 @@ and Modal escape analysis (§4) without restructuring.
    inference. §3.7: overload resolution ignores capability lists. §3.3: capabilities are
    witnesses only; which one is chosen is unobservable. Together: **core type checking never
    needs the result of capability resolution** — capability checking can run after Sema.
-2. §6.3.3 pipeline: `types → modes → capability parameters → capability arguments`.
-   Capability-parameter inference (§6.3) is a distinct phase; capability-argument checking
+2. §6.2.3 pipeline: `types → modes → capability parameters → capability arguments`.
+   Capability-parameter inference (§6.2) is a distinct phase; capability-argument checking
    (§3.3) runs last. No fixpoint: inference is one bottom-up SCC pass; cycles among
-   inference-eligible decls are errors (§6.3.4).
+   inference-eligible decls are errors (§6.2.4).
 3. Capabilities are fully erased (§3, §3.10): they never become params, args, mangled names,
    or CHIR. The cjo must carry `throws` lists (cross-package checking), so serialization
    happens from signature data, not from materialized params.
@@ -38,9 +38,9 @@ shapes, not his staging.
 - Functional types `(A) throws (E1,E2) -> R`: clause node on FuncType; paren-vs-functype
   lookahead after `)` extended to `throws` (colleague's `ParseTypeWithParen` pattern).
 - `main() throws ...` allowed.
-- AST checker rules: no `...` in functional types (grammar exists only when §6.3.5 lands);
+- AST checker rules: no `...` in functional types (grammar exists only when §6.2.5 lands);
   reject `throws` entries that are concrete unchecked types later (§3.2 rule 5 — needs
-  UncheckedException, defer until §6.4).
+  UncheckedException, defer until §6.3).
 
 ### B. Signature elaboration (PreCheck)
 - Elaborate clause → canonical capability list `CapList` (list of Ty, subtypes of Exception;
@@ -58,7 +58,7 @@ shapes, not his staging.
 - Override/redefinition rule (§3.8): in inheritance checker, pointwise subsumption of the
   override's list against the original's (reuse his hook + generic mapping, swap predicate).
   Constructors exempt.
-- Lambda literals: capability list comes ONLY from expected type (§3.5/§6.3.1). Propagate
+- Lambda literals: capability list comes ONLY from expected type (§3.5/§6.2.1). Propagate
   during checking (his ChkLamBody pattern), storing the list on the literal's FuncTy.
 
 ### C. CapabilityCheck pass (new module, runs after type checking of a package)
@@ -67,24 +67,24 @@ a supply stack and checking demands:
 
 - Supplies (scopes, §3.3): callable's own CapList; try-block per-catch-pattern types
   (E1|E2 → two entries; try-with-resources initializers inside; catch/finally OUTSIDE);
-  literal's CapList for its body. Later: captures (§3.9), conversion boundaries (§6.2).
+  literal's CapList for its body. Later: captures (§3.9), conversion boundaries (§8.10).
 - Demands: `throw e` → CanThrow<type(e)> (skip unchecked later); call site → callee FuncTy's
   capTys after generic substitution (use the call's solved instantiation, his ApplySubstPack
   point); default-value exprs checked against the callee's own scope (§3.3); field
   initializers per §3.3 special rules.
 - Resolution: demand satisfied iff ∃ supply S in stack with S <: required (first match; no
-  ambiguity concept). Miss → (later: conversions §6.2) → diagnostic in proposal's wording.
+  ambiguity concept). Miss → (later: conversions §8.10) → diagnostic in proposal's wording.
 - The pass never mutates types and emits no demands into them — pure check.
 
 Extensibility slots:
-- §6.3 inference: a pre-step of this pass. Build intra-package call graph over
+- §6.2 inference: a pre-step of this pass. Build intra-package call graph over
   inference-eligible decls (non-public, no authoritative clause), SCC condensation,
   bottom-up: infer list = union of residual demands of the body (same demand/supply walker
   run in "collect" mode instead of "error" mode). Write inferred lists into decl signatures,
   then run the checking step uniformly. Walker is shared; only the miss-handler differs
   (collect vs report). This is the key seam: **the demand walker must be parameterizable
   over its miss-handler from day one.**
-- §6.2 conversions: alternative miss-handler step before erroring; synthesizes conversion
+- §8.10 conversions: alternative miss-handler step before erroring; synthesizes conversion
   info for later desugar.
 - §6.1 aliases: clause elaboration in B expands aliases; C unchanged.
 - §4 escape analysis: separate mode-system concern; C only marks which try introduced which
@@ -93,7 +93,7 @@ Extensibility slots:
 ### D. Serialization (cjo)
 - Decl CapLists and FuncTy capTys serialized (his FuncTyInfo.implicitTypes pattern: [uint32]
   type refs appended to tables — flatbuffers-compatible). Inferred lists are serialized too
-  (they're part of the in-package truth; exported surface is explicit-only by §6.3.1).
+  (they're part of the in-package truth; exported surface is explicit-only by §6.2.1).
 - Loader reconstructs CapLists into signatures/FuncTys. No param-list loading, no
   ownerFunc/default-arg wiring (nothing is materialized). Cover all three loaders:
   ASTLoader, ReferenceLoader, IncrementalLoader.
@@ -113,7 +113,7 @@ Extensibility slots:
 parse → macro-expand → sema type check (uses B: subtyping/lambda/override rules)
       → [mode inference — Modal, when present; capability-BLIND, see below]
       → CapabilityCheck pass:
-           [§6.3 inference over SCCs — later]
+           [§6.2 inference over SCCs — later]
            per-body demand/supply checking (§3.3 diagnostics)
            records capability capture sets per literal
       → [capability-region escape check — Modal §4.3; consumes modes + capture sets,
@@ -136,7 +136,7 @@ Relevant Modal facts:
 
 The circularity (user-raised, concrete): a literal capturing a `CanThrow<E> @ local!`
 capability must become region-bound (§3.5). Which capabilities a literal captures is
-decided by capability ARGUMENT resolution; under §6.3, demands additionally depend on
+decided by capability ARGUMENT resolution; under §6.2, demands additionally depend on
 capability PARAMETER inference. If lambda mode checking consumed capability captures, we'd
 get: modes → capability params → capture sets → modes. Worse, §3.9 rule 4 (capability
 access through `local?` receivers) makes capability checking read receiver modes — so
@@ -150,7 +150,7 @@ pipeline LINEARIZABLE at all:
 
 1. **Modal analysis is capability-blind.** Capabilities are phantom: excluded from lambda
    capture lists as far as mode rules are concerned; the `local!`-capture ban does not see
-   them. Modes are computed/checked from ordinary values only. (§6.3.3 supports this: the
+   them. Modes are computed/checked from ordinary values only. (§6.2.3 supports this: the
    capability's own `@ local!` is fixed by desugaring, never inferred.)
 2. **Capability analysis (params → args) runs after modes**, reads modes where its rules
    need them (§3.9 rule 4 — modes are final by then), never writes them.
@@ -167,7 +167,7 @@ pipeline LINEARIZABLE at all:
    restriction would matter is one that lets a capability escape its handler.
 
 Pipeline (linear; the forbidden edge is "Modal results depend on capability results"):
-types → modes (capability-blind) → capability parameters (§6.3, mode-independent) →
+types → modes (capability-blind) → capability parameters (§6.2, mode-independent) →
 capability arguments (records captures) → capability-scope check (reads modes + captures).
 
 Per §4.3's own caveat: these dedicated rules are defined as an implementation of

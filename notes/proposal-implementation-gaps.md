@@ -1,7 +1,7 @@
 # Proposal ↔ implementation inconsistencies
 
 Living document — updated at every milestone gate. State as of M3 committed,
-§6.4+§3.9 in implementation. Sections: (A) deviations ratified by the author,
+§6.3+§3.9 in implementation. Sections: (A) deviations ratified by the author,
 (B) interpretations of ambiguous/underspecified text (ratified), (C) implementation
 artifacts and restrictions the proposal does not sanction (each with its fix-by
 milestone), (D) proposal features not yet implemented (roadmap ledger).
@@ -16,7 +16,7 @@ milestone), (D) proposal features not yet implemented (roadmap ledger).
 | A4 | §3.9 derives the primary-ctor ban from modes (primaries are `~local`) | Ban enforced directly, pre-Modal | Ruling 12, forward-compatible. |
 | A5 | §4.2 spawn safety comes from Modal's spawn rule | Lexical rule: spawn bodies start with an empty capability scope stack | Ruling 5 — simplest sound equivalent pre-Modal. |
 | A6 | §8 anticipates effects integration | try/handle, perform, resume are ignored entirely by capability checking | Ruling 4 (superseded by later directive: effects checking is a LATER milestone, after stdlib cleanup). |
-| ~~A7~~ | §6.4 splits checked/unchecked | CLOSED 2026-08-15: std.core UncheckedException + exemptions implemented | — |
+| ~~A7~~ | §6.3 splits checked/unchecked | CLOSED 2026-08-15: std.core UncheckedException + exemptions implemented | — |
 | A8 | (not in proposal) | `throws` banned on foreign funcs AND CFunc types | Author ruling (M2 round). Proposal could state this; §5.2 interop may revisit. |
 | A9 | §3.10.2 rule 3 mentions error/warn levels per package | Implemented as per-invocation `--enable-checked-exceptions[=error|warn]` + `chexc` warn group | Ruling 8. Per-package level recording arrives with metadata (D5). |
 
@@ -30,16 +30,16 @@ milestone), (D) proposal features not yet implemented (roadmap ledger).
 | B4 | §3.2 clause position | `throws` accepted before AND after `where`; duplicate clause diagnosed and dropped. |
 | B5 | Bare-list vs parenthesised clause forms | Decls accept both `throws A, B` and `throws (A, B)`; functional types accept only `throws (…)` and single-type sugar `throws E ->` (commas belong to enclosing constructs). |
 | B6 | (was a gap; author then added §3.4 join/meet text) | Join = union with redundancy pruning; meet = entries covered by every operand list. Implementation matches the added text. RESOLVED — kept for history. |
-| B7 | §6.3.4 originally banned recursion; author replaced with least-fixpoint | Implementation will go straight to fixpoint (§6.3 milestone); poly-recursion detected via occurs-check on SCC call-edge substitutions. |
+| B7 | §6.2.4 originally banned recursion; author replaced with least-fixpoint | Implementation will go straight to fixpoint (§6.2 milestone); poly-recursion detected via occurs-check on SCC call-edge substitutions. |
 
 ## C. Implementation artifacts / restrictions (not sanctioned by the proposal)
 
 | # | Artifact | Impact | Fix by |
 |---|---|---|---|
-| C1 | cjo serialization DROPS capTys (FuncTyInfo untouched); §3.10.2 requires full clause metadata | Cross-package `throws` checking is silently absent: imported decls arrive cap-free | Serialization milestone (after §6.3 per roadmap) |
+| C1 | cjo serialization DROPS capTys (FuncTyInfo untouched); §3.10.2 requires full clause metadata | Cross-package `throws` checking is silently absent: imported decls arrive cap-free | Serialization milestone (after §6.2 per roadmap) |
 | C2 | Incremental compilation loses caps — TWO directions. Caller-changed direction closed by the serialization milestone (SemaTy cache carries capTys; `incr_caps`). Callee-changed direction found still open 2026-08-15: a clause-only change classified as a 'body' change and never spread to callers, for `throws` and `performs` alike — `DeclHash.sig` comes from `ASTHasher::SigHash`, which hashed no function clauses (the clause hashing sat in `HashMemberSignature`, which feeds the virtual/API hashes instead). Fixed by hashing both clauses in `SigHash`; pinned by `incr_caps2` + `incr_performs`, both verified red first | Was: silent stale obligations on incremental rebuilds | CLOSED (both directions) |
 | C3 | capTys interning keeps written order — `throws (A,B)` and `throws (B,A)` are distinct (mutually subtyped) types; §3.10.2 rule 1 wants canonical normal form in metadata | Harmless in-memory (set semantics live in subsumption); metadata canonicalization pending | Serialization milestone |
-| C4 | `...` marker parse-rejected EVERYWHERE (proposal allows it on non-exported decls, §6.3.5) | `throws A, ...` unusable until inference | §6.3 (lift for decls only; stays banned in types per §3.4) |
+| C4 | `...` marker parse-rejected EVERYWHERE (proposal allows it on non-exported decls, §6.2.5) | `throws A, ...` unusable until inference | §6.2 (lift for decls only; stays banned in types per §3.4) |
 | C5 | Macro NodeFormat does not serialize ThrowsClause — macros cannot emit `throws` clauses | Macro-generated checked APIs impossible | Deferred (original plan M6); test exists in colleague's suite as precedent |
 | C6 | `CanThrow` does not exist as a type at all (entries stored directly in FuncTy::capTys); proposal §3.1 primary text declares a std.core enum (NOTE offers intrinsic alternative) | No user-visible CanThrow; diagnostics print the name only as text | Working as intended (strongest form of the §3.1 NOTE); revisit only if effects materialization (§8.2) needs a real type |
 | C7 | §3.6 inference-failure wording: "mismatched types" showing the uninstantiated capability row, plus "parameters and arguments mismatch" — no dedicated "cannot infer T from capability list" diagnostic | Cosmetic | Backlog (diagnostics polish) |
@@ -98,21 +98,21 @@ should list nothing. The corrected pair differs on line 1 alone.
 ## D. Not yet implemented (roadmap ledger, no divergence intended)
 
 - PROPOSAL REVISION 2026-08-20 (see notes/proposal-update-review-2026-08-20.md): sections
-  renumbered (inference §6.2, unchecked §6.3; conversions §8.10 and adapt §8.11 are now
+  renumbered (inference §8.10, unchecked §6.2; conversions §8.10 and adapt §8.11 are now
   extensions outside the base design) — a citation-renumbering sweep over compiler
   comments/diagnostics/tests/notes is owed. NEW base-design items: `unsafeAssumeHandled`
-  (§6.3.3); local functions inference-eligible (§6.2.1) — supersedes the hand clause on
-  fs walkFuncWrapper; statics infer uniformly (§6.2.1) — upgrades MF8 from restriction to
+  (§6.2.3); local functions inference-eligible (§8.10.1) — supersedes the hand clause on
+  fs walkFuncWrapper; statics infer uniformly (§8.10.1) — upgrades MF8 from restriction to
   conformance gap; §8.9 capability-list polymorphism (roadmap, XL); §5.4 clause fixer now
   proposal text; spawn-empty-stack now §7.1 base text (was author ruling).
-- §6.3 capability parameter inference (red tests committed; miss-handler seam ready)
-- §6.1 capability list aliases; §6.2 exception conversions; §6.5 adapter generation
+- §6.2 capability parameter inference (red tests committed; miss-handler seam ready)
+- §6.1 capability list aliases; §8.10 exception conversions; §8.11 adapter generation
 - §3.9 captures: IMPLEMENTED pre-Modal (A3/A4 describe the mode-dependent parts still deferred)
 - §3.10.2 package metadata (canonical form, levels, ABI epoch) — with C1–C3
 - §5.1/§5.2 checked↔unchecked interop defaults and boundary function values (§5.2.2 assumption imports: IMPLEMENTED; open readings in notes/author-questions.md Q1–Q4)
 - §4 Modal integration (waiting on upstream per ruling 14) and §5.5's intra-function checks (see A2)
 - §7 spawn/Future beyond the lexical rule; §8 extensions (incl. effects — later milestone by directive)
-- Stdlib migration (§5.3): inventory drafted, 18 UNCERTAIN awaiting author; one-pass cleanup after §6.3
+- Stdlib migration (§5.3): inventory drafted, 18 UNCERTAIN awaiting author; one-pass cleanup after §6.2
 
 ## E. Audit findings (2026-08-15, adversarially verified — see notes/audit-report.md)
 
@@ -125,7 +125,7 @@ wherever a type or callee expression is RECONSTRUCTED by machinery predating the
 | ~~MF11~~ | `throws`/`captures` are hard keywords under the flag; §10 requires soft keywords. `std.unittest.mock` declares `public func throws(...)` ×6 — blocks the stdlib cleanup milestone at PARSE time | loud, blocking | FIXED |
 | ~~MF5~~ | class `captures` supplied to static bodies, finalizers, static field initializers (§3.9 rule 1) | silent unsoundness | FIXED |
 | ~~MF7~~ | inference is blind to the enclosing class's `captures`: eligible members of a capturing class get the captured requirement as their inferred list | wrong diagnostics | FIXED |
-| ~~MF10~~ | §6.3.4 occurs check runs on graph construction, not intra-SCC; rejects ordinary generic code (`wrap<T>` calling `sink<Array<T>>`) and cannot fire on its own motivating case | loud false positive | FIXED |
+| ~~MF10~~ | §6.2.4 occurs check runs on graph construction, not intra-SCC; rejects ordinary generic code (`wrap<T>` calling `sink<Array<T>>`) and cannot fire on its own motivating case | loud false positive | FIXED |
 | ~~MF1~~ | property-accessor `throws` clauses dropped at every use site (desugared callee type built cap-free) | silent unsoundness | FIXED |
 | ~~MF6~~ | a primary constructor's `throws` clause is parsed then discarded by DesugarPrimaryCtor | silent + spurious errors | FIXED |
 | MF2 | inferred lists never written back into FuncTy, so every non-call use (function value, join, return) drops them | silent unsoundness | FIXED |
@@ -146,3 +146,19 @@ Refuted claims (do NOT re-investigate): see section 4 of notes/audit-report.md �
 including "property desugar happens after the pass" (false: it runs inside SEMA),
 "TyInstantiator drops capTys" (false: the loss is in which mappings it is handed), and
 "join/meet is wrong" (false: it matches §3.4).
+
+## F. Documentation conventions (adopted 2026-08-20)
+
+- **Source code carries no proposal section numbers.** The 2026-08-20 revision renumbered
+  inference (6.3→6.2), unchecked (6.4→6.3) and moved conversions and adapt into section 8,
+  invalidating 130 citations in one edit. Compiler comments now state the rule they depend
+  on rather than pointing at where it is written (compiler `7ba425ae`). When a comment
+  genuinely needs the design's reasoning, inline the reasoning.
+- **Notes may cite section numbers**, because notes are revised alongside the proposal —
+  but a renumbering must be applied across `notes/` in one sweep, skipping any document
+  already written against the newer scheme. `scripts/` holds no renumbering tool on
+  purpose: the mapping is content-verified by hand each time, since a blind
+  search-and-replace silently corrupts documents that are already current.
+- **Tests keep section TITLES, not numbers** (e.g. "Assumption imports" rather than
+  "§5.2.2"): titles survive renumbering, and traceability from a test to the rule it
+  pins is worth keeping.
