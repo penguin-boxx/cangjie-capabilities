@@ -33,6 +33,13 @@ cost lives.
 ## 2. Architectural debts that need rework, not extension
 
 ### 2.1 Phantom capabilities vs Modal CangJie (XL — the big one)
+**The circularity, stated precisely (author, 2026-08-20).** A capability-capturing lambda's
+MODE depends on what it captures; what it captures is what the post-Sema pass computes. Sema
+fixes the mode first, the pass discovers the captures second, and nothing revisits the mode —
+so the pipeline shape of §1 is sound only while capabilities are phantom. Production must
+either fold capability checking into type checking or make mode assignment a fixpoint over
+(modes, captures). Recorded as D-0 in notes/proposal-update-review-2026-08-20.md.
+
 The proposal's §4.3 makes try-scoped capability *regions* a required extension; soundness
 of first-class functions rests on it. The prototype implements path-b phantom capabilities
 with **no escape analysis** (author ruling: wait for Modal). Concretely unsound today, by

@@ -151,6 +151,44 @@ work, each verified against today's text and, where possible, against prototype 
   interfaces declare both; or those APIs stay off the interface (the accidental current
   state). The ruling should say which.
 
+### D-0 · The checker's phase ordering assumes modes are capability-independent — Modal breaks it
+
+**Raised by the author, 2026-08-20; the sharpest finding in this review.**
+
+The base design says capability checking may run after type checking, and the prototype does
+exactly that: `types+modes (capability-blind) → capability parameters → capability arguments →
+scope check`. That order is what makes the whole implementation tractable, and it is sound
+*only while capabilities are phantom*.
+
+Under Modal CangJie a capability-capturing lambda is a region-bound value, and **its mode is
+determined by what it captures**. What it captures is precisely what the post-Sema pass
+computes. So the dependency is circular in the direction the pipeline cannot express:
+
+1. Sema assigns the literal a mode without knowing its captured capabilities;
+2. the capability pass then discovers those captures;
+3. if they should have forced `this @ local!`, the mode already assigned is wrong, and
+   nothing re-checks it.
+
+Prototype evidence that this is not hypothetical: §5.2.3's boundary rule is enforced only in
+its subtype half (a `() throws E -> R` value cannot flow into a `() -> R` parameter). Its
+REGION half — a clause-free literal that captures a capability instead of declaring it is
+region-bound and must not escape — is unenforced today, and the `spawn` rule the prototype
+implements (empty capability stack inside a spawned block, now §7.1 base text) is a lexical
+stand-in for a region discipline the checker cannot express at this phase.
+
+**Consequence for the text.** §4.3 states that try-scoped capability regions are a required
+extension, and §5.5 offers the Modal-less degraded mode, but neither says that a
+post-type-check capability pass depends on modes being independent of captures — i.e. that
+the natural implementation strategy stops working exactly when Modal lands. Whoever
+implements this after Modal must either fold capability checking INTO type checking, or make
+mode assignment a fixpoint over (modes, captures) instead of a pipeline stage. That is a
+different compiler architecture, not an increment on this one, and the proposal should say so
+where it recommends the phase ordering (§6.2.3) and where it defers escape analysis (§4.3).
+
+**Cost of not saying it.** An implementer follows §6.2.3's ordering, ships the Modal-less
+tier, and discovers at Modal-integration time that the pass must be rebuilt — the single
+largest schedule risk in the design, currently invisible in the text.
+
 ### Disadvantages and design tensions (with prototype evidence)
 
 - **D-1 · The capturing-iterator ruling buys uniformity with three real costs.**
