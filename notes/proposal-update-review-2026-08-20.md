@@ -185,6 +185,30 @@ mode assignment a fixpoint over (modes, captures) instead of a pipeline stage. T
 different compiler architecture, not an increment on this one, and the proposal should say so
 where it recommends the phase ordering (§6.2.3) and where it defers escape analysis (§4.3).
 
+**Refinement (2026-08-20, after a close read of "Escape analysis" §4.3/§4.4 with the
+author's question in hand).** The proposal's path (b) contains more of the answer than the
+paragraphs above credit, and D-0's "different compiler architecture" conclusion narrows:
+
+- Modes are never *inferred from* captures — they are **capped by** them. Path (b): a
+  capability-capturing literal or instance "has its mode capped at `local?`", and Modal's
+  own rules make this the only possible consequence (no function object is `local!`;
+  capabilities are captured via a `local?` alias — open question 2 confirms the updated
+  Modal draft permits exactly this shape). Capping is binary and monotone, so the
+  post-Sema arrangement survives as **check-and-cap**: discover capability-capturing
+  values, lower them to `local?`, propagate region-boundness monotonically through
+  captures/stores, and re-validate the lowered values' uses (no use after the `try`, no
+  assignment outward). A third pipeline stage, not a fixpoint.
+- The one genuine break is **mode-dependent overloading**: Modal methods overload on the
+  receiver-mode specifier, so a cap can invalidate an overload Sema already chose.
+  Re-resolving would silently change which code runs; the sound design is to REJECT with
+  a capability-aware diagnostic. This is the residue of D-0 — a completeness loss the
+  proposal should state where it recommends the phase ordering.
+- The future-proofing hint is open question 1's resolution: specify (b) as an
+  implementation of (a)'s SEMANTICS, so evidence passing "changes the lowering, not which
+  programs type-check". That principle, plus the §4.4 list (forwarding conflict,
+  unwinding, `local?` invocation, `for-in` over `local!`), is the full remaining surface
+  to negotiate with the Modal authors.
+
 **Cost of not saying it.** An implementer follows §6.2.3's ordering, ships the Modal-less
 tier, and discovers at Modal-integration time that the pass must be rebuilt — the single
 largest schedule risk in the design, currently invisible in the text.
