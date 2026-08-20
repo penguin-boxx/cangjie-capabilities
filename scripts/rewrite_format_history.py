@@ -81,10 +81,15 @@ def main():
     for oid, ext in need.items():
         with open(f"{tmp}/blobs/{oid}{ext}", "w") as f:
             f.write(git("cat-file", "blob", oid, strip=False))
+    # SortIncludes is disabled for the rewrite: include ORDER is semantic, not whitespace.
+    # The branch's real HEAD carries one include-order deviation (src/Parse/ASTChecker.cpp,
+    # reordered by an early whole-file format run); normalizing it here would silently
+    # change HEAD's content and is out of scope for a formatting-churn cleanup.
     dr = subprocess.run(
         ["sg", "docker", "-c",
          f"docker run --rm -i --cpus=8 -v {tmp}:/fmt -w /fmt cangjie-dev "
-         "bash -c 'ls blobs | sed s,^,blobs/, | xargs -P 8 -n 32 clang-format-15 -i'"],
+         "bash -c 'ls blobs | sed s,^,blobs/, | "
+         "xargs -P 8 -n 32 clang-format-15 -i --sort-includes=0'"],
         capture_output=True, text=True)
     if dr.returncode != 0:
         sys.exit(f"container formatting failed:\n{dr.stderr}")
