@@ -51,7 +51,7 @@ From the workdir root:
    CheckedExceptions groups at their expected state; Parser/Sema LLT 3934/3934.
    For stdlib-touching tasks add: `./cj.py test llt --filter API/std -j 8` compared
    against notes/test-baseline.md's known exclusions.
-5. After each task: update notes/proposal-implementation-gaps.md (the inconsistency
+5. After each task: update notes/gap-analysis.md (the inconsistency
    ledger) — close items you fixed, add any new deviation with its rationale.
 6. FORBIDDEN, always: escape analysis of any kind (author ruling — waits for Modal);
    changing `TypeManager::GetFunctionTy`'s existing signature; touching mangling or
@@ -349,7 +349,7 @@ Steps:
    checked exception is clearly part of the contract, add local try/catch where the
    code already handles-and-continues; (b) anything requiring API judgment (public
    signature changes, wrap-vs-propagate decisions, §8.10-conversion-shaped patterns)
-   goes to notes/stdlib-migration-questions.md — one entry per item: location,
+   goes to notes/gap-analysis.md (Part I.5) — one entry per item: location,
    warning, options, recommendation. Do NOT make public-API judgment calls yourself.
 4. Whole stdlib in ONE pass (author ruling 13) — iterate until the warn build's
    chexc warning count is zero-or-documented.
@@ -411,7 +411,7 @@ verify red, commit+push them with a message explaining the red state. 3. Batch a
 edits. 4. `./cj.py fmt && ./cj.py fmt --check`. 5. Build (compiler; std only if
 stdlib changed). 6. Run: target group; ALL CheckedExceptions groups; ctest;
 Parser/Sema LLT; (+API groups when stdlib touched). 7. Iterate 3–6 (each iteration:
-fmt before build). 8. Update notes/proposal-implementation-gaps.md. 9. Commit
+fmt before build). 8. Update notes/gap-analysis.md. 9. Commit
 per-repo, review-sized, gate tallies in message. 10. Push `chexc` to `capabilities`
 on every touched repo. 11. Report: files+rationale, tallies, deviations (explicitly
 flag ANY spec interpretation you had to make — the author reads these).

@@ -430,7 +430,7 @@ void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCap
 
 ---
 
-### Group 7 â ledger (`/home/penguin/Projs/effects-research/cangjie/notes/proposal-implementation-gaps.md`)
+### Group 7 â ledger (`/home/penguin/Projs/effects-research/cangjie/notes/gap-analysis.md`)
 
 **E7.1 â line 42, row C4.** Currently: "`...` marker parse-rejected EVERYWHERE". **This is stale and must be corrected in this commit**, or a reviewer will reject E0.1 as unreachable dead code. `ParseThrowsClause`'s `diagnoseEllipsis` lambda (`src/Parse/ParseType.cpp:282-292`) sets `clause->hasEllipsis = true` whenever `isDeclClause`, and `ParseFuncBody` always passes `true` (`ParseDecl.cpp:2330`, `:2338`). Rewrite as: "`...` accepted on declarations (Â§6.2.5), rejected in functional types (Â§3.4) â as intended; **CLOSED**."
 

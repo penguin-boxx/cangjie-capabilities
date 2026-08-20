@@ -13,7 +13,7 @@ Rulings already in hand: D10 (conversion semantics), D11 (canonical nesting orde
 design (conversions → §8.10, "elaboration, not checking"; adapt → §8.11) with rule content
 verbatim unchanged — this plan's semantics remain valid, its section numbers do not.
 Execution priority drops below the base-design conformance items of
-notes/proposal-update-review-2026-08-20.md (unsafeAssumeHandled, local-fn and static
+notes/gap-analysis.md (unsafeAssumeHandled, local-fn and static
 inference, stdlib batch 3). T1.1 is revised by proposal §11.1: `cause` is set-once,
 `suppressed` is a read-only snapshot with `addSuppressed` (no longer deferred once the
 extension lands), the default printer learns both chains, and new exceptions adopt a
@@ -60,7 +60,7 @@ drift here would make nesting order disagree with exported metadata.
   including assumption-import demands (§5.2.2 says assumed requirements participate).
   §8.10.1's text says "call site"; §3.3's says "if no suitable capability is found …
   attempted as a last resort", which covers demands generally. Implemented uniformly
-  (a `throw` is the degenerate call); ratify as **Q5** in author-questions.md. Excluded:
+  (a `throw` is the degenerate call); ratify as **Q5** in gap-analysis.md (Part II.3). Excluded:
   captures demands (rule 6), effect demands (`Command` — `Convertible` is Exception-bounded),
   Error/unchecked (exempt before any miss).
 - **P-C2 · Check stays pure; rewrite is a separate stage.** During the reporting walk the

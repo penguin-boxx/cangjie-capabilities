@@ -172,7 +172,7 @@ Red-first tests committed under CheckedExceptions/captures/ (3 pos + 3 neg).
 6. **Stdlib warn-mode cleanup**: compile the stdlib with checking in WARN mode and fix all
    obvious exception-checking warnings (stdlib edits on cangjie_runtime chexc, pushed to
    the runtime GitHub repo); warnings needing design decisions go to a file for the user
-   (notes/stdlib-migration-questions.md). Consequences: M3 builds a warn-mode switch from
+   (notes/gap-analysis.md (Part I.5)). Consequences: M3 builds a warn-mode switch from
    day one (--chexc-warn: capability diagnostics as warnings, or per-package severity —
    decide in M3). Sequencing assumption (correct me if wrong): cleanup runs AFTER §6.3
    (else every internal runtime-error throw warns) and ideally after §6.2 inference
