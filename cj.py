@@ -225,7 +225,13 @@ def cmd_test(args):
 
 
 def cmd_fmt(args):
-    """clang-format files changed on the current branch of a repo (vs its base)."""
+    """clang-format only the LINES changed vs the base (not whole files).
+
+    Whole-file formatting reformats pre-existing upstream code and floods every commit
+    with unrelated hunks (see notes/format-history-rewrite-map.md for the cleanup this
+    forced). Ranges come from `git diff -U0`; a freshly added file is one big range, so
+    new code is still formatted in full.
+    """
     repo = args.repo
     base = args.base
     check = " --dry-run --Werror" if args.check else " -i"
@@ -233,8 +239,19 @@ def cmd_fmt(args):
 cd {WORK}/{repo}
 files=$(git diff --name-only {base} -- '*.cpp' '*.h' '*.inc' | grep -vE '^third_party/' || true)
 if [ -z "$files" ]; then echo "no C/C++ changes vs {base}"; exit 0; fi
-echo "$files"
-echo "$files" | xargs clang-format{check}
+for f in $files; do
+  ranges=$(git diff -U0 {base} -- "$f" | awk '
+    /^@@/ {{
+      plus = $3; sub(/^\+/, "", plus);
+      n = split(plus, a, ",");
+      start = a[1]; count = (n > 1 ? a[2] : 1);
+      if (count > 0) printf " --lines=%d:%d", start, start + count - 1;
+    }}')
+  if [ -n "$ranges" ]; then
+    echo "$f$ranges"
+    clang-format{check} $ranges "$f"
+  fi
+done
 echo FORMAT_OK
 """
     return docker_run(script, cwd=f"{WORK}/{repo}")
