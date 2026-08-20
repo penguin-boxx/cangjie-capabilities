@@ -97,6 +97,14 @@ should list nothing. The corrected pair differs on line 1 alone.
 
 ## D. Not yet implemented (roadmap ledger, no divergence intended)
 
+- PROPOSAL REVISION 2026-08-20 (see notes/proposal-update-review-2026-08-20.md): sections
+  renumbered (inference §6.2, unchecked §6.3; conversions §8.10 and adapt §8.11 are now
+  extensions outside the base design) — a citation-renumbering sweep over compiler
+  comments/diagnostics/tests/notes is owed. NEW base-design items: `unsafeAssumeHandled`
+  (§6.3.3); local functions inference-eligible (§6.2.1) — supersedes the hand clause on
+  fs walkFuncWrapper; statics infer uniformly (§6.2.1) — upgrades MF8 from restriction to
+  conformance gap; §8.9 capability-list polymorphism (roadmap, XL); §5.4 clause fixer now
+  proposal text; spawn-empty-stack now §7.1 base text (was author ruling).
 - §6.3 capability parameter inference (red tests committed; miss-handler seam ready)
 - §6.1 capability list aliases; §6.2 exception conversions; §6.5 adapter generation
 - §3.9 captures: IMPLEMENTED pre-Modal (A3/A4 describe the mode-dependent parts still deferred)

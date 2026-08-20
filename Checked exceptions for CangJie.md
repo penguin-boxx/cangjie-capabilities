@@ -1,1 +1,1 @@
-/home/penguin/Vault/Projects/Effect system/CJ Effect System Proj/Wiki/Checked exceptions for CangJie.md
+/home/penguin/Vault/Projects/CJ/CJ Effect System Proj/Wiki/Checked exceptions for CangJie.md

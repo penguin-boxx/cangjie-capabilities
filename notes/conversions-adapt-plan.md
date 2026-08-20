@@ -6,8 +6,19 @@ finished development, extensively tested, all-green suites (revised D13: tests w
 first and run red locally, committed only passing). Preserved red tests live in scratchpad
 `redtests/{conversions,adapt}/` and return with the implementations.
 
-Rulings already in hand: D10 (conversion semantics + settable `cause`; `suppressed`
-DEFERRED), D11 (canonical nesting order), D12 (adapt = synthesized capturing class).
+Rulings already in hand: D10 (conversion semantics), D11 (canonical nesting order), D12
+(adapt = synthesized capturing class).
+
+**STATUS UPDATE 2026-08-20:** the proposal revision moved both features out of the base
+design (conversions → §8.10, "elaboration, not checking"; adapt → §8.11) with rule content
+verbatim unchanged — this plan's semantics remain valid, its section numbers do not.
+Execution priority drops below the base-design conformance items of
+notes/proposal-update-review-2026-08-20.md (unsafeAssumeHandled, local-fn and static
+inference, stdlib batch 3). T1.1 is revised by proposal §11.1: `cause` is set-once,
+`suppressed` is a read-only snapshot with `addSuppressed` (no longer deferred once the
+extension lands), the default printer learns both chains, and new exceptions adopt a
+`(message, cause)` ctor convention — plus E-1 of the update review (the `+=` in §8.10.2
+is an erratum).
 
 ---
 

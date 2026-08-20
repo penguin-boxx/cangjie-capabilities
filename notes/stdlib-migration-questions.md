@@ -85,7 +85,15 @@ set, `ReflectException` stays checked as umbrella. Needs your call because it re
   **Recommendation:** unchecked, as framework machinery (consistent with the phase-1
   unittest re-parents).
 
-## Q-STD-5 · The io stream interfaces — the ecosystem-shaping decision
+## Q-STD-5 · The io stream interfaces — RULED 2026-08-20 (proposal §11.2, option 1)
+
+**Ruling in proposal text:** "streams declare `throws IOException`; in-memory
+implementations override with narrower lists per §3.8." Implementation = batch 3, item B6
+of notes/proposal-update-review-2026-08-20.md. Caveat E-4 there: `ContentFormatException`
+is not under `IOException`, so the ruling as written cannot cover std.io's own read paths
+until the author picks re-parent / declare-both / stay-off-interface.
+
+(Original question kept below for the record.)
 
 After three annotation rings, exactly six fs/io sites remain warning, and they are all
 interface-bound: `File.read/write/seek/close` (IOStream, Seekable, Resource) and
@@ -111,7 +119,15 @@ the contract every stream in the ecosystem implements. Options:
 **Recommendation: (1), but only as a deliberate ecosystem-wide decision, not a migration
 side effect.** Until ruled, the six sites stay warnings.
 
-## Q-STD-6 · `Iterator.next()` blocks throwing iteration entirely
+## Q-STD-6 · `Iterator.next()` — RULED 2026-08-20 (proposal §11.2, a third way)
+
+**Ruling:** not protocol polymorphism — "IO-backed iterators become capturing classes"
+(`File.lines()` captures `CanThrow<IOException>`, is `local!`); `for-in` over `local!`
+iterators is a Modal requirement to confirm (§4.4). Implementation = batch 3, item B7 of
+the update review; the ruling's costs are documented there as D-1 (construction-site
+obligations, §4.4 dependency, degraded-mode escape).
+
+(Original question kept below for the record.)
 
 `StringReader`'s two `next()` methods warn and cannot be annotated: `next()` comes from the
 core `Iterator<T>` protocol, which has no clause, so §3.8 forbids adding one in the

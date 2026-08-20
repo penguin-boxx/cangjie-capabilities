@@ -42,7 +42,7 @@ distance: a call in `b.cj` acquiring an obligation from a line in `a.cj`.
 obligations, and code that annotated every file keeps compiling. Narrowing package → file is a
 breaking change. This is why I took the conservative side.
 
-**Ask.** Please state which §5.2.2 means. The proposal currently does not say.
+**Ask.** Please state which §5.2.2 means. The proposal currently does not say — and the 2026-08-20 update's §9.4 ("the package is the unit of the analysis") sharpens the tension; see D-6 in notes/proposal-update-review-2026-08-20.md.
 
 ---
 
@@ -119,7 +119,7 @@ Better decided before the serialization milestone fixes what crosses package bou
 
 ---
 
-## Q5 §6.2.1 — Do conversions apply to `throw` expressions, or to calls only? · OPEN
+## Q5 §8.10.1 — Do conversions apply to `throw` expressions, or to calls only? · OPEN (extension-scoped since 2026-08-20: conversions moved out of the base design, so this is moot for v1 and applies within the §8.10 extension)
 
 **Planned (P-C1 in conversions-adapt-plan.md):** uniformly — call demands, `throw`-expression
 demands, and assumed demands all attempt conversion; captures and effect demands never do.

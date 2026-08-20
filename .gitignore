@@ -10,3 +10,9 @@ logs/
 .ccache/
 .serena/
 cases_without_level.txt
+
+# editor / clangd tooling (see tools/host_compile_commands.py)
+.vscode/
+.clangd
+.cache/
+cangjie_tools/
