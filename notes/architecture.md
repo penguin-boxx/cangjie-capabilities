@@ -251,6 +251,22 @@ both canonical escapes today and is exactly the half of path (b) that "Checking 
 Modal CangJie" promises. Cross-function escape stays Modal's. Proposed as the next compiler
 milestone; tracked as I4 in `gap-analysis.md`.
 
+**Update, 2026-08-21 evening.** The escape-analysis section was rewritten and now states the
+semantics normatively instead of sketching an extension: every capability has an **origin**
+(the region of the `try-catch` that introduced it), carriers have **origin sets** that unions
+of joins and stores propagate, and a **flow condition** says a value may flow only into
+storage whose lifetime is contained in every region of its set — with explicit rules for the
+try-region lifetime (closed before `catch`/`finally` run), forwarding of capability arguments,
+the call boundary (a `local?`/`local!` result inherits the union of the origins the call site
+supplied), and `spawn`. Phantom capabilities are now the adopted strategy, not the
+recommended one. This turns I4 from "design a check" into "implement rules 1–6", and two of
+them fall out of machinery the checker already has: the supply stack gives origins, and the
+demand walk gives the carrier set. The call-boundary rule is the one genuinely new piece —
+it is conservative by design (a region-bound result unrelated to the callee's requirements is
+tied to them all the same), so a first implementation can follow it literally. The
+cast rule of the ABI section is the other half of the same story and is implemented: a cast
+preserves origin sets rather than laundering them.
+
 ## Open implementation questions (resolve during detailed planning)
 
 1. Where CapLists live for decls: new field on FuncBody/FuncTy vs side table keyed by decl.

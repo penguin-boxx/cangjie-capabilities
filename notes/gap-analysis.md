@@ -5,9 +5,10 @@ the proposal from a stabilizable design. Two parts: what the **implementation** 
 what the **proposal** must change. A short third part keeps resolved items whose lessons
 still matter. Updated at every milestone gate.
 
-State: compiler `7ba425ae`, runtime `066a5ab`, tests `faca32ed9a`; proposal as revised
-2026-08-21 10:53 (vault `6d517618`); the implicit-capability-passing section audited
-rule-by-rule against the prototype on 2026-08-21 (34 probe programs, run not committed). Sections are cited by **title**, never number — the proposal renumbered
+State: runtime `066a5ab`; proposal as revised 2026-08-21 11:42 (vault `205123ba`); the
+implicit-capability-passing section was audited rule-by-rule against the prototype on
+2026-08-21 (34 probe programs), the gaps it found were fixed the same day, and the author
+revised the proposal in response — see Part III for both halves. Sections are cited by **title**, never number — the proposal renumbered
 twice in one day and numbers in notes rot (see "Documentation conventions" at the end).
 
 This document consolidates and replaces: `proposal-implementation-gaps.md` (ledger A–F),
@@ -28,15 +29,10 @@ in `conversions-adapt-plan.md`; the stdlib classification data stays in
 | I1 | **`unsafeAssumeHandled<E, R>(f)`** intrinsic is unimplemented | The escape hatch | S–M: caller demands nothing (capability-free FuncTy), the literal gets `E` from the expected type — only the intrinsic's own body needs an exemption; plus warn on unchecked `E` |
 | I2 | **Local function declarations never infer** — `CollectEligible` walks top-level and member decls only; the text now says local functions "are ordinary inference-eligible declarations with lists of their own" | Which declarations are inferred | M: extend collection + call-graph edges; then drop the hand clause on `fs/directory.cj walkFuncWrapper` |
 | I3 | **Non-private static class members require explicit clauses** (our MF8 narrowing); the text's uniform rule covers "instance and static methods" | Which declarations are inferred | M: needs the post-inference override re-check MF8 anticipated |
-| I4 | **No intra-function capability-scope check** — both canonical escapes of the regions section (assignment to an outer `local?` variable; capability leaving inside a lazy value via the `try` result) are ACCEPTED | Required extension: try-scoped capability regions; Checking without Modal CangJie | M: see Part II D-0 and `architecture.md` "status 2026-08-21" — implementable now as a third stage, mode-free |
+| I4 | **No intra-function capability-scope check** (rule 3 of the cast rules — a cast preserves a carrier's origin set — lands with this too) — both canonical escapes of the regions section (assignment to an outer `local?` variable; capability leaving inside a lazy value via the `try` result) are ACCEPTED | Required extension: try-scoped capability regions; Checking without Modal CangJie | M: see Part II D-0 and `architecture.md` "status 2026-08-21" — implementable now as a third stage, mode-free |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
-| I6 | `...` marker works on declarations (parsed, unions with inference, rejected in functional types); the missing half is the ban on **exported** declarations — `public func f() throws A, ...` is accepted | Interaction with an explicit `throws` | S |
 | I7 | CLI spells `--enable-checked-exceptions=warn`; text spells `--enable-checked-exceptions warn` | Standard library and toolchain impact | S, or keep `=` and note it |
-| I8 | **Multiple clauses on one declaration are rejected** — `throws A throws B, C` is a parse error (`duplicate 'throws' clause`), `captures A captures B` fails to parse at all. The text makes both legal and unions the entries (macro-appended clauses, conditional compilation) | Capability parameters in declarations rule 4; Capability capturing rule 1 | S–M: union in `ParseCapabilityClauses` / `ParseCapturesClause`, plus the `...`-idempotence and `throws () throws A` error of "Interaction with an explicit `throws`" |
-| I9 | **Finalizers escape the rules twice**: a `throws` clause on `~init` is accepted (the text bans clauses there), and `~init` is inference-eligible, so a finalizer silently acquires a list and may call checked-throwing code — the text says no capability scope encloses a finalizer, and the captures scope already excludes it (`CapabilityCheck.cpp` `hasReceiver`) | Capability parameters in declarations rule 1; Capability scopes; Capability capturing rule 3 | S: exclude finalizers in `IsEligible` + reject the clause in `ChkThrowsClauseOfFuncBody` |
-| I10 | **Runtime casts and type patterns read optimistically** — `x as (() -> Unit)` and `case g: () -> Unit` hand back a clause-free function, laundering a `throws` requirement out of the type system (a soundness hole, not just a gap); the invariant-position rejection is missing too | Reflection and runtime casts | M: pessimistic read (`throws Exception` in covariant positions) at cast/type-pattern targets + reject functional types in invariant positions |
-| I11 | Missing-capability diagnostic prints internal names: `Cannot find a capability for 'Class-AException' (of type 'CanThrow<Class-AException>')`. The model message spells the source name; other clause diagnostics already do (`unchecked exception type 'U' ...`) | Capability argument inference | S (same root as C7) |
-| I12 | `throws A, ()` / `throws ((), A)` — illegal per rule 3 — surface as `expected '->' in function type`; no dedicated diagnostic | Capability parameters in declarations rule 3 | S |
+| I13 | **Effective visibility is not computed** for inference eligibility: we test the declaration's own `public`/`protected` attribute, the text takes "the narrowest of the member's own modifier and those of its enclosing declarations", so a `public` member of a `private` class should be inferred and is not (and the `...` ban follows the same narrower rule) | Which declarations are inferred | S |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
 intrinsic's contravariance and non-denotability; clause placement on functions, instance and
@@ -44,8 +40,8 @@ static methods, primary and secondary constructors, interface and extension meth
 accessors, operators, `main` (and the bans on foreign/`CFunc`/whole-`prop` clauses); entries
 including nested parenthesized lists, aliases, `Exception`-bounded type parameters, `throws ()`
 as a whole list; requirement sites; all four scope introducers (including wildcard `catch (_)`
-as `Exception` and try-with-resources initializers) and all the exclusions except finalizers
-(I9) — `catch`/`finally` blocks, default parameter values against the callable's own scope,
+as `Exception` and try-with-resources initializers) and all the exclusions — finalizers,
+`catch`/`finally` blocks, default parameter values against the callable's own scope,
 instance field initializers against every constructor, top-level and static initializers;
 innermost-first resolution with no ambiguity error for several suitable entries in one scope;
 capabilities-are-not-values; functional-type syntax, subtyping, joins and meets; literal lists
@@ -54,7 +50,9 @@ capability lists out of type-argument inference); overloading by recursively era
 for functions, methods and constructors; override and redefinition including statics and
 generic substitution; capturing — construction-site obligation, alias entries, `where`-order,
 subclass opacity, statics and finalizers excluded from the captures scope, structs, primary-
-constructor ban, rejection on interfaces and enums; runtime erasure.
+constructor ban, rejection on interfaces and enums; runtime erasure. Plus, since the fixes of
+Part III: several clauses of one kind unioning, the empty-list rules, the finalizer exclusions,
+the `...` ban on exported declarations, and the pessimistic reading of cast targets.
 
 ## I.2 Deliberate pre-Modal deviations (author rulings; revisit at Modal integration)
 
@@ -75,7 +73,7 @@ constructor ban, rejection on interfaces and enums; runtime erasure.
 - **C9** LSP/cjd compiler instance no-ops the pass — no IDE diagnostics.
 - **C10** `--enable-chexc` alias retained beside the canonical flag.
 - **C11** ASTWriter exports generic/inline bodies without clause nodes (silent; no crash observed).
-- **C12** Six source comments still cite proposal numbers or removed notes files (`CompilerInstance.cpp:732`, `TypeChecker.cpp:223`, `CapabilityCheck.cpp:821/839/915`, `StructInheritanceChecker.cpp:1338`); one of them cites a rule that has since moved out of the section it names. The convention is no numbers in source.
+- **C7 (widened)** Capability diagnostics print `Class-X` for class types — `Cannot find a capability for 'Class-AException' (of type 'CanThrow<Class-AException>')`. Not ours to fix locally: stock `cjc` prints the same form everywhere (`expected 'Int64', found 'Class-A'`), so the model message in "Capability argument inference", which spells the source name, describes a compiler-wide diagnostic style CangJie does not have. Either the message is illustrative, or the type printer changes globally.
 - **MF2 half** Inferred lists are written into declaration types, but a requirement at *function-value formation* from a clause-bearing declaration is not demanded; the audit disproved the original premise — recheck against the final text.
 - **R6** 118 `GetFunctionTy` call sites do not visibly pass a capability list. Most are capability-free by construction; nothing but an audit separates them from latent drop sites (the reconstruction defect class, Part III).
 
@@ -140,24 +138,8 @@ Stdlib rulings still needed from the author (recommendations inline):
   ("Unchecked types in `throws` lists"), and the entry rule (rule 2) does not point at it.
   Likewise rule 4 (several clauses union) does not point at "Interaction with an explicit
   `throws`", where the interactions that actually constrain it live (`...` repeats
-  idempotently; `throws () throws A` is an error). Anyone implementing from the section
-  alone gets both wrong. Add the two cross-references.
-- **E-7** Moving package metadata out of "ABI and reflection" dropped its **canonical
-  normal form** rule (aliases expanded, duplicates and subsumed entries removed, remaining
-  antichain canonically ordered; diagnostics print the same form). "Package metadata" now
-  keeps only level, throw-closure summary and epoch, and nothing else states a recorded
-  form beyond "lists are semantically sets" plus alias transparency. The prototype
-  normalizes on the `.cjo` path (`NormalizeCapTys`) because the signature hash drives
-  incremental recompilation — without the rule, equivalent-but-differently-ordered lists
-  are a legal encoding and cause cross-toolchain rebuild churn. Restore one rule.
-- **E-8** "Not on finalizers, foreign functions, `CFunc` types, or variable initializers" —
-  an initializer is an expression, not a site a clause could attach to; the rule means
-  variable *declarations*.
-- **E-9** `throws ()` is stated twice with different force and the two are never related:
-  in a functional type it "denotes the same type as omitting the clause", on a declaration
-  it is authoritative-empty — it pins emptiness and disables inference ("Interaction with
-  an explicit `throws`"). Same spelling, same section neighbourhood, opposite defaults
-  against omission. One sentence in "Functional types" would close it.
+  idempotently; `throws () throws A` is an error). Both are implemented and both had to be
+  found by reading other sections. Add the two cross-references.
 
 ## II.2 Design tensions and disadvantages (with prototype evidence)
 
@@ -240,33 +222,6 @@ With conversions demoted, handle-convert-rethrow at every abstraction boundary i
 v1. A defensible trade (elaboration out of checking) — but state it as an accepted v1 cost
 in "Forcing a decision nobody can make" or "Migrating user code".
 
-### D-8 · The pessimistic cast rule is right, and much bigger than it reads
-
-"Reflection and runtime casts" closes a real hole — a `() throws E -> R` value laundered
-into a clause-free `() -> R` by `as` — by reading a functional cast target pessimistically
-(`throws Exception` in covariant positions) and rejecting functional types in invariant
-positions. Three things the text should say out loud:
-
-1. **CangJie has no declaration-site variance for user generics**, so "invariant position"
-   is not a corner: *every* generic target carrying a functional type argument is rejected —
-   `ArrayList<() -> R>`, `Option<() -> R>`, `Box<() -> R>`, an array of callbacks. Casting
-   a collection of functions out of `Any` stops working entirely. That may be the right
-   price, but it should be stated as a rule, not implied by one example.
-2. **The polarity rule is given by example** ("the target itself and function-typed
-   results" vs "parameter positions keep the empty list they spell"). A positional
-   statement — positions reachable only through result arrows are read as
-   `throws Exception`; positions reachable through a parameter arrow keep the written list
-   — settles the nested cases (`(() -> R) -> Unit`, `() -> (() -> R)`) that the example
-   does not.
-3. **Carriers are not mentioned.** An instance of a capturing class, or a literal that
-   captured a capability, is the other value that can carry evidence past a cast. The
-   answer is presumably that modes already stop it — a carrier is `local!` and cannot reach
-   an `Any`-typed slot — but the section reads as if functional types were the only
-   channel. One sentence, and the closure claim of "Capabilities are not values" becomes
-   checkable.
-
-Prototype status: unimplemented (Part I, I10); the cast currently launders requirements.
-
 ## II.3 Open readings to rule (each implemented conservatively; widening is backward-compatible)
 
 | # | Question | Implemented | Reversal cost |
@@ -277,8 +232,8 @@ Prototype status: unimplemented (Part I, I10); the cast currently launders requi
 | Q4 | Do assumptions reach function VALUES from the package? | no, resolved calls only | **moderate** — moves assumptions into type formation; decide before more boundary work |
 | Q5 | Do conversions apply to `throw` expressions or calls only? | planned uniform | moot for v1 (conversions are an extension) |
 | Q6 | Misplaced `@AssumeThrows` — error or ignored? | error | ratified (D15); flagging only |
-| Q7 | Where does a class's `captures` scope sit in the innermost-first search — inside or outside the method's own `throws` scope? | outside (the method's own clause wins) | low now, **material once regions land**: it decides whether a carrier is tied to the instance's region or to the caller's `try` |
 | Q8 | Try-with-resources: the initializers are inside the `try` scope, but what covers the **implicit `close()`**? It sits in `finally` position, which the same list excludes | nothing is demanded (the pass sees `resourceSpec`, never the implicit call) | none while `Resource.close()` is clause-free; annotating it would break every try-with-resources at once |
+| Q9 | A cast target whose type argument is a **type parameter** — `x as Box<T>` in generic code — passes the invariant-position rejection, since `T` is not a function type at the declaration; instantiating `T` with `() throws E -> R` then launders exactly what the rule closes. Reject such targets, accept the hole, or re-check at instantiation? | accepted (the check runs once, on the generic declaration) | the stdlib already casts to `Box<T>`/`ResourcePool<T>`, so rejecting is a real source break |
 
 ## II.4 Upstream compiler defects found on the way (not ours; worked around)
 
@@ -291,6 +246,29 @@ Prototype status: unimplemented (Part I, I10); the cast currently launders requi
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **The 2026-08-21 audit round, both halves.** The implicit-capability-passing section was
+  audited rule by rule against the prototype (34 probe programs, not by reading). Five
+  implementation gaps found and fixed the same day: several `throws`/`captures` clauses of one
+  declaration now union instead of being rejected as duplicates (with `throws () throws A`
+  refused and `...` idempotent across clauses); finalizers reject a clause and are no longer
+  inference-eligible, which had let a finalizer silently acquire a list and call
+  checked-throwing code; runtime casts and type patterns read functional targets
+  pessimistically, closing a laundering hole where `x as (() -> Unit)` handed back a
+  clause-free function; `...` is refused on exported declarations; `()` mixed with other
+  entries gets a dedicated diagnostic instead of "expected '->'". In the other direction the
+  author took four of the reported proposal defects: "variable initializers" became variable
+  declarations, `throws ()` gained the note that it means the empty list everywhere and only
+  omission varies, the captures scope is now stated to enclose a member's own clause scope
+  (which is what the prototype already did), and the cast rule was rewritten by position —
+  covariant positions receive `throws Exception`, contravariant ones keep the empty list,
+  parameters flip the polarity, tuples keep it, and a cast now explicitly preserves a
+  carrier's origin set. The polarity rewrite arrived while the first version was being
+  implemented; the implementation follows the final text. Package-metadata normalization was
+  answered by making it explicitly implementation design.
+  **Lesson:** probing beats reading — three of the five gaps (finalizer inference, the cast
+  hole, the `...` ban) were invisible in the source and only showed up as a program that
+  compiled when it should not have.
 
 - **The reconstruction defect class.** Capability lists survive only on paths built for them
   and vanish wherever pre-existing machinery rebuilds a type or declaration. Seven
