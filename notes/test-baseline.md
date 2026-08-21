@@ -43,14 +43,17 @@ deterministic — no load-flakes this time.
 |---|---|---|
 | 474 | `Tools/cjdb` | debugger not built — standing exclusion |
 | 216 | `compiler/CJMP` | Java interop not built — standing exclusion |
-| 126 | `API/stdx/syntax` (106), `API/std/libast` (12), macro round-trips (8) | **regression C13** — token ordinals shifted by the chexc token additions |
+| 8 | macro token round-trips (`Macro/annotation`, `Macro/expr`, `unittest` power-assert) | **C13(a)** — token ordinals shifted by the chexc token additions; fixed, the tokens were dead and are deleted |
+| 118 | `API/stdx/syntax` (106), `API/std/libast` (12) | **C13(b)** — stale `std.ast`/`stdx` FFI shims: built 08-15/08-14 against older compiler headers, node layouts have moved since; fixed by rebuilding std and stdx |
 | 6 | math DEPENDENCE helper, reflect→`cjpm`, socket timeout, signal, 2× Android NDK | environmental, as in the baseline above |
 | 2 | `API/stdx/net` | not investigated; presumed network |
 | 1 | `compiler/Driver/options/help/test_showall.cj` | golden `cjc -h` text — C14 |
 
 The lesson for gating: `compiler/`-only runs cannot see breaks in the AST-library ABI. Run
 `API/std/libast` and `API/stdx/syntax` (~20 min together) whenever the lexer, the AST node
-set, or the macro serialization changes.
+set, or the parser headers change — and rebuild std and stdx first, since their FFI shims are
+compiled against the compiler headers and a stale shim misreads the new frontend's nodes
+rather than failing to load.
 
 ## How to reproduce
 

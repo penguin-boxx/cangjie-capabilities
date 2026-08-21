@@ -42,6 +42,16 @@ def _docker_accessible():
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
     return _docker_ok
 
+# Component name -> repo directory, for `fmt` (which takes a repo, not a component).
+FMT_REPO_ALIASES = {
+    "compiler": "cangjie_compiler",
+    "runtime": "cangjie_runtime",
+    "std": "cangjie_runtime",
+    "stdx": "cangjie_stdx",
+    "test": "cangjie_test",
+    "tools": "cangjie_tools",
+}
+
 # Component -> directory with its build.py (container paths)
 COMPONENT_DIRS = {
     "compiler": f"{WORK}/cangjie_compiler",
@@ -232,10 +242,17 @@ def cmd_fmt(args):
     forced). Ranges come from `git diff -U0`; a freshly added file is one big range, so
     new code is still formatted in full.
     """
-    repo = args.repo
+    # Component names are what every other subcommand takes, and passing one here used to
+    # format nothing at all: the script would cd into a nonexistent '/work/compiler', land in
+    # the workdir repo, and report "no C/C++ changes".
+    repo = FMT_REPO_ALIASES.get(args.repo, args.repo)
     base = args.base
     check = " --dry-run --Werror" if args.check else " -i"
     script = f"""set -e
+if [ ! -d {WORK}/{repo}/.git ]; then
+  echo "error: {repo} is not a repo under the workdir" >&2
+  exit 2
+fi
 cd {WORK}/{repo}
 files=$(git diff --name-only {base} -- '*.cpp' '*.h' '*.inc' | grep -vE '^third_party/' || true)
 if [ -z "$files" ]; then echo "no C/C++ changes vs {base}"; exit 0; fi

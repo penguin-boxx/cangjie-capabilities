@@ -73,19 +73,26 @@ the `...` ban on exported declarations, and the pessimistic reading of cast targ
 - **C9** LSP/cjd compiler instance no-ops the pass — no IDE diagnostics.
 - **C10** `--enable-chexc` alias retained beside the canonical flag.
 - **C11** ASTWriter exports generic/inline bodies without clause nodes (silent; no crash observed).
-- **C13 — the token-ordinal regression (found 2026-08-21, fixing).** `THROWS` and `CAPTURES`
-  were added to the experimental block of `Tokens.inc`, which sits **before** the table's last
-  three entries, so `ILLEGAL`, `DOUBLE_COLON` and `FEATURES` shifted by +2 (`DOUBLE_COLON` is
-  165 where upstream and every golden say 163; `IDENTIFIER` at 137 is untouched). Everything
-  that mirrors the compiler's `TokenKind` ordinals breaks: **106** `API/stdx/syntax`, **12**
-  `API/std/libast`, and **8** macro token round-trips (4 `Macro/annotation`, 1 `Macro/expr`,
-  3 `unittest` power-assert `invalid_syntax`, whose macro-call echo vanishes from the
-  diagnostics) — 126 cases, all deterministic on retest at `-j4`. Introduced by the first
-  chexc milestone (`286d87c0`, `635c3ae7`), invisible to every gate since: those ran
-  `compiler/` only, and the damage is entirely in the AST library's view of the token table.
-  Fix: move both tokens to the very end of the table so no pre-existing ordinal moves.
-  **Lesson:** a table whose indices cross an ABI is append-only at the *end*, not at the end
-  of its section; and a gate that never runs the library suites cannot see library ABI breaks.
+- **C13 — two regressions behind one symptom (found 2026-08-21).** The full-tree run turned up
+  826 failures; 126 of them were ours, and they had *two* causes, not one.
+  *(a) Token ordinals — fixed.* `THROWS` and `CAPTURES` were added to the experimental block of
+  `Tokens.inc`, which sits before the table's last three entries, so `ILLEGAL`, `DOUBLE_COLON`
+  and `FEATURES` shifted by +2 (`DOUBLE_COLON` 165 where upstream and every golden say 163).
+  Macro token round-trips broke: 4 `Macro/annotation`, 1 `Macro/expr`, 3 `unittest` power-assert
+  `invalid_syntax`. Both tokens turned out to be **dead** — the lexer never produced them, since
+  the soft keywords are recognized by spelling (`SeeingChexcClause`) — so they were deleted
+  outright and the table is now byte-identical to upstream. All 8 cases pass.
+  *(b) SDK skew — the 118 remaining.* `API/stdx/syntax` (106) and `API/std/libast` (12) fail
+  because `std.ast`'s and `stdx.syntax`'s **native FFI shims** are compiled against the compiler
+  headers and were last built on 08-15 and 08-14, while our AST changes moved node layouts
+  (`ASTKind.inc` records the sizes: `Annotation` 512→520, `ClassDecl` 840→848, `FuncType`
+  488→512, `FuncBody` 448→464) and inserted `THROWS_CLAUSE` before `FUNC_BODY`. The stale shim
+  reads the new frontend's nodes at the old offsets and reports "parsing program error". Not a
+  code defect: the required rebuild cadence. Fix is to rebuild std and stdx after any change to
+  the AST node set or the parser headers.
+  **Lesson:** a table whose indices cross an ABI is append-only, and dead entries in it are not
+  free; and `compiler/`-only gates cannot see either failure mode — the library suites must run
+  whenever the lexer, the AST node set, or the parser headers change.
 - **C14** `compiler/Driver/options/help/test_showall.cj` compares `cjc -h` verbatim and now
   fails on the `--enable-chexc, --enable-checked-exceptions` line. Expected consequence of
   adding an option; the golden needs updating when the feature lands.
