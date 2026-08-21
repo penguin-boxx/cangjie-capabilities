@@ -5,10 +5,11 @@ the proposal from a stabilizable design. Two parts: what the **implementation** 
 what the **proposal** must change. A short third part keeps resolved items whose lessons
 still matter. Updated at every milestone gate.
 
-State: runtime `066a5ab`; proposal as revised 2026-08-21 11:42 (vault `205123ba`); the
-implicit-capability-passing section was audited rule-by-rule against the prototype on
-2026-08-21 (34 probe programs), the gaps it found were fixed the same day, and the author
-revised the proposal in response — see Part III for both halves. Sections are cited by **title**, never number — the proposal renumbered
+State: runtime `066a5ab`; proposal as revised 2026-08-21 13:40 (vault `c57c8771`). Sections 3
+through 6 have been audited rule by rule against the prototype — by probing, not by reading —
+the bounded gaps were fixed the same day, and the author revised the proposal in response;
+Part III has both halves. Effect requirements moved into the base design in this revision, so
+`performs` is no longer an extension the prototype runs ahead of the text. Sections are cited by **title**, never number — the proposal renumbered
 twice in one day and numbers in notes rot (see "Documentation conventions" at the end).
 
 This document consolidates and replaces: `proposal-implementation-gaps.md` (ledger A–F),
@@ -31,8 +32,14 @@ in `conversions-adapt-plan.md`; the stdlib classification data stays in
 | I3 | **Non-private static class members require explicit clauses** (our MF8 narrowing); the text's uniform rule covers "instance and static methods" | Which declarations are inferred | M: needs the post-inference override re-check MF8 anticipated |
 | I4 | **No intra-function capability-scope check** (rule 3 of the cast rules — a cast preserves a carrier's origin set — lands with this too) — both canonical escapes of the regions section (assignment to an outer `local?` variable; capability leaving inside a lazy value via the `try` result) are ACCEPTED | Required extension: try-scoped capability regions; Checking without Modal CangJie | M: see Part II D-0 and `architecture.md` "status 2026-08-21" — implementable now as a third stage, mode-free |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
-| I7 | CLI spells `--enable-checked-exceptions=warn`; text spells `--enable-checked-exceptions warn` | Standard library and toolchain impact | S, or keep `=` and note it |
-| I13 | **Effective visibility is not computed** for inference eligibility: we test the declaration's own `public`/`protected` attribute, the text takes "the narrowest of the member's own modifier and those of its enclosing declarations", so a `public` member of a `private` class should be inferred and is not (and the `...` ban follows the same narrower rule) | Which declarations are inferred | S |
+| I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the option is also used bare (`--enable-chexc`) by every test and script, and the generic option table has no "optional separate value" kind — making the value a separate token would either forbid the bare form or need new machinery in shared option code | Compatibility - checked and unchecked code | S once the option kinds allow it |
+| I14 | **The unreachable-`catch` diagnostic is unimplemented** — with it, the per-declaration Boolean throw-closure summary it rests on (statically-resolved calls only, no unchecked/reflective/FFI reach, no escape hatch), its propagation through the call graph, and its trusted-vs-verified distinction | The unreachable-`catch` diagnostic | M–L; the API-evolution argument depends on it, so it is part of the feature, not tooling |
+| I15 | **Package metadata records none of the three rules**: the level the package was compiled at, the throw-closure summary, the capability ABI epoch. Consumers therefore cannot tell verified lists from trusted ones | Package metadata | M (needs I14 for rule 2) |
+| I16 | Assumption imports reach **resolved calls only**; the text also imposes the assumed list on every functional type in a covariant position of the dependency's signatures — results, function-typed fields and properties, bound methods — so a callback obtained from an unchecked package carries the assumption when it is invoked later | Assumption imports | M: rewrites imported signature types, which the pass currently never touches |
+| I17 | An assumption import on a package that **records clauses of its own** must be rejected; we accept it (and have no recorded level to test against — see I15) | Assumption imports | S once I15 lands |
+| I13 | **Effective visibility is not computed** for inference eligibility: we test the declaration's own modifier, the text takes "the narrowest of the member's own modifier and those of its enclosing declarations", so a `public` method of an `internal` class should be inferred and is not. Implemented and reverted this round: it needs I3's post-inference override re-check first, or an inferred override silently requires more than the declaration it overrides | Which declarations are inferred | S once I3 lands |
+| I19 | **A capability list that mentions a type parameter is not substituted at a call site**, so any generic higher-order API with a clause is unusable: `func g<E>(fn: () throws E -> Unit) where E <: Exception` rejects `g<A>(thrower)` with *expected `() throws (Generics-Ti-1) -> Unit`, found `() throws (Class-A) -> Unit`* — the instantiation placeholder survives in the nested list. Same for `performs`, which is how it surfaced: it is what stops the upstream `Sema/effect/effect_perform_02.cj` from being annotated (see the note below). The declaration's *own* clause instantiates correctly; only a list nested inside a parameter's functional type does not, because the tyvar occurs nowhere in `typeArgs` and the constraint side deliberately ignores capability lists | Generics; First-class functions | M: the reconstruction defect class again — find which applier rebuilds the nested `FuncTy` without mapping its `capTys`; minimal repro kept in the scratchpad |
+| I18 | With checking **off**, clauses now parse and impose no obligations, but they still shape `FuncTy` identity — `() throws E -> R` and `() -> R` stay distinct types for subtyping and overloading — and are still written to the `.cjo`. The text says they impose no obligations and are not recorded | Compatibility - checked and unchecked code; Package metadata | S–M, but decide Q10 first |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
 intrinsic's contravariance and non-denotability; clause placement on functions, instance and
@@ -53,6 +60,22 @@ subclass opacity, statics and finalizers excluded from the captures scope, struc
 constructor ban, rejection on interfaces and enums; runtime erasure. Plus, since the fixes of
 Part III: several clauses of one kind unioning, the empty-list rules, the finalizer exclusions,
 the `...` ban on exported declarations, and the pessimistic reading of cast targets.
+
+**Audited and conforming in sections 5 and 6** (2026-08-21): the unchecked/checked split and the
+capability requirement at `throw` (including `Error` staying outside tracking and `catch` of an
+unchecked type); the unchecked-entry rule for concrete types, type parameters, and now their
+bounds; alias rules — recursive expansion, cycles rejected, nesting and flattening, single-type
+aliases, and a tuple not being an exception type (`f<(A, B)>()` is rejected by ordinary
+subtyping); which declarations are inferred, now by **effective** visibility; what is inferred
+(throws, calls, implicit invocations, default-parameter expressions, field initializers into
+every constructor, per-site discharge); the phase order; recursion by least fixpoint with
+polymorphic recursion rejected; the explicit-clause interaction — authoritative lists, `...`,
+`throws ()` — and the marker's bans; the effect rules of "Effect requirements" except the
+diagnostic (I14): no inference, no unchecked commands, no `main` clause, commands in `captures`,
+`performs` before `throws`, clause unions, and effects checked wherever handlers are enabled;
+assumption imports — package scope, alias expansion, union across imports, bare form, empty form
+rejected, participation in inference; and the boundary rules that fall out of functional-type
+subtyping.
 
 ## I.2 Deliberate pre-Modal deviations (author rulings; revisit at Modal integration)
 
@@ -156,6 +179,15 @@ Stdlib rulings still needed from the author (recommendations inline):
 - **E-3** `unsafeAssumeHandled`'s signature uses `@ local?` in a base-design std.core declaration, but the design explicitly supports a Modal-less tier whose toolchain cannot parse modes. State the degraded-mode surface form (modes stripped).
 - **E-4** The interface ruling ("streams declare `throws IOException`; implementations narrow") is inconsistent with `ContentFormatException <: Exception` — std.io's own read paths throw it and no `InputStream` implementation could under narrower-only overriding. Re-parent under `IOException` (recommended), declare both, or keep those APIs off the interface — say which.
 - **E-5** Two renumberings in one day left internal consistency intact (verified: no stale anchors) but make every external citation rot; consider freezing numbering or publishing stable anchors.
+- **E-13** "Capability capturing" rule 1 defines a `captures` entry list as taking entries
+  "exactly as a declaration `throws` clause does", and the entry rule admits exception types
+  only; that commands may also be captured reaches the reader solely through the blanket
+  substitution at the head of "Effect requirements". One clause in the capturing rule would make
+  it findable from where it is implemented.
+- **E-14** The state table's Modal-less row reads "partial: carrier escape unverified, within a
+  function included". The intended reading — the *unverified* part includes the within-a-function
+  case, as the Modal-less section states outright — is the opposite of the one a reader takes on
+  first pass ("within a function is included in the guarantee"). Reword.
 - **E-6** The rule-by-rule rewrite of "Capability parameters in declarations" dropped the
   unchecked-entry restriction (old rule 5) — it now lives only in "Unchecked exceptions"
   ("Unchecked types in `throws` lists"), and the entry rule (rule 2) does not point at it.
@@ -249,14 +281,11 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 
 | # | Question | Implemented | Reversal cost |
 |---|---|---|---|
-| Q1 | Assumption import per FILE or per PACKAGE? | per file (import is file-scoped syntax) | file→package widening is compatible; see D-6 |
-| Q2 | What does `@AssumeThrows[]` mean? | same as bare: `Exception` | low; could reject the form |
-| Q3 | Does an assumption cover subpackages? | no, exact package match | exact→prefix widening is compatible |
-| Q4 | Do assumptions reach function VALUES from the package? | no, resolved calls only | **moderate** — moves assumptions into type formation; decide before more boundary work |
 | Q5 | Do conversions apply to `throw` expressions or calls only? | planned uniform | moot for v1 (conversions are an extension) |
 | Q6 | Misplaced `@AssumeThrows` — error or ignored? | error | ratified (D15); flagging only |
 | Q8 | Try-with-resources: the initializers are inside the `try` scope, but what covers the **implicit `close()`**? It sits in `finally` position, which the same list excludes | nothing is demanded (the pass sees `resourceSpec`, never the implicit call) | none while `Resource.close()` is clause-free; annotating it would break every try-with-resources at once |
 | Q9 | A cast target whose type argument is a **type parameter** — `x as Box<T>` in generic code — passes the invariant-position rejection, since `T` is not a function type at the declaration; instantiating `T` with `() throws E -> R` then launders exactly what the rule closes. Reject such targets, accept the hole, or re-check at instantiation? | accepted (the check runs once, on the generic declaration) | the stdlib already casts to `Box<T>`/`ResourcePool<T>`, so rejecting is a real source break |
+| Q10 | With checking **off**, do clauses still shape types? The text says the grammar is unconditional and the clauses "impose no obligations and are not recorded" — but a clause today also makes `() throws E -> R` a distinct type from `() -> R`, which decides subtyping and overloading in code that is not being checked, and is what stops a throwing value crossing into unchecked code. Dropping it makes a package's types change when it flips the flag; keeping it makes an unchecked package feel obligations | kept: clauses shape types at every level (I18) | S–M either way, but it decides what "not recorded" means for the `.cjo` |
 
 ## II.4 Upstream compiler defects found on the way (not ours; worked around)
 
@@ -270,6 +299,27 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 
 # Part III — Resolved, kept for the lessons
 
+- **The 2026-08-21 audit round, sections 5 and 6.** Seven more gaps found by probing and fixed
+  the same day: the clause grammar is now unconditional (the flag decides what clauses *mean*,
+  not whether they parse); effect requirements are checked wherever the effect-handler feature is
+  enabled, at every exception level and always as errors, while exception requirements stay off
+  when checking is off; a `captures` clause may name commands; a type parameter whose own bound is
+  unchecked is rejected in a clause, since every instantiation of it would be; assumption imports
+  are package-scoped, not file-scoped; `@AssumeThrows[]` is rejected with a message of its own;
+  the `...` marker is rejected on a `performs` clause; and inference eligibility now uses
+  **effective** visibility, so a `public` method of an `internal` class is inferred (I13, closed).
+  The author's own answers landed in the same window: assumption scope (package), the empty
+  assumption list (rejected), assumptions reaching function values in covariant positions (they
+  do — now I16), and subpackage coverage (a separate import, which is what we implemented).
+  **Lesson:** three of the seven were invisible in our own tests because the tests only ever ran
+  the feature with its flag on and with exceptions in the picture — the axes a feature does *not*
+  vary in its test matrix are where its conformance gaps hide.
+  Two things did **not** land. Effective visibility was implemented and then reverted: with it, an
+  `internal` class's `public` override became inference-eligible, and the prototype has no
+  post-inference re-check of an inferred override against the declaration it overrides, so a
+  standing negative test stopped reporting — the same machinery the static-member rule waits on
+  (I3), now blocking I13 too. And checking effects on their own axis exposed I19, which is why one
+  upstream effects test now fails; the annotation that would fix it does not compile yet.
 - **The 2026-08-21 audit round, both halves.** The implicit-capability-passing section was
   audited rule by rule against the prototype (34 probe programs, not by reading). Five
   implementation gaps found and fixed the same day: several `throws`/`captures` clauses of one

@@ -49,6 +49,14 @@ deterministic — no load-flakes this time.
 | 2 | `API/stdx/net` | not investigated; presumed network |
 | 1 | `compiler/Driver/options/help/test_showall.cj` | golden `cjc -h` text — C14 |
 
+Since 2026-08-21 evening, one more **expected** failure: `compiler/Sema/effect/effect_perform_02.cj`.
+Effect requirements are now checked wherever the effect-handler feature is enabled (the proposal's
+own axis rule), and that upstream test passes a `perform`ing literal through a clause-free `() ->
+Int64` parameter — exactly what the capability discipline rejects, since the handler is installed
+dynamically and the type says nothing. The migration the design intends is to annotate the callback
+`fn: () performs T -> Int64`, which does not compile yet for an unrelated reason (I19: a capability
+list mentioning a type parameter is not substituted at the call site). Fix I19, then annotate.
+
 The lesson for gating: `compiler/`-only runs cannot see breaks in the AST-library ABI. Run
 `API/std/libast` and `API/stdx/syntax` (~20 min together) whenever the lexer, the AST node
 set, or the parser headers change — and rebuild std and stdx first, since their FFI shims are

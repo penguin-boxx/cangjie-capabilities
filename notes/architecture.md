@@ -251,6 +251,19 @@ both canonical escapes today and is exactly the half of path (b) that "Checking 
 Modal CangJie" promises. Cross-function escape stays Modal's. Proposed as the next compiler
 milestone; tracked as I4 in `gap-analysis.md`.
 
+**Update, 2026-08-21 evening — effects join the base design.** The revision that rewrote the
+escape-analysis section also moved effect requirements into the base design as a section of their
+own: `perform` needs a handler exactly as `throw` needs one, `CanPerform<C>` is the analogue of
+`CanThrow<E>`, and every rule of the capability-passing and escape sections applies under the
+substitution `throw`→`perform`, `catch`→`handle`, exception type→command type. That settles what
+had been our own extension (D17: one capability list carrying both kinds, kept apart by the
+disjoint `Exception`/`Command` roots) and adds one architectural constraint we did not have:
+effects live on the **effect-handler feature's axis**, not the exception-checking level, so the
+capability pass now runs whenever handlers are enabled — reporting effect misses as errors at
+every exception level, and exception misses not at all when checking is off. The four differences
+the text lists (no inference, no unchecked commands or escape hatch, no `performs` on `main`, no
+pessimistic cast reading for commands since there is no top command type) are all in place.
+
 **Update, 2026-08-21 evening.** The escape-analysis section was rewritten and now states the
 semantics normatively instead of sketching an extension: every capability has an **origin**
 (the region of the `try-catch` that introduced it), carriers have **origin sets** that unions
