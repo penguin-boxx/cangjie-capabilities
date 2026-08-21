@@ -32,6 +32,26 @@ Standing exclusions for development runs: `Tools/cjdb` (not built; also needs pe
 now in image), `compiler/CJMP`, and the 5 cases above. Stock `[EXCLUDE-TEST-CASE]` entries
 are inherited automatically by `./cj.py test llt --filter`.
 
+## Full-tree run 2026-08-21 (compiler `62c20e99`)
+
+First run of the **whole** tree (19,831 cases: `compiler/ Runtime/ API/ Tools/cjdb`) since the
+baseline; every gate in between covered the 3,934-case `compiler/` set only. Result:
+**19,006 pass, 825 fail**. All 135 non-excluded failures were retested at `-j4` and are
+deterministic — no load-flakes this time.
+
+| Count | Group | Disposition |
+|---|---|---|
+| 474 | `Tools/cjdb` | debugger not built — standing exclusion |
+| 216 | `compiler/CJMP` | Java interop not built — standing exclusion |
+| 126 | `API/stdx/syntax` (106), `API/std/libast` (12), macro round-trips (8) | **regression C13** — token ordinals shifted by the chexc token additions |
+| 6 | math DEPENDENCE helper, reflect→`cjpm`, socket timeout, signal, 2× Android NDK | environmental, as in the baseline above |
+| 2 | `API/stdx/net` | not investigated; presumed network |
+| 1 | `compiler/Driver/options/help/test_showall.cj` | golden `cjc -h` text — C14 |
+
+The lesson for gating: `compiler/`-only runs cannot see breaks in the AST-library ABI. Run
+`API/std/libast` and `API/stdx/syntax` (~20 min together) whenever the lexer, the AST node
+set, or the macro serialization changes.
+
 ## How to reproduce
 
 ```
