@@ -38,7 +38,7 @@ in `conversions-adapt-plan.md`; the stdlib classification data stays in
 | I16 | Assumption imports reach **resolved calls only**; the text also imposes the assumed list on every functional type in a covariant position of the dependency's signatures — results, function-typed fields and properties, bound methods — so a callback obtained from an unchecked package carries the assumption when it is invoked later | Assumption imports | M: rewrites imported signature types, which the pass currently never touches |
 | I17 | An assumption import on a package that **records clauses of its own** must be rejected; we accept it (and have no recorded level to test against — see I15) | Assumption imports | S once I15 lands |
 | I13 | **Effective visibility is not computed** for inference eligibility: we test the declaration's own modifier, the text takes "the narrowest of the member's own modifier and those of its enclosing declarations", so a `public` method of an `internal` class should be inferred and is not. Implemented and reverted this round: it needs I3's post-inference override re-check first, or an inferred override silently requires more than the declaration it overrides | Which declarations are inferred | S once I3 lands |
-| I19 | **A capability list that mentions a type parameter is not substituted at a call site**, so any generic higher-order API with a clause is unusable: `func g<E>(fn: () throws E -> Unit) where E <: Exception` rejects `g<A>(thrower)` with *expected `() throws (Generics-Ti-1) -> Unit`, found `() throws (Class-A) -> Unit`* — the instantiation placeholder survives in the nested list. Same for `performs`, which is how it surfaced: it is what stops the upstream `Sema/effect/effect_perform_02.cj` from being annotated (see the note below). The declaration's *own* clause instantiates correctly; only a list nested inside a parameter's functional type does not, because the tyvar occurs nowhere in `typeArgs` and the constraint side deliberately ignores capability lists | Generics; First-class functions | M: the reconstruction defect class again — find which applier rebuilds the nested `FuncTy` without mapping its `capTys`; minimal repro kept in the scratchpad |
+| I20 | **A type parameter that occurs only in capability lists is no longer a hard inference failure.** The generics section's example — `g(0, f)` against `func g<T, G>(x: Int64, block: () throws (T, G) -> Unit)` — is now accepted when nothing else in the signature depends on `T`/`G`; add a return type of `T` and it is rejected as before. The old rejection turned out to be accidental (the substitution filter dropped the mapping, which then failed a completeness check), so fixing I19 removed it. Arguably better behaviour — the call is harmless, since the argument's list never binds anything — but the text says error | Generics | S to restore explicitly, if the author wants the example's letter; see Q11 |
 | I18 | With checking **off**, clauses now parse and impose no obligations, but they still shape `FuncTy` identity — `() throws E -> R` and `() -> R` stay distinct types for subtyping and overloading — and are still written to the `.cjo`. The text says they impose no obligations and are not recorded | Compatibility - checked and unchecked code; Package metadata | S–M, but decide Q10 first |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
@@ -285,6 +285,7 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 | Q6 | Misplaced `@AssumeThrows` — error or ignored? | error | ratified (D15); flagging only |
 | Q8 | Try-with-resources: the initializers are inside the `try` scope, but what covers the **implicit `close()`**? It sits in `finally` position, which the same list excludes | nothing is demanded (the pass sees `resourceSpec`, never the implicit call) | none while `Resource.close()` is clause-free; annotating it would break every try-with-resources at once |
 | Q9 | A cast target whose type argument is a **type parameter** — `x as Box<T>` in generic code — passes the invariant-position rejection, since `T` is not a function type at the declaration; instantiating `T` with `() throws E -> R` then launders exactly what the rule closes. Reject such targets, accept the hole, or re-check at instantiation? | accepted (the check runs once, on the generic declaration) | the stdlib already casts to `Box<T>`/`ResourcePool<T>`, so rejecting is a real source break |
+| Q11 | Must a call be rejected when a type parameter occurs **only** in capability lists and nothing else depends on it? The generics section's example says error. After the substitution fix the prototype accepts it (nothing observable is unconstrained: the argument's list still binds nothing, and any other use of the parameter still fails). Restore the rejection, or soften the example? | accepted | S either way |
 | Q10 | With checking **off**, do clauses still shape types? The text says the grammar is unconditional and the clauses "impose no obligations and are not recorded" — but a clause today also makes `() throws E -> R` a distinct type from `() -> R`, which decides subtyping and overloading in code that is not being checked, and is what stops a throwing value crossing into unchecked code. Dropping it makes a package's types change when it flips the flag; keeping it makes an unchecked package feel obligations | kept: clauses shape types at every level (I18) | S–M either way, but it decides what "not recorded" means for the `.cjo` |
 
 ## II.4 Upstream compiler defects found on the way (not ours; worked around)
@@ -299,6 +300,21 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 
 # Part III — Resolved, kept for the lessons
 
+- **I19 closed, and what it was.** A capability list mentioning a type parameter was never
+  substituted at a call site, so every generic higher-order API with a clause was unusable
+  (`handling<A>(thrower)` against `func handling<E>(fn: () throws E -> Unit)` reported *expected
+  `() throws (Generics-Ti-1) -> Unit`*). The cause was one line in the substitution machinery:
+  `FilterUnusedMapping` decides which mappings are still needed with `Ty::GetGenericTyArgs`, which
+  walks `typeArgs` — and a capability list sits outside `typeArgs` by design, so a parameter
+  reachable only through one looked unused, its mapping was dropped, and the raw placeholder
+  survived into the checked type. Both overloads of the filter now use a walk that looks past
+  `typeArgs`; `Ty::GetGenericTyArgs` itself stays as it was, because it also feeds type-argument
+  inference, which must keep ignoring capability lists. That distinction cost a build: making the
+  AST-level walk capability-aware fixed the substitution and broke the no-inference rule in the
+  same step. Comparing lists also had to stop binding placeholders, which subtyping was happy to do.
+  **Lesson:** the same question — "which type parameters does this type use?" — has two different
+  right answers here, and the reconstruction defect class keeps producing them: capability lists are
+  invisible to anything that reasons over `typeArgs`, which is most of the type machinery.
 - **The 2026-08-22 round — the text moved, the prototype followed.** Three rules the prototype had
   implemented from earlier drafts were reversed by the revision, and one new rule arrived; all four
   are now in. *One clause per kind*: several `throws`/`captures` clauses no longer union — a second
