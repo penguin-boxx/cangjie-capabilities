@@ -5,7 +5,7 @@ the proposal from a stabilizable design. Two parts: what the **implementation** 
 what the **proposal** must change. A short third part keeps resolved items whose lessons
 still matter. Updated at every milestone gate.
 
-State: runtime `066a5ab`; proposal as revised 2026-08-21 13:40 (vault `c57c8771`). Sections 3
+State: runtime `066a5ab`; proposal as revised 2026-08-22 23:15 (vault `4fdb84bd`). Sections 3
 through 6 have been audited rule by rule against the prototype — by probing, not by reading —
 the bounded gaps were fixed the same day, and the author revised the proposal in response;
 Part III has both halves. Effect requirements moved into the base design in this revision, so
@@ -299,6 +299,25 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 
 # Part III — Resolved, kept for the lessons
 
+- **The 2026-08-22 round — the text moved, the prototype followed.** Three rules the prototype had
+  implemented from earlier drafts were reversed by the revision, and one new rule arrived; all four
+  are now in. *One clause per kind*: several `throws`/`captures` clauses no longer union — a second
+  is an error, like a second `where`, and with it went the `throws () throws A` error and the
+  `...` repeat rule (the macro argument for multiplicity does not survive: locating a clause to
+  append to is the same work as merging into it, and merging preserves the list's inference
+  status). *Casts*: a target containing a function type is now rejected in **any** position; the
+  polarity-based pessimistic reading we shipped the day before is an extension, and its code moves
+  there. *Capturing subclasses*: every subclass of a capturing class is itself capturing and must
+  cover the superclass's list — the opposite of the rule we had implemented and pinned with a
+  negative test, which is rewritten. *New*: `captures ()` (or a list that expands to nothing) means
+  not capturing, and a capturing type has no implicit default constructor.
+  The author also answered the two questions this round raised: a subclass cannot discharge the
+  superclass's requirement locally — `super` must be a constructor's first expression, and even
+  spelled otherwise the instance would be bound to a handler that dies with the constructor — and
+  the property/accessor clause-overload sentence was withdrawn.
+  **Lesson:** when the text is moving daily, "implemented" is not a resting state; the audit has to
+  re-read the section it just conformed to. Two of the four reversals cost less to undo than they
+  cost to write, because the tests named the rule rather than the behaviour.
 - **The 2026-08-21 audit round, sections 5 and 6.** Seven more gaps found by probing and fixed
   the same day: the clause grammar is now unconditional (the flag decides what clauses *mean*,
   not whether they parse); effect requirements are checked wherever the effect-handler feature is
@@ -326,9 +345,9 @@ in "Forcing a decision nobody can make" or "Migrating user code".
   declaration now union instead of being rejected as duplicates (with `throws () throws A`
   refused and `...` idempotent across clauses); finalizers reject a clause and are no longer
   inference-eligible, which had let a finalizer silently acquire a list and call
-  checked-throwing code; runtime casts and type patterns read functional targets
-  pessimistically, closing a laundering hole where `x as (() -> Unit)` handed back a
-  clause-free function; `...` is refused on exported declarations; `()` mixed with other
+  checked-throwing code; runtime casts and type patterns stopped handing back a
+  clause-free function for `x as (() -> Unit)` -- first by reading the target pessimistically, and,
+  once the base design was narrowed to rejection, by rejecting it; `...` is refused on exported declarations; `()` mixed with other
   entries gets a dedicated diagnostic instead of "expected '->'". In the other direction the
   author took four of the reported proposal defects: "variable initializers" became variable
   declarations, `throws ()` gained the note that it means the empty list everywhere and only
