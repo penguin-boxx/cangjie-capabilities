@@ -32,7 +32,7 @@ rebuilds are called out because they are the expensive part.
 | ~~A — the escape hatch + the cheap new rules~~ | **done 2026-08-23** (compiler `d06554d2`, `39ac1dc4`): I1, I21–I25 landed, std green at `warn`, 137/137 in the two targeted groups. The std rebuild cost a defect of its own — see Part III, "The `warn`-level link failure" | — | — |
 | ~~B — metadata~~ | **done 2026-08-23** (compiler `236ff253`): the `.cjo` records the checking level, whether effect handlers were on, and whether it carries capability metadata at all; an assumption over a package verified at `error` is rejected (I17), as is an effect-enabled package with no metadata | — | — |
 | ~~C — assumption imports on function values~~ | **done 2026-08-23** (compiler `4b319b12`): I16, with the artifact that the obligation falls where the value crosses the boundary rather than at the eventual call | — | — |
-| ~~D — capability regions~~ | **out of scope (author, 2026-08-23)**: capability regions are a requirement of Modal CangJie, not of this tier. I4 stays recorded as a gap against the text, unimplemented by decision | — | — |
+| ~~D — capability regions~~ | **out of scope (author, 2026-08-23)**: "do not implement anything from section 4, it is the requirement for Modal CangJie" — read as the proposal's *Capability regions*, which is what I4 tracks and what needs the Modal machinery. If the intent was this document's I.4 (production readiness), say so and that list stops too; nothing from either has been implemented since | — | — |
 | **E — rulings** | I18/Q10 (clauses with checking off), I20/Q11 (the generics example), the stdlib re-parenting of `ContentFormatException` (E-4) | — | **yes**, all three |
 | deferred | I5 (Modal), I7 (deliberate), I14 (now an extension, I.7) | — | — |
 
@@ -44,8 +44,8 @@ rebuilds are called out because they are the expensive part.
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
 | I18 | With checking **off**, clauses parse and impose nothing, but still shape `FuncTy` identity and are still written to the `.cjo`; the text says "not recorded" | Compatibility; Package metadata | S–M, after Q10 |
+| I28 | **Incremental compilation does not propagate a changed *inferred* list.** A body edit that gives a declaration a new list leaves unchanged callers in the same package served from the cache and never re-checked, so the build is silent where a full build errors (probe: `risky()` gains a `throw`; the caller with an explicit empty clause should be an error and is not). Declared clauses are hashed in both directions and are fine; only non-exported declarations are inferred, so the exposure is exactly intra-package. The cheap fix — fold the body hash into the spreading hash — was tried and reverted: it costs 185 `compiler/IncrementalCompilation` failures (Part III). The sound one persists the inferred lists in the incremental cache and compares after inference | Capability parameter inference (the text does not mention incremental builds) | M–L |
 | I20 | The generics example (`g(0, f)`, parameters only in the argument's list) now compiles; the text says error | Generics | S after Q11 |
-| I28 | **Incremental compilation does not propagate a changed *inferred* list.** A body edit that gives a declaration a new capability list leaves unchanged callers in the same package served from the cache and never re-checked, so the build is silent where a full build errors (probe: `risky()` gains a `throw`; the caller with an explicit empty clause should be an error and is not). Declared clauses are hashed in both directions and are fine; only exported declarations are excluded from inference, so the exposure is exactly intra-package. Fix: either fold the body hash into the spreading hash for an inference-eligible declaration (conservative, recompiles more), or persist the inferred lists in the cache and force a re-check when they differ (precise) | Capability parameter inference (the text does not mention incremental builds) | M |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
 intrinsic's contravariance and non-denotability; clause placement on functions, instance and
@@ -352,6 +352,38 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **I28 attempted and reverted: coarse spreading is not affordable.** An incremental build hashes
+  each declaration into a signature hash (which spreads to dependents) and a body hash (which does
+  not). Inference breaks that split: for a declaration with no `throws` clause that does not leave
+  the module, the list every caller must satisfy comes from the body, so a body edit *is* a
+  signature change. Folding the body hash into `SigHash` for exactly those declarations fixes the
+  hole — the probe's silent incremental build starts reporting — and costs **185 failures in
+  `compiler/IncrementalCompilation`**, which asserts precisely which declarations a given edit
+  recompiles. That price is not payable: those tests encode the upstream contract of the feature.
+  Reverted. What the attempt establishes is that the fix cannot live in the hash alone, because the
+  hash is computed at `AST_DIFF`, *before* Sema, and the new inferred list is not known until
+  after. A sound design has to close the loop: persist each package's inferred lists in the
+  incremental cache, and after inference compare them against the cached ones — when one has
+  changed, its dependents have been checked against a stale contract and the package needs
+  another pass. Nothing cheaper is sound, because the change also propagates through calls: a
+  caller whose own body did not change can still acquire a different inferred list.
+  **Lesson:** a feature that derives part of a signature from a body cannot be bolted onto a
+  hash-based invalidation scheme; the invalidation has to run where the derivation runs.
+  The reproducer, kept here because it cannot be kept as a test while the hole is open (a test
+  that passes only against the reverted fix would encode the bug):
+
+  ```cangjie
+  // build 1, then replace the body of 'risky' with 'throw IncrExc()' and build again
+  package p
+  class IncrExc <: Exception {}
+  func risky(): Unit { () }                 // no clause: the list is inferred from this body
+  public func caller(): Unit throws () { risky() }   // untouched, and must be re-checked
+  main(): Int64 { caller(); return 0 }
+  ```
+
+  Both builds with `--incremental-compile --enable-checked-exceptions`: the second must report
+  *Cannot find a capability for 'Class-IncrExc'*, as a full build of the same source does.
 
 - **The 2026-08-23 evening round: macros, package metadata, assumption reach, and two fixes in
   std.deriving.** The author ruled that a macro may declare what it throws, and that capability
