@@ -5,7 +5,8 @@ the proposal from a stabilizable design. Two parts: what the **implementation** 
 what the **proposal** must change. A short third part keeps resolved items whose lessons
 still matter. Updated at every milestone gate.
 
-State: compiler `39ac1dc4`, runtime `8203c79` (std.core escape hatch), tests `b0a52c1c0d`; proposal as revised 2026-08-23 (vault `7b031dab` + uncommitted
+State: compiler `b71b1034`, runtime `8203c79` (std.core escape hatch), stdx `b8740ba` (leaf
+annotations, local only — no capabilities remote for stdx), tests `61939383c5`; proposal as revised 2026-08-23 (vault `7b031dab` + uncommitted
 edits: level-aware cast rejection, capturing-type cast targets, `resume` as requirement and flow
 sites, effects-reveal deferred, multiplatform matching, glossary). Sections 3, 5 and 6 re-audited
 against the prototype on 2026-08-23 by probing; the plan to close what is left is I.0.
@@ -47,6 +48,9 @@ rebuilds are called out because they are the expensive part.
 | I17 | An assumption import on a package that **records clauses of its own** must be rejected; we accept it | Assumption imports | S after I15 |
 | I18 | With checking **off**, clauses parse and impose nothing, but still shape `FuncTy` identity and are still written to the `.cjo`; the text says "not recorded" | Compatibility; Package metadata | S–M, after Q10 |
 | I20 | The generics example (`g(0, f)`, parameters only in the argument's list) now compiles; the text says error | Generics | S after Q11 |
+| I26 | **A `macro` declaration cannot carry a clause at all**: `public macro Actor(...): Tokens throws MacroException { ... }` is a parse error (*expected declaration, found 'throws'*), yet every macro in stdx throws `MacroException` and documents it. Either macros carry clauses like any other function, or the text has to say that expansion-time code is outside the checking — it says neither | Clauses on declarations (silent on macros) | S for the parser; the ruling is the real question |
+| I27 | **Macro-expanded code demands capabilities its author cannot declare**: `@Derive[ToString, Hashable, Equatable]` generates members that require `CanThrow<Exception>`, and the diagnostic lands on the `@Derive` line, where no clause can be written. The generated members need clauses of their own (or none of the requirement) — a macro-authoring rule the text does not have | Clauses on declarations; the macro story is absent | M: needs a rule first |
+| I28 | **Incremental compilation does not propagate a changed *inferred* list.** A body edit that gives a declaration a new capability list leaves unchanged callers in the same package served from the cache and never re-checked, so the build is silent where a full build errors (probe: `risky()` gains a `throw`; the caller with an explicit empty clause should be an error and is not). Declared clauses are hashed in both directions and are fine; only exported declarations are excluded from inference, so the exposure is exactly intra-package. Fix: either fold the body hash into the spreading hash for an inference-eligible declaration (conservative, recompiles more), or persist the inferred lists in the cache and force a re-check when they differ (precise) | Capability parameter inference (the text does not mention incremental builds) | M |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
 intrinsic's contravariance and non-denotability; clause placement on functions, instance and
@@ -173,6 +177,17 @@ Stdlib rulings still needed from the author (recommendations inline):
 - **Q-STD-7 unittest acquires 23 fs obligations** from batch 1: recommend catch-and-wrap internally rather than leaking `FSException` into the test framework's API.
 - The 23 UNCERTAIN classes of `stdlib-exception-inventory.md`.
 
+
+**stdx (phase 3), 2026-08-23.** stdx now builds at `warn` (`cj.py build stdx` passes the same
+flags as std). Its capability surface — hidden in the normal build by `-Woff=all` in stdx's own
+CMake, so it has to be swept package by package with the `build.ninja` commands minus that flag —
+is 1,386 diagnostics over 25 packages: `stdx.syntax` 420, `stdx.chir` 226, `stdx.net.http` 170,
+`stdx.crypto.keys` 97, `stdx.compress.tar` 85, `stdx.crypto.digest` 78, `stdx.crypto.x509` 78,
+`stdx.crypto.crypto` 46, `stdx.net.tls` 32, then a tail of twenty. Annotated so far: compress,
+crypto.common, net.tls.common, actors, string_intern, unittest.data, effect (all now silent).
+Blocked on rulings: `Iterator.next` implementations (E-4), `Resource.close` overrides (E-16), the
+`CryptoKit` interface (its clauses must land with every implementation at once), and I26/I27
+(macros).
 ## I.6 Tooling now called for by the text
 
 - **Clause-materializing fixer** (Migrating user code): inference over the whole package including exported declarations, written back as clauses. `CollectingMissHandler` already computes the lists; the new part is source rewriting. **Caveat D-4 applies**: public-surface output is an API-design proposal, not a diff to rubber-stamp.
@@ -323,6 +338,34 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **stdx at `warn`, and the ICE it uncovered.** Building stdx with checking on died with an
+  internal error — *begin of range is zero* — in `stdx.net.http`. A property accessor declared
+  without a body (in an interface, or a field-like property) is generated by the compiler: it has
+  no position and its identifier is synthesized (`$valueget`). Both override-coverage checks
+  attached their diagnostic to it, and a zero range is an assertion failure in the diagnostic
+  engine. They now resolve what to blame first — the property for an accessor, the enclosing
+  declaration failing that, nothing if neither is in source — and name the property. The same
+  applies to any declaration rebuilt from a `.cjo`, which has no position either.
+  With that fixed, stdx builds green at `warn`. Its surface, which `-Woff=all` in stdx's own build
+  hides, is **1,386 capability diagnostics across 25 packages** — 1,304 missing capabilities and 82
+  override-coverage violations; the largest are `stdx.syntax` (420), `stdx.chir` (226) and
+  `stdx.net.http` (170). Six leaf packages are now annotated and report nothing at all.
+  **Lesson:** annotation propagates, so the surface grows before it shrinks — annotating the six
+  leaves moved requirements outward and took the total to 1,401. A migration ring has to be
+  completed package by package, dependents included, or it looks like a regression at every
+  intermediate step. Two things the migration cannot express at all became I26 and I27: a `macro`
+  declaration cannot carry a clause, and `@Derive`-generated members demand capabilities at a line
+  where no clause can be written.
+- **Incremental compilation and inferred lists (I28).** Declared clauses survive the cache in both
+  directions — four tests pin that. Inference does not: a body edit that changes an inferred list
+  leaves unchanged callers in the same package served from the cache, so the incremental build is
+  silent where the full build reports the missing capability. Only non-exported declarations are
+  inferred, which bounds the damage to one package but does not remove it: inside a package, a
+  body is part of the API surface once inference exists, and the hashing does not know that.
+  **Lesson:** every feature that derives a signature from a body has to be handed to the
+  incremental machinery explicitly; the hash is a contract about what a change can affect, and
+  inference silently widened it.
 
 - **The `warn`-level link failure, and the rule it taught.** The first std build to get past
   compilation at `warn` failed at *link*, with ~116 undefined references to erased interface
