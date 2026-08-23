@@ -184,7 +184,9 @@ CMake, so it has to be swept package by package with the `build.ninja` commands 
 is 1,386 diagnostics over 25 packages: `stdx.syntax` 420, `stdx.chir` 226, `stdx.net.http` 170,
 `stdx.crypto.keys` 97, `stdx.compress.tar` 85, `stdx.crypto.digest` 78, `stdx.crypto.x509` 78,
 `stdx.crypto.crypto` 46, `stdx.net.tls` 32, then a tail of twenty. Annotated so far: compress,
-crypto.common, net.tls.common, actors, string_intern, unittest.data, effect (all now silent).
+crypto.common, net.tls.common, actors, string_intern (silent now), plus unittest.data and effect,
+which are down to one diagnostic each and both of those are blocked on rulings (`Iterator.next`
+for the former, a `tryHandle` override for the latter). 20 packages still report.
 Blocked on rulings: `Iterator.next` implementations (E-4), `Resource.close` overrides (E-16), the
 `CryptoKit` interface (its clauses must land with every implementation at once), and I26/I27
 (macros).
