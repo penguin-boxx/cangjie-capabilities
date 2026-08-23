@@ -181,19 +181,21 @@ Stdlib rulings still needed from the author (recommendations inline):
 - The 23 UNCERTAIN classes of `stdlib-exception-inventory.md`.
 
 
-**stdx (phase 3), 2026-08-23.** stdx now builds at `warn` (`cj.py build stdx` passes the same
-flags as std). Its capability surface — hidden in the normal build by `-Woff=all` in stdx's own
-CMake, so it has to be swept package by package with the `build.ninja` commands minus that flag —
-is 1,386 diagnostics over 25 packages: `stdx.syntax` 420, `stdx.chir` 226, `stdx.net.http` 170,
-`stdx.crypto.keys` 97, `stdx.compress.tar` 85, `stdx.crypto.digest` 78, `stdx.crypto.x509` 78,
-`stdx.crypto.crypto` 46, `stdx.net.tls` 32, then a tail of twenty. Annotated so far: compress,
-crypto.common, net.tls.common, actors, string_intern (silent now), plus unittest.data and effect,
-which are down to one diagnostic each and both of those are blocked on rulings (`Iterator.next`
-for the former, a `tryHandle` override for the latter). 20 packages still report.
-Blocked on rulings: `Iterator.next` implementations (E-4), `Resource.close` overrides (E-16), the
-`CryptoKit` interface (its clauses must land with every implementation at once), and I26/I27
-(macros).
-## I.6 Tooling now called for by the text
+**stdx (phase 3), 2026-08-23.** stdx builds at `warn` (`cj.py build stdx` passes the same flags as
+std). Its capability surface is hidden in the normal build by `-Woff=all` in stdx's own CMake, so
+it has to be swept package by package with the `build.ninja` commands minus that flag. Started at
+**1,408 diagnostics over 25 packages**; now **1,371 over 16**. Clean: compress, crypto.common,
+net.tls.common, actors, actors.macros, plugin, string_intern, encoding.url, serialization. Down to
+one ruling-blocked case each: unittest.data (`Iterator.next`, E-4) and effect (a `tryHandle`
+override). Remaining, largest first: syntax 420, chir 229, net.http 191, crypto.keys 111,
+crypto.x509 87, compress.tar 87, crypto.digest 78, crypto.crypto 46, net.tls 32, encoding.json 28,
+fuzz 27, compress.zlib 26.
+
+Two things learned while annotating, both general: a clause on a leaf **raises** the count in its
+dependents before the ring reaches them, so intermediate totals go up; and an interface member's
+clause is the one that matters — implementations may narrow it to nothing, so only those that
+forward through the interface need to restate it (annotating all of them, as a first pass did in
+`serialization`, imposes obligations on call sites that have none).
 
 - **Clause-materializing fixer** (Migrating user code): inference over the whole package including exported declarations, written back as clauses. `CollectingMissHandler` already computes the lists; the new part is source rewriting. **Caveat D-4 applies**: public-surface output is an API-design proposal, not a diff to rubber-stamp.
 - **Lints** (TODO section): redundant `throws` entry; undischarged capability (suppressible on public APIs).
