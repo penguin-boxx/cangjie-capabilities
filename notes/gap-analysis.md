@@ -6,7 +6,7 @@ what the **proposal** must change. A short third part keeps resolved items whose
 still matter. Updated at every milestone gate.
 
 State: compiler `b71b1034`, runtime `8203c79` (std.core escape hatch), stdx `b8740ba` (leaf
-annotations, local only — no capabilities remote for stdx), tests `61939383c5`; proposal as revised 2026-08-23 (vault `7b031dab` + uncommitted
+annotations), tests `61939383c5`; proposal as revised 2026-08-23 (vault `7b031dab` + uncommitted
 edits: level-aware cast rejection, capturing-type cast targets, `resume` as requirement and flow
 sites, effects-reveal deferred, multiplatform matching, glossary). Sections 3, 5 and 6 re-audited
 against the prototype on 2026-08-23 by probing; the plan to close what is left is I.0.
