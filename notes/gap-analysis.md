@@ -141,9 +141,7 @@ an error" asks for.
   **Lesson:** a table whose indices cross an ABI is append-only, and dead entries in it are not
   free; and `compiler/`-only gates cannot see either failure mode — the library suites must run
   whenever the lexer, the AST node set, or the parser headers change.
-- **C14** `compiler/Driver/options/help/test_showall.cj` compares `cjc -h` verbatim and now
-  fails on the `--enable-chexc, --enable-checked-exceptions` line. Expected consequence of
-  adding an option; the golden needs updating when the feature lands.
+- **C14** *(closed 2026-08-23: the golden lists `--enable-chexc`, its two severities and the `chexc` warning group; `compiler/Driver/options/help` is 5/5.)*
 - **C7 (widened)** Capability diagnostics print `Class-X` for class types — `Cannot find a capability for 'Class-AException' (of type 'CanThrow<Class-AException>')`. Not ours to fix locally: stock `cjc` prints the same form everywhere (`expected 'Int64', found 'Class-A'`), so the model message in "Capability argument inference", which spells the source name, describes a compiler-wide diagnostic style CangJie does not have. Either the message is illustrative, or the type printer changes globally.
 - **MF2 half** Inferred lists are written into declaration types, but a requirement at *function-value formation* from a clause-bearing declaration is not demanded; the audit disproved the original premise — recheck against the final text.
 - **R6** 118 `GetFunctionTy` call sites do not visibly pass a capability list. Most are capability-free by construction; nothing but an audit separates them from latent drop sites (the reconstruction defect class, Part III).

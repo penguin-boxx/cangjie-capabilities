@@ -47,7 +47,7 @@ deterministic — no load-flakes this time.
 | 118 | `API/stdx/syntax` (106), `API/std/libast` (12) | **C13(b)** — stale `std.ast`/`stdx` FFI shims: built 08-15/08-14 against older compiler headers, node layouts have moved since; fixed by rebuilding std and stdx |
 | 6 | math DEPENDENCE helper, reflect→`cjpm`, socket timeout, signal, 2× Android NDK | environmental, as in the baseline above |
 | 2 | `API/stdx/net` | not investigated; presumed network |
-| 1 | `compiler/Driver/options/help/test_showall.cj` | golden `cjc -h` text — C14 |
+| ~~1~~ | ~~`compiler/Driver/options/help/test_showall.cj`~~ | *fixed 2026-08-23: the golden lists `--enable-chexc`, its severities and the `chexc` warning group; the group is 5/5* |
 
 Since 2026-08-21 evening, one more **expected** failure: `compiler/Sema/effect/effect_perform_02.cj`.
 Effect requirements are now checked wherever the effect-handler feature is enabled (the proposal's
@@ -80,6 +80,11 @@ Two traps this round cost time, both worth keeping:
   loop instead of a 25-minute one), take its `COMMAND` line from
   `cangjie_runtime/stdlib/build/build/build.ninja`, delete the target `.a`, and run it under
   `./cj.py sh` with `envsetup.sh` sourced.
+
+**`compiler/IncrementalCompilation`: 1,944 cases, all green** (2026-08-23). Worth knowing before
+touching `ASTHasher`: the suite asserts precisely which declarations a given edit recompiles, so a
+change to what feeds `DeclHash.sig` shows up there in the hundreds — 185 failures for one such
+experiment (gap-analysis I28). Run it whenever the hashing changes; it takes about ten minutes.
 
 ## How to reproduce
 
