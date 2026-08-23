@@ -63,13 +63,23 @@ set, or the parser headers change — and rebuild std and stdx first, since thei
 compiled against the compiler headers and a stale shim misreads the new frontend's nodes
 rather than failing to load.
 
-## Working-tree state, 2026-08-23
+## Working-tree state, 2026-08-23 (evening)
 
-The compiler in `output/` is built from `e8718a05` plus the uncommitted escape-hatch work; the
-installed std is from before it (no `unsafeAssumeHandled` yet), so the two escape-hatch tests
-cannot pass until `./cj.py build std` is re-run. That build will emit `StringReader.next()`
-warnings from the inferred-override re-check (gap-analysis E-4); at `warn` they are warnings
-and the build completes.
+Compiler `39ac1dc4`, std rebuilt from it and **green at `warn`** (exit 0). Targeted groups
+`compiler/CheckedExceptions` + `compiler/Sema/effect`: **137/137 pass**, which includes the seven
+tests of this round. The std build emits `StringReader.next()` warnings from the inferred-override
+re-check (gap-analysis E-4) and ~1,486 capability warnings overall; at `warn` the build completes.
+
+Two traps this round cost time, both worth keeping:
+- `EXEC-PIPE-1:` asserts the compiler exits **1**. A test that expects warnings and a successful
+  build must use `EXEC-PIPE:` — the failure reads "Command return code 0 not equals to expected
+  return code 1", which says nothing about the diagnostics that were in fact all correct.
+- An incremental std build reuses `modules/.../std.<pkg>.a`, so a compiler change that should
+  affect a package can appear to change nothing — a stale archive is what made a capability-gated
+  link failure look flag-independent for a day. To rebuild one package on its own (a one-minute
+  loop instead of a 25-minute one), take its `COMMAND` line from
+  `cangjie_runtime/stdlib/build/build/build.ninja`, delete the target `.a`, and run it under
+  `./cj.py sh` with `envsetup.sh` sourced.
 
 ## How to reproduce
 

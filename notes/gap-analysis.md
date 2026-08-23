@@ -5,8 +5,7 @@ the proposal from a stabilizable design. Two parts: what the **implementation** 
 what the **proposal** must change. A short third part keeps resolved items whose lessons
 still matter. Updated at every milestone gate.
 
-State: compiler `e8718a05` (+ the escape-hatch work in the working tree, see I1), runtime
-`066a5ab`, tests `d3cf0e54db`; proposal as revised 2026-08-23 (vault `7b031dab` + uncommitted
+State: compiler `39ac1dc4`, runtime `8203c79` (std.core escape hatch), tests `b0a52c1c0d`; proposal as revised 2026-08-23 (vault `7b031dab` + uncommitted
 edits: level-aware cast rejection, capturing-type cast targets, `resume` as requirement and flow
 sites, effects-reveal deferred, multiplatform matching, glossary). Sections 3, 5 and 6 re-audited
 against the prototype on 2026-08-23 by probing; the plan to close what is left is I.0.
@@ -29,7 +28,7 @@ rebuilds are called out because they are the expensive part.
 
 | Batch | Items | Builds | Needs a ruling first? |
 |---|---|---|---|
-| **A — finish what is in flight + the cheap new rules** | I1 (escape hatch: compiler side built, std declaration written, tests written — blocked only on the std rebuild), I21 level-aware cast rejection, I22 capturing-type cast targets, I23 effect-level cast error, I24 `resume throwing` as a requirement site, I25 `...` placement | 1 compiler + 1 std | no — but the std rebuild will surface the `StringReader` finding (Part II E-4, now concrete) as warnings |
+| ~~A — the escape hatch + the cheap new rules~~ | **done 2026-08-23** (compiler `d06554d2`, `39ac1dc4`): I1, I21–I25 landed, std green at `warn`, 137/137 in the two targeted groups. The std rebuild cost a defect of its own — see Part III, "The `warn`-level link failure" | — | — |
 | **B — metadata** | I15 (record the checking level; reject an effect-enabled package without `performs` metadata), then I17 (assumption on a clause-recording package) | 1 compiler + std + stdx (`.cjo` schema) | no |
 | **C — assumption imports on function values** | I16 | 1 compiler | Q4 was answered (yes) |
 | **D — capability regions** | I4: rules 1–6 of "Capability regions", resumptions as carriers, `resume with` as a flow boundary — the mode-free stage `architecture.md` describes; design note first, then the pass | 1 compiler, probably 2 | no, but I4's design note should be reviewed before coding |
@@ -40,7 +39,6 @@ rebuilds are called out because they are the expensive part.
 
 | # | Gap | Proposal section | Effort |
 |---|---|---|---|
-| I1 | **`unsafeAssumeHandled<E, R>(f)`** — **in flight, uncommitted**: `std.core/unsafe_assume_handled.cj` added; the capability pass fabricates `E` inside that one declaration (`IsEscapeHatch`), warns when `E` instantiates to an unchecked type (`sema_chexc_useless_escape_hatch`); two tests written (`scopes/escape_hatch*.cj`). Compiler builds; the std rebuild was interrupted. Its first attempt also exposed that the new inferred-override check ran as an error at `warn` level — fixed in the same tree with a `_warn` variant | The escape hatch | S: one std rebuild + gate |
 | I4 | **No capability-region check.** Rules 1–6 of "Capability regions" (try-region lifetime with its per-clause close rule; carriers and origin sets; the flow condition; forwarding; the call boundary; `spawn`), plus "Resumptions are handler-bound" and "`resume r with v` is an origin-flow boundary" from "Effect requirements". Both canonical escapes are accepted today | Capability regions; Effect requirements rules 4, 6 | L: the mode-free stage of `architecture.md`; the supply stack already gives origins |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
@@ -49,11 +47,6 @@ rebuilds are called out because they are the expensive part.
 | I17 | An assumption import on a package that **records clauses of its own** must be rejected; we accept it | Assumption imports | S after I15 |
 | I18 | With checking **off**, clauses parse and impose nothing, but still shape `FuncTy` identity and are still written to the `.cjo`; the text says "not recorded" | Compatibility; Package metadata | S–M, after Q10 |
 | I20 | The generics example (`g(0, f)`, parameters only in the argument's list) now compiles; the text says error | Generics | S after Q11 |
-| I21 | **Cast rejection is not level-aware**: a functional cast target is an error at `warn` too; the text makes it an ordinary checking violation — warning at `warn`, error at `error` | Reflection and runtime casts rule 1 | S |
-| I22 | **A cast or type-pattern target that is a capturing type is accepted**; the text rejects it (instances are `local!`-only, which no cast result can be) | Reflection and runtime casts rule 3 | S |
-| I23 | **No effect-level cast error**: with only the effect-handler feature enabled, a functional cast target passes; the text makes it an effect error at every level, since the value may carry a `performs` component | Reflection and runtime casts rule 1; Effect requirements | S |
-| I24 | **`resume throwing e` is not a requirement site**: a clause-free function resuming with a checked exception is accepted; the text classifies it exactly as `throw e`, resolving in the handler body's enclosing scopes, participating in inference and explicit-clause checking | Effect requirements rule 5 | S–M |
-| I25 | **`...` placement unchecked**: `throws A, ..., B` and `throws A, ..., ...` are accepted; the text: last entry, at most once | Interaction with an explicit `throws` | S |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
 intrinsic's contravariance and non-denotability; clause placement on functions, instance and
@@ -330,6 +323,33 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **The `warn`-level link failure, and the rule it taught.** The first std build to get past
+  compilation at `warn` failed at *link*, with ~116 undefined references to erased interface
+  members (`_CNaf14PlatformSocketIG_E5write…`, `_CNby12SerializableIG_E11deserialize…`). The cause
+  was `TypeManager::IsFuncTySubType`, which M2 had made capability-aware: that predicate is not a
+  subtype test in the ordinary sense but the one that **pairs** a declaration with the one it
+  implements — for generic instantiation (`OverrideFunctionResolver`, and through it
+  `FindImplFuncForAbstractFunc`), for the override map, for the common type of a mocked parameter.
+  With coverage folded into pairing, an override that violates coverage stops being *recognized as
+  an override at all*: at `error` level the program is rejected before that matters, but at `warn`
+  it is accepted, the call through the type parameter stays on the abstract interface member, and
+  the abstract member has no body to link against. std.net is where it bit, because it deliberately
+  routes calls through an F-bounded type parameter (`interface PlatformSocket<Self> where Self <:
+  PlatformSocket<Self>`, "we abuse generic instantiation to avoid virtual invocations") and its
+  implementations infer `SocketException` over clause-free interface members. The predicate is now
+  blind to capability lists, with the reasoning in place: two functions never differ in list alone,
+  since a list takes no part in overload resolution, so pairing is a question about shape, and
+  coverage is a separate rule reported by the override checks. Pinned by
+  `scopes/warn_override_resolution.cj`, which runs the program rather than only compiling it.
+  **Lesson (two).** First, the reconstruction defect class has a mirror image: as dangerous as
+  logic that *cannot see* capability lists is logic that suddenly *can* — every existing
+  `IsSubtype`-shaped call site had to be asked whether it is testing subtyping or matching
+  declarations. Second, a diagnostic level is not a display setting: downgrading an error to a
+  warning means later stages must survive the very state the error existed to prevent, and here
+  three days of "reproduces with checking off" pointed away from it, because a stale `std.net.a`
+  in the incremental tree made the flag look irrelevant. Rebuilding one package directly from its
+  `build.ninja` command turned a 25-minute experiment into a one-minute one and settled it.
 
 - **Review of 2026-08-23 — sections 3, 5, 6 re-read, the prototype probed, the plan reset.**
   The text had moved again (cast rules by level, capturing-type cast targets, `resume` as a
