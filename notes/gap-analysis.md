@@ -28,7 +28,6 @@ in `conversions-adapt-plan.md`; the stdlib classification data stays in
 | # | Gap | Proposal section | Effort |
 |---|---|---|---|
 | I1 | **`unsafeAssumeHandled<E, R>(f)`** intrinsic is unimplemented | The escape hatch | S–M: caller demands nothing (capability-free FuncTy), the literal gets `E` from the expected type — only the intrinsic's own body needs an exemption; plus warn on unchecked `E` |
-| I2 | **Local function declarations never infer** — `CollectEligible` walks top-level and member decls only; the text now says local functions "are ordinary inference-eligible declarations with lists of their own" | Which declarations are inferred | M: extend collection + call-graph edges; then drop the hand clause on `fs/directory.cj walkFuncWrapper` |
 | I3 | **Non-private static class members require explicit clauses** (our MF8 narrowing); the text's uniform rule covers "instance and static methods" | Which declarations are inferred | M: needs the post-inference override re-check MF8 anticipated |
 | I4 | **No intra-function capability-scope check** (rule 3 of the cast rules — a cast preserves a carrier's origin set — lands with this too) — both canonical escapes of the regions section (assignment to an outer `local?` variable; capability leaving inside a lazy value via the `try` result) are ACCEPTED | Required extension: try-scoped capability regions; Checking without Modal CangJie | M: see Part II D-0 and `architecture.md` "status 2026-08-21" — implementable now as a third stage, mode-free |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
@@ -300,6 +299,28 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 
 # Part III — Resolved, kept for the lessons
 
+- **I2 closed: local functions infer.** A local function declaration is now an ordinary
+  inference-eligible declaration with a capability list of its own — collected from every body
+  (including bodies of declarations that are not themselves eligible, which is where the first
+  attempt failed: a local function inside a function with an explicit clause was never collected),
+  and checked against its own list rather than the scopes it is nested in. That replaces the
+  purely lexical treatment the pre-Modal ruling had settled for (A2's neighbour): a requirement
+  inside a local function is the local function's, and its call sites pay for it — so calling it
+  outside the `try` that encloses its declaration is now an error rather than silently discharged.
+  The isolation reuses the `spawn` shape: swap the supply stack for the body, restore after.
+- **Semantic form: already satisfied, and the one place it is not is unobservable.** The revision
+  made the canonical ("semantic") form of a capability list normative: a duplicate, or an entry
+  covered by a more general entry of the same list, is not part of the list, and every rule that
+  compares or consumes lists works on that form. The prototype turned out to satisfy it already,
+  because every comparison is coverage-based (`IsCapTysSubsumed`) rather than element-wise: a test
+  that spells duplicate and covered entries, assigns between coverage-equivalent spellings in both
+  directions, and overrides against a redundant list passes unchanged. The one residual difference
+  is type *identity* -- `() throws (A, B) -> R` and `() throws A -> R` intern as two types when B is
+  covered by A -- and normalizing at interning was tried and reverted: running subtype queries while
+  types are being formed broke 17 cases across generics, serialization and lambda checking. Nothing
+  observes the difference (assignment works both ways by subtyping, overload resolution erases
+  lists, the `.cjo` normalizes), so it stays as an artifact rather than a gap. The normalizer that
+  the serializer had is now shared with the type manager.
 - **I19 closed, and what it was.** A capability list mentioning a type parameter was never
   substituted at a call site, so every generic higher-order API with a clause was unusable
   (`handling<A>(thrower)` against `func handling<E>(fn: () throws E -> Unit)` reported *expected
