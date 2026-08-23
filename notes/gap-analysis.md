@@ -45,6 +45,7 @@ rebuilds are called out because they are the expensive part.
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
 | I18 | With checking **off**, clauses parse and impose nothing, but still shape `FuncTy` identity and are still written to the `.cjo`; the text says "not recorded" | Compatibility; Package metadata | S–M, after Q10 |
 | I28 | **Incremental compilation does not propagate a changed *inferred* list.** A body edit that gives a declaration a new list leaves unchanged callers in the same package served from the cache and never re-checked, so the build is silent where a full build errors (probe: `risky()` gains a `throw`; the caller with an explicit empty clause should be an error and is not). Declared clauses are hashed in both directions and are fine; only non-exported declarations are inferred, so the exposure is exactly intra-package. The cheap fix — fold the body hash into the spreading hash — was tried and reverted: it costs 185 `compiler/IncrementalCompilation` failures (Part III). The sound one persists the inferred lists in the incremental cache and compares after inference | Capability parameter inference (the text does not mention incremental builds) | M–L |
+| I29 | **Macros called from other macros are not checked as ordinary calls** (§3.2 rule 5). A macro's clause is handled by the compiler at the **expansion root**; a macro invoked from inside another macro is supposed to behave as an ordinary function, its requirements falling on the enclosing macro. In the prototype an expansion site demands nothing at all, at any depth: the invocation is replaced by the expansion before checking, so there is no call left to check. Unverified whether the text's case is even expressible — it may mean nested expansions in user code rather than macro packages calling each other; ask before implementing | Capability parameters in declarations, rule 5 | S–M once the reading is settled |
 | I20 | The generics example (`g(0, f)`, parameters only in the argument's list) now compiles; the text says error | Generics | S after Q11 |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
@@ -177,6 +178,39 @@ Stdlib rulings still needed from the author (recommendations inline):
 - **Q-STD-2 raw `throw Exception(...)`** (net 242, unittest 192, others): annotating `throws Exception` is uninformative; needs per-package specific types — API design. For std.net the specific types already exist.
 - **Q-STD-3 std.reflect** (254): split — lookup failures checked, misuse types unchecked, `ReflectException` stays checked as umbrella; re-parents the hierarchy, so it's a call.
 - **Q-STD-4** runtime/env/unittest.common small sets: `MemoryInfo`/`ProfilingInfo` lean checked; `EnvException` inventory-UNCERTAIN; `DataModel`/`Json` in unittest.common → recommend unchecked as framework machinery.
+- **Q-STD-9 — the SPI-interface question, which is what the whole migration keeps hitting.**
+  Four of the open stdlib items are one question wearing different hats: an interface in `std`
+  declares no clause, and its implementations elsewhere throw. `Iterator.next` with
+  `ContentFormatException` (E-4), `Resource.close` (E-16), `ToString.toString` in
+  `stdx.encoding.json` (Q-STD-8), and now `std.crypto.digest.Digest.write`/`finish`/`reset`,
+  whose stdx implementations raise `CryptoException` — a type `std` cannot even name, so the
+  interface could not declare it if it wanted to. The same shape blocks `stdx.compress.zlib` (26),
+  `stdx.compress.tar` (87), the stream half of `stdx.net.http` (191) and `stdx.net.tls` (32):
+  every one of them implements a `std.io` interface.
+  **The three coherent answers**, and they have to be chosen once rather than per package:
+  (a) each SPI interface declares a std-level checked exception it owns (`IOException` for the
+  stream interfaces — that is batch 3a already — and a new `DigestException` for `Digest`), and
+  implementations narrow to it, which means every implementation's own exception type has to
+  become a subtype of that one; (b) SPI implementations may not raise checked exceptions at all,
+  so these become unchecked, which is the answer `@Derive` already got; (c) the interfaces carry
+  an inferable clause, which the base design does not have — a declaration's list never depends on
+  its implementors.
+  **Recommendation:** (a) for the stream and digest interfaces, where failure is the caller's
+  business and an owned exception type exists or can be added; (b) for `ToString` and any other
+  interface whose method is called from places that cannot handle a failure. What decides it is
+  not the checker but the API: can a caller do anything with the failure?
+- **Q-STD-8 `ToString.toString` when printing can fail** (raised by the stdx ring, 2026-08-23).
+  Six diagnostics in `stdx.encoding.json` are `toString()` implementations that raise
+  `JsonException` — and say so in their doc comments — over a `std.core.ToString` that declares
+  nothing, so the clause cannot be written where the failure happens. The same shape is waiting in
+  `stdx.chir` and `stdx.syntax`, and `@Derive` had it too (fixed at the generator: the derived
+  branch now raises an unchecked exception). Either (a) `ToString.toString` stays clause-free and
+  an implementation that cannot print raises an **unchecked** exception, or (b) `ToString` declares
+  a clause, which every `toString()` call site in the language then pays for.
+  **Recommendation: (a).** `toString` is called from diagnostics, logging and interpolation, where
+  a checked failure has nowhere to go; and a JSON tree that cannot be printed is a broken
+  invariant of the value, not a condition its caller could have avoided. That makes it the same
+  ruling as the `@Derive` fallback, and it needs the same kind of change in each implementation.
 - **Q-STD-7 unittest acquires 23 fs obligations** from batch 1: recommend catch-and-wrap internally rather than leaking `FSException` into the test framework's API.
 - The 23 UNCERTAIN classes of `stdlib-exception-inventory.md`.
 
@@ -336,7 +370,6 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 | Q6 | Misplaced `@AssumeThrows` — error or ignored? | error | ratified (D15); flagging only |
 | Q8 | *(answered by the text, pending the spec: implicit `close()` is inside the `try` scope; see E-16)* | nothing is demanded for `close()` either way | none while `Resource.close()` is clause-free |
 | Q12 | `resume throwing e` "resolves in the handler body's enclosing capability scopes". A `handle` body, like a `catch` body, is outside its own `try`'s scope — so the requirement cannot be met by the `try` whose command the handler serves, even when that `try` also catches `E`. Intended (the text calls it the conservative choice), but it means the common shape "perform, handler translates failure into an exception the same `try` catches" needs an outer handler. Confirm, or adopt the refinement the text mentions | not implemented yet (I24) | S either way |
-| Q13 | May a macro carry a **`performs`** clause? The revision lets a macro declare what it throws; it does not say whether it may declare effects. A macro body runs inside the compiler, where no handler for a user effect can be installed | rejected at parse (`a macro cannot carry a 'performs' clause`) | widening is backward-compatible |
 | Q9 | A cast target whose type argument is a **type parameter** — `x as Box<T>` in generic code — passes the invariant-position rejection, since `T` is not a function type at the declaration; instantiating `T` with `() throws E -> R` then launders exactly what the rule closes. Reject such targets, accept the hole, or re-check at instantiation? | accepted (the check runs once, on the generic declaration) | the stdlib already casts to `Box<T>`/`ResourcePool<T>`, so rejecting is a real source break |
 | Q11 | Must a call be rejected when a type parameter occurs **only** in capability lists and nothing else depends on it? The generics section's example says error. After the substitution fix the prototype accepts it (nothing observable is unconstrained: the argument's list still binds nothing, and any other use of the parameter still fails). Restore the rejection, or soften the example? | accepted | S either way |
 | Q10 | With checking **off**, do clauses still shape types? The text says the grammar is unconditional and the clauses "impose no obligations and are not recorded" — but a clause today also makes `() throws E -> R` a distinct type from `() -> R`, which decides subtyping and overloading in code that is not being checked, and is what stops a throwing value crossing into unchecked code. Dropping it makes a package's types change when it flips the flag; keeping it makes an unchecked package feel obligations | kept: clauses shape types at every level (I18) | S–M either way, but it decides what "not recorded" means for the `.cjo` |
@@ -352,6 +385,33 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **Re-read of §3, §5 and §6 against the prototype (2026-08-23, evening).** The text had moved
+  again — macros are now listed among the declarations that may carry a clause (§3.2 rule 1), with
+  their own rule 5, and §5.4 rule 3 states outright that a macro may not carry `performs`, which
+  answers Q13 in favour of what was implemented. Four rules were probed rather than assumed, and
+  three of them already held: an entry whose type instantiates to an unchecked exception **vanishes**
+  (§5.1.2 — `generic<MyUnchecked>()` requires nothing); the join of two functional types **unions**
+  their capability lists (§3.4.3 — `if (c) { g } else { h }` types as `() throws (B, A) -> Unit`);
+  and a `public` macro is **never inferred**, so a clause-free macro body that throws is an error
+  (§5.3.1). Two did not, and are fixed:
+  - **The assumption rule was too narrow.** §6.3.2 rejects `@AssumeThrows` on a package that
+    *records* clauses of its own, and §6.1 says a `warn` package records **trusted** lists. The
+    implementation only rejected packages verified at `error` — a distinction I had reasoned my way
+    into a day earlier and the text does not make. Widened, and the `warn` test inverted to expect
+    the rejection.
+  - **The warning group had the wrong name.** §6.1 names it `checked-exceptions`
+    (`-Woff checked-exceptions`); it was `chexc`, the flag's alias. Renamed, help golden with it.
+  One more thing the probes turned up, which is neither the text's fault nor a rule: **the
+  compiler's diagnostic set deduplicates by position and severity alone**
+  (`equalFunc` in `DiagnosticEngine.h`), so a call site missing three capabilities reported one,
+  and the next only after that one was fixed. The reporting handler now batches misses per site and
+  emits one diagnostic naming all of them; a site missing exactly one keeps the singular message,
+  which is what every existing test asserts.
+  **Lesson:** three of five suspected gaps were not gaps. Probing each rule with six lines of
+  CangJie costs a minute and is the only thing that separates "the text says X and I believe we do
+  X" from knowing — and the two real gaps were both places where I had reasoned past the text
+  rather than read it.
 
 - **I28 attempted and reverted: coarse spreading is not affordable.** An incremental build hashes
   each declaration into a signature hash (which spreads to dependents) and a body hash (which does
