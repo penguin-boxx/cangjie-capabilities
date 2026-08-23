@@ -5,12 +5,11 @@ the proposal from a stabilizable design. Two parts: what the **implementation** 
 what the **proposal** must change. A short third part keeps resolved items whose lessons
 still matter. Updated at every milestone gate.
 
-State: runtime `066a5ab`; proposal as revised 2026-08-22 23:15 (vault `4fdb84bd`). Sections 3
-through 6 have been audited rule by rule against the prototype — by probing, not by reading —
-the bounded gaps were fixed the same day, and the author revised the proposal in response;
-Part III has both halves. Effect requirements moved into the base design in this revision, so
-`performs` is no longer an extension the prototype runs ahead of the text. Sections are cited by **title**, never number — the proposal renumbered
-twice in one day and numbers in notes rot (see "Documentation conventions" at the end).
+State: compiler `e8718a05` (+ the escape-hatch work in the working tree, see I1), runtime
+`066a5ab`, tests `d3cf0e54db`; proposal as revised 2026-08-23 (vault `7b031dab` + uncommitted
+edits: level-aware cast rejection, capturing-type cast targets, `resume` as requirement and flow
+sites, effects-reveal deferred, multiplatform matching, glossary). Sections 3, 5 and 6 re-audited
+against the prototype on 2026-08-23 by probing; the plan to close what is left is I.0.
 
 This document consolidates and replaces: `proposal-implementation-gaps.md` (ledger A–F),
 `proposal-update-review-2026-08-20.md`, `production-gap-analysis.md`, `author-questions.md`,
@@ -23,20 +22,38 @@ in `conversions-adapt-plan.md`; the stdlib classification data stays in
 
 # Part I — What the implementation must change
 
+## I.0 The plan to close the gap (2026-08-23)
+
+Ordered by value per build; each batch is one compiler build plus the gate, and the std/stdx
+rebuilds are called out because they are the expensive part.
+
+| Batch | Items | Builds | Needs a ruling first? |
+|---|---|---|---|
+| **A — finish what is in flight + the cheap new rules** | I1 (escape hatch: compiler side built, std declaration written, tests written — blocked only on the std rebuild), I21 level-aware cast rejection, I22 capturing-type cast targets, I23 effect-level cast error, I24 `resume throwing` as a requirement site, I25 `...` placement | 1 compiler + 1 std | no — but the std rebuild will surface the `StringReader` finding (Part II E-4, now concrete) as warnings |
+| **B — metadata** | I15 (record the checking level; reject an effect-enabled package without `performs` metadata), then I17 (assumption on a clause-recording package) | 1 compiler + std + stdx (`.cjo` schema) | no |
+| **C — assumption imports on function values** | I16 | 1 compiler | Q4 was answered (yes) |
+| **D — capability regions** | I4: rules 1–6 of "Capability regions", resumptions as carriers, `resume with` as a flow boundary — the mode-free stage `architecture.md` describes; design note first, then the pass | 1 compiler, probably 2 | no, but I4's design note should be reviewed before coding |
+| **E — rulings** | I18/Q10 (clauses with checking off), I20/Q11 (the generics example), the stdlib re-parenting of `ContentFormatException` (E-4) | — | **yes**, all three |
+| deferred | I5 (Modal), I7 (deliberate), I14 (now an extension, I.7) | — | — |
+
 ## I.1 Base-design conformance (the proposal says it; we don't do it)
 
 | # | Gap | Proposal section | Effort |
 |---|---|---|---|
-| I1 | **`unsafeAssumeHandled<E, R>(f)`** intrinsic is unimplemented | The escape hatch | S–M: caller demands nothing (capability-free FuncTy), the literal gets `E` from the expected type — only the intrinsic's own body needs an exemption; plus warn on unchecked `E` |
-| I4 | **No intra-function capability-scope check** (rule 3 of the cast rules — a cast preserves a carrier's origin set — lands with this too) — both canonical escapes of the regions section (assignment to an outer `local?` variable; capability leaving inside a lazy value via the `try` result) are ACCEPTED | Required extension: try-scoped capability regions; Checking without Modal CangJie | M: see Part II D-0 and `architecture.md` "status 2026-08-21" — implementable now as a third stage, mode-free |
+| I1 | **`unsafeAssumeHandled<E, R>(f)`** — **in flight, uncommitted**: `std.core/unsafe_assume_handled.cj` added; the capability pass fabricates `E` inside that one declaration (`IsEscapeHatch`), warns when `E` instantiates to an unchecked type (`sema_chexc_useless_escape_hatch`); two tests written (`scopes/escape_hatch*.cj`). Compiler builds; the std rebuild was interrupted. Its first attempt also exposed that the new inferred-override check ran as an error at `warn` level — fixed in the same tree with a `_warn` variant | The escape hatch | S: one std rebuild + gate |
+| I4 | **No capability-region check.** Rules 1–6 of "Capability regions" (try-region lifetime with its per-clause close rule; carriers and origin sets; the flow condition; forwarding; the call boundary; `spawn`), plus "Resumptions are handler-bound" and "`resume r with v` is an origin-flow boundary" from "Effect requirements". Both canonical escapes are accepted today | Capability regions; Effect requirements rules 4, 6 | L: the mode-free stage of `architecture.md`; the supply stack already gives origins |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
-| I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the option is also used bare (`--enable-chexc`) by every test and script, and the generic option table has no "optional separate value" kind — making the value a separate token would either forbid the bare form or need new machinery in shared option code | Compatibility - checked and unchecked code | S once the option kinds allow it |
-| I14 | **The unreachable-`catch` diagnostic is unimplemented** — with it, the per-declaration Boolean throw-closure summary it rests on (statically-resolved calls only, no unchecked/reflective/FFI reach, no escape hatch), its propagation through the call graph, and its trusted-vs-verified distinction | The unreachable-`catch` diagnostic | M–L; the API-evolution argument depends on it, so it is part of the feature, not tooling |
-| I15 | **Package metadata records none of the three rules**: the level the package was compiled at, the throw-closure summary, the capability ABI epoch. Consumers therefore cannot tell verified lists from trusted ones | Package metadata | M (needs I14 for rule 2) |
-| I16 | Assumption imports reach **resolved calls only**; the text also imposes the assumed list on every functional type in a covariant position of the dependency's signatures — results, function-typed fields and properties, bound methods — so a callback obtained from an unchecked package carries the assumption when it is invoked later | Assumption imports | M: rewrites imported signature types, which the pass currently never touches |
-| I17 | An assumption import on a package that **records clauses of its own** must be rejected; we accept it (and have no recorded level to test against — see I15) | Assumption imports | S once I15 lands |
-| I20 | **A type parameter that occurs only in capability lists is no longer a hard inference failure.** The generics section's example — `g(0, f)` against `func g<T, G>(x: Int64, block: () throws (T, G) -> Unit)` — is now accepted when nothing else in the signature depends on `T`/`G`; add a return type of `T` and it is rejected as before. The old rejection turned out to be accidental (the substitution filter dropped the mapping, which then failed a completeness check), so fixing I19 removed it. Arguably better behaviour — the call is harmless, since the argument's list never binds anything — but the text says error | Generics | S to restore explicitly, if the author wants the example's letter; see Q11 |
-| I18 | With checking **off**, clauses now parse and impose no obligations, but they still shape `FuncTy` identity — `() throws E -> R` and `() -> R` stay distinct types for subtyping and overloading — and are still written to the `.cjo`. The text says they impose no obligations and are not recorded | Compatibility - checked and unchecked code; Package metadata | S–M, but decide Q10 first |
+| I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
+| I15 | **Package metadata records no checking level**, so consumers cannot tell verified lists from trusted ones; and an effect-enabled package without `performs` metadata must be rejected rather than read as empty. (The throw-closure summary is gone from the rule: the diagnostic it served moved to an extension.) | Package metadata; Compatibility | M: `.cjo` schema + std/stdx rebuild |
+| I16 | Assumption imports reach **resolved calls only**; the text also imposes the assumed list on every functional type in a covariant position of the dependency's signatures — results, function-typed fields and properties, bound methods | Assumption imports | M: rewrites imported signature types, which the pass never touches today |
+| I17 | An assumption import on a package that **records clauses of its own** must be rejected; we accept it | Assumption imports | S after I15 |
+| I18 | With checking **off**, clauses parse and impose nothing, but still shape `FuncTy` identity and are still written to the `.cjo`; the text says "not recorded" | Compatibility; Package metadata | S–M, after Q10 |
+| I20 | The generics example (`g(0, f)`, parameters only in the argument's list) now compiles; the text says error | Generics | S after Q11 |
+| I21 | **Cast rejection is not level-aware**: a functional cast target is an error at `warn` too; the text makes it an ordinary checking violation — warning at `warn`, error at `error` | Reflection and runtime casts rule 1 | S |
+| I22 | **A cast or type-pattern target that is a capturing type is accepted**; the text rejects it (instances are `local!`-only, which no cast result can be) | Reflection and runtime casts rule 3 | S |
+| I23 | **No effect-level cast error**: with only the effect-handler feature enabled, a functional cast target passes; the text makes it an effect error at every level, since the value may carry a `performs` component | Reflection and runtime casts rule 1; Effect requirements | S |
+| I24 | **`resume throwing e` is not a requirement site**: a clause-free function resuming with a checked exception is accepted; the text classifies it exactly as `throw e`, resolving in the handler body's enclosing scopes, participating in inference and explicit-clause checking | Effect requirements rule 5 | S–M |
+| I25 | **`...` placement unchecked**: `throws A, ..., B` and `throws A, ..., ...` are accepted; the text: last entry, at most once | Interaction with an explicit `throws` | S |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
 intrinsic's contravariance and non-denotability; clause placement on functions, instance and
@@ -73,6 +90,15 @@ diagnostic (I14): no inference, no unchecked commands, no `main` clause, command
 assumption imports — package scope, alias expansion, union across imports, bare form, empty form
 rejected, participation in inference; and the boundary rules that fall out of functional-type
 subtyping.
+
+**Audited and conforming, 2026-08-23 additions** (probed against the revision that added them):
+**multiplatform matching** — a platform declaration matches its common one only when the lists
+are equal up to normalization (a differing list fails to match; a covered entry, an alias versus
+its expansion, and a reordering all match); **mixed-kind `captures`** with checking off — the
+command entry is demanded at construction whenever the effect-handler feature is on, and the
+type stays capturing; the `captures` entry grammar (nested lists, aliases, `()`); and the
+inferred-override re-check that "an inferred override requiring more than the overridden list is
+an error" asks for.
 
 ## I.2 Deliberate pre-Modal deviations (author rulings; revisit at Modal integration)
 
@@ -166,6 +192,11 @@ Stdlib rulings still needed from the author (recommendations inline):
 - `WrappedUncheckedException` + the handling sugar: roadmap with that extension.
 
 ---
+- **The unreachable-`catch` diagnostic** moved out of the base design into "The
+  unreachable-`catch` diagnostic" (an extension), taking the per-declaration throw-closure
+  summary and its metadata rule with it. Was I14; nothing of it is implemented, and nothing in
+  the base design now depends on it (the unchecked-boundary lint of the TODO list cites it but is
+  itself off-by-default tooling).
 
 # Part II — What the proposal must change
 
@@ -174,9 +205,11 @@ Stdlib rulings still needed from the author (recommendations inline):
 - **E-1** "Stack traces and cause chains" writes `eErr.suppressed += eFrom`; "Standard library and toolchain impact" specifies `suppressed` as a read-only snapshot with `addSuppressed`. Fix to `eErr.addSuppressed(eFrom)`.
 - **E-2** Audit tense: the toolchain-impact section says the classification is "confirmed by the annotation audit"; the migration section says "to be confirmed". It is *partially* confirmed (26 re-parents, 90 clauses). And the name marked "to confirm" is confirmed: **`UnsupportedException`**, not `UnsupportedOperationException`.
 - **E-3** `unsafeAssumeHandled`'s signature uses `@ local?` in a base-design std.core declaration, but the design explicitly supports a Modal-less tier whose toolchain cannot parse modes. State the degraded-mode surface form (modes stripped).
-- **E-4** The interface ruling ("streams declare `throws IOException`; implementations narrow") is inconsistent with `ContentFormatException <: Exception` — std.io's own read paths throw it and no `InputStream` implementation could under narrower-only overriding. Re-parent under `IOException` (recommended), declare both, or keep those APIs off the interface — say which.
+- **E-4 — now concrete.** The interface ruling ("streams declare `throws IOException`; implementations narrow") is inconsistent with `ContentFormatException <: Exception`. The inferred-override re-check found the instance the moment it ran over the stdlib: `std.io.StringReader.next()` — both the `Iterator<Rune>` and the `Iterator<String>` implementation — infers `ContentFormatException` against a clause-free `Iterator.next`, which at `error` level is a hard error and at `warn` a warning the migration cannot burn down. Re-parent under `UncheckedException` (it reports malformed input the reader cannot recover from) or under `IOException` and declare it on the stream interfaces — but decide, because the std build now depends on it.
 - **E-5** Two renumberings in one day left internal consistency intact (verified: no stale anchors) but make every external citation rot; consider freezing numbering or publishing stable anchors.
-- **E-13** "Capability capturing" rule 1 defines a `captures` entry list as taking entries
+- **E-13** *(closed — the revision states in "Capability capturing" rule 1 that an entry's kind follows its hierarchy and one list may mix kinds.)*
+- **E-15** The effect examples use a **`Resumption` binding that the effect-handler implementation does not have**: `handle (_: GetLogger, r: Resumption<Logger>) { resume r with logger }` does not parse (the compiler's form is `handle (_: GetLogger) { resume with logger }`, with no named resumption and no `Resumption` type in `stdx.effect`). The text is entitled to design ahead of the implementation, but "Effect requirements" rules 4 and 6 and the glossary's carrier list treat `Resumption` as a first-class value, and readers of the current compiler will look for it. Say that the named form is prospective, or restate rules 4 and 6 over the implicit resumption.
+- **E-16** "Capability scopes" rule 1 now says the implicit `close()` of try-with-resources is inside the `try`'s scope, with a "to be confirmed against the language specification" — but the prototype's desugaring places `close()` in `finally` position, which the same list puts *outside*. Until the spec answer lands this is a contradiction inside one bullet; the TODO item has the question, the bullet should not pre-answer it.
   "exactly as a declaration `throws` clause does", and the entry rule admits exception types
   only; that commands may also be captured reaches the reader solely through the blanket
   substitution at the head of "Effect requirements". One clause in the capturing rule would make
@@ -280,7 +313,8 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 |---|---|---|---|
 | Q5 | Do conversions apply to `throw` expressions or calls only? | planned uniform | moot for v1 (conversions are an extension) |
 | Q6 | Misplaced `@AssumeThrows` — error or ignored? | error | ratified (D15); flagging only |
-| Q8 | Try-with-resources: the initializers are inside the `try` scope, but what covers the **implicit `close()`**? It sits in `finally` position, which the same list excludes | nothing is demanded (the pass sees `resourceSpec`, never the implicit call) | none while `Resource.close()` is clause-free; annotating it would break every try-with-resources at once |
+| Q8 | *(answered by the text, pending the spec: implicit `close()` is inside the `try` scope; see E-16)* | nothing is demanded for `close()` either way | none while `Resource.close()` is clause-free |
+| Q12 | `resume throwing e` "resolves in the handler body's enclosing capability scopes". A `handle` body, like a `catch` body, is outside its own `try`'s scope — so the requirement cannot be met by the `try` whose command the handler serves, even when that `try` also catches `E`. Intended (the text calls it the conservative choice), but it means the common shape "perform, handler translates failure into an exception the same `try` catches" needs an outer handler. Confirm, or adopt the refinement the text mentions | not implemented yet (I24) | S either way |
 | Q9 | A cast target whose type argument is a **type parameter** — `x as Box<T>` in generic code — passes the invariant-position rejection, since `T` is not a function type at the declaration; instantiating `T` with `() throws E -> R` then launders exactly what the rule closes. Reject such targets, accept the hole, or re-check at instantiation? | accepted (the check runs once, on the generic declaration) | the stdlib already casts to `Box<T>`/`ResourcePool<T>`, so rejecting is a real source break |
 | Q11 | Must a call be rejected when a type parameter occurs **only** in capability lists and nothing else depends on it? The generics section's example says error. After the substitution fix the prototype accepts it (nothing observable is unconstrained: the argument's list still binds nothing, and any other use of the parameter still fails). Restore the rejection, or soften the example? | accepted | S either way |
 | Q10 | With checking **off**, do clauses still shape types? The text says the grammar is unconditional and the clauses "impose no obligations and are not recorded" — but a clause today also makes `() throws E -> R` a distinct type from `() -> R`, which decides subtyping and overloading in code that is not being checked, and is what stops a throwing value crossing into unchecked code. Dropping it makes a package's types change when it flips the flag; keeping it makes an unchecked package feel obligations | kept: clauses shape types at every level (I18) | S–M either way, but it decides what "not recorded" means for the `.cjo` |
@@ -297,6 +331,20 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 
 # Part III — Resolved, kept for the lessons
 
+- **Review of 2026-08-23 — sections 3, 5, 6 re-read, the prototype probed, the plan reset.**
+  The text had moved again (cast rules by level, capturing-type cast targets, `resume` as a
+  requirement and a flow site, the diagnostic out to an extension, multiplatform matching, a
+  glossary). Probing found two of the new rules already satisfied — multiplatform matching, which
+  the coverage-based comparison gives for free, and mixed-kind `captures` with checking off — and
+  five not (I21–I25, all small). The escape hatch (I1) was mid-flight when the review started and
+  stays in the working tree: compiler side built, std declaration and tests written, std rebuild
+  pending. Its first std build failed for a reason worth keeping: the new inferred-override
+  re-check fired as an *error* inside a `warn`-level build — the check had no `warn` variant — and
+  what it flagged was real: `StringReader.next()` infers `ContentFormatException` over a
+  clause-free `Iterator.next`. That is E-4 made concrete, and it needs a ruling before the std
+  build is green at `error` again. **Lesson:** every new diagnostic the capability pass gains must
+  be born with the level split, because the std build runs at `warn` and will be the first thing
+  to hit it.
 - **I3 and I13 closed together, by the re-check they were both waiting on.** An override's list is
   compared against the overridden declaration's during type check — which runs before inference, so
   a list a declaration only *acquires* by inference was never compared at all. That is why two

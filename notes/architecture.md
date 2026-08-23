@@ -251,6 +251,16 @@ both canonical escapes today and is exactly the half of path (b) that "Checking 
 Modal CangJie" promises. Cross-function escape stays Modal's. Proposed as the next compiler
 milestone; tracked as I4 in `gap-analysis.md`.
 
+**Update, 2026-08-23 — what the regions stage must now cover.** The escape-analysis section
+grew two effect-specific pieces since the status above: a resumption is a carrier bound to its
+`handle` clause's region (vacuous for the current compiler, where a resumption is never a value,
+but it fixes what `resume` means), and `resume with v` is an origin-flow boundary — `v` flows
+into the suspended computation, checked as a flow into the handler's `try` region. So the
+mode-free stage is now: rules 1–6 of "Capability regions" plus those two, with `resume` joining
+`spawn` and the `try` result as the sites where the flow condition is checked. Nothing about the
+staging changes: origins still come from the supply stack, carriers from the demand walk, and
+the stage still rejects only.
+
 **Update, 2026-08-21 evening — effects join the base design.** The revision that rewrote the
 escape-analysis section also moved effect requirements into the base design as a section of their
 own: `perform` needs a handler exactly as `throw` needs one, `CanPerform<C>` is the analogue of

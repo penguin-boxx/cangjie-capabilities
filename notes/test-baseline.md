@@ -63,6 +63,14 @@ set, or the parser headers change — and rebuild std and stdx first, since thei
 compiled against the compiler headers and a stale shim misreads the new frontend's nodes
 rather than failing to load.
 
+## Working-tree state, 2026-08-23
+
+The compiler in `output/` is built from `e8718a05` plus the uncommitted escape-hatch work; the
+installed std is from before it (no `unsafeAssumeHandled` yet), so the two escape-hatch tests
+cannot pass until `./cj.py build std` is re-run. That build will emit `StringReader.next()`
+warnings from the inferred-override re-check (gap-analysis E-4); at `warn` they are warnings
+and the build completes.
+
 ## How to reproduce
 
 ```
