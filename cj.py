@@ -147,9 +147,12 @@ python3 build.py install
 
 
 def build_stdx(args):
+    # Same flags as std: stdx is the next migration ring, so it builds with checking on at `warn`
+    # severity -- every capability a public stdx API needs is reported, nothing blocks the build.
     script = f"""set -ex
 source {WORK}/cangjie_compiler/output/envsetup.sh
 python3 build.py build -t {args.build_type} \\
+    --build-args=--experimental --build-args=--enable-checked-exceptions=warn \\
     --include={WORK}/cangjie_compiler/include \\
     --target-lib=$OPENSSL_PATH
 python3 build.py install
