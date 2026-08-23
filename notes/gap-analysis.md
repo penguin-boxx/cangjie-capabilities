@@ -28,7 +28,6 @@ in `conversions-adapt-plan.md`; the stdlib classification data stays in
 | # | Gap | Proposal section | Effort |
 |---|---|---|---|
 | I1 | **`unsafeAssumeHandled<E, R>(f)`** intrinsic is unimplemented | The escape hatch | S–M: caller demands nothing (capability-free FuncTy), the literal gets `E` from the expected type — only the intrinsic's own body needs an exemption; plus warn on unchecked `E` |
-| I3 | **Non-private static class members require explicit clauses** (our MF8 narrowing); the text's uniform rule covers "instance and static methods" | Which declarations are inferred | M: needs the post-inference override re-check MF8 anticipated |
 | I4 | **No intra-function capability-scope check** (rule 3 of the cast rules — a cast preserves a carrier's origin set — lands with this too) — both canonical escapes of the regions section (assignment to an outer `local?` variable; capability leaving inside a lazy value via the `try` result) are ACCEPTED | Required extension: try-scoped capability regions; Checking without Modal CangJie | M: see Part II D-0 and `architecture.md` "status 2026-08-21" — implementable now as a third stage, mode-free |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the option is also used bare (`--enable-chexc`) by every test and script, and the generic option table has no "optional separate value" kind — making the value a separate token would either forbid the bare form or need new machinery in shared option code | Compatibility - checked and unchecked code | S once the option kinds allow it |
@@ -36,7 +35,6 @@ in `conversions-adapt-plan.md`; the stdlib classification data stays in
 | I15 | **Package metadata records none of the three rules**: the level the package was compiled at, the throw-closure summary, the capability ABI epoch. Consumers therefore cannot tell verified lists from trusted ones | Package metadata | M (needs I14 for rule 2) |
 | I16 | Assumption imports reach **resolved calls only**; the text also imposes the assumed list on every functional type in a covariant position of the dependency's signatures — results, function-typed fields and properties, bound methods — so a callback obtained from an unchecked package carries the assumption when it is invoked later | Assumption imports | M: rewrites imported signature types, which the pass currently never touches |
 | I17 | An assumption import on a package that **records clauses of its own** must be rejected; we accept it (and have no recorded level to test against — see I15) | Assumption imports | S once I15 lands |
-| I13 | **Effective visibility is not computed** for inference eligibility: we test the declaration's own modifier, the text takes "the narrowest of the member's own modifier and those of its enclosing declarations", so a `public` method of an `internal` class should be inferred and is not. Implemented and reverted this round: it needs I3's post-inference override re-check first, or an inferred override silently requires more than the declaration it overrides | Which declarations are inferred | S once I3 lands |
 | I20 | **A type parameter that occurs only in capability lists is no longer a hard inference failure.** The generics section's example — `g(0, f)` against `func g<T, G>(x: Int64, block: () throws (T, G) -> Unit)` — is now accepted when nothing else in the signature depends on `T`/`G`; add a return type of `T` and it is rejected as before. The old rejection turned out to be accidental (the substitution filter dropped the mapping, which then failed a completeness check), so fixing I19 removed it. Arguably better behaviour — the call is harmless, since the argument's list never binds anything — but the text says error | Generics | S to restore explicitly, if the author wants the example's letter; see Q11 |
 | I18 | With checking **off**, clauses now parse and impose no obligations, but they still shape `FuncTy` identity — `() throws E -> R` and `() -> R` stay distinct types for subtyping and overloading — and are still written to the `.cjo`. The text says they impose no obligations and are not recorded | Compatibility - checked and unchecked code; Package metadata | S–M, but decide Q10 first |
 
@@ -299,6 +297,17 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 
 # Part III — Resolved, kept for the lessons
 
+- **I3 and I13 closed together, by the re-check they were both waiting on.** An override's list is
+  compared against the overridden declaration's during type check — which runs before inference, so
+  a list a declaration only *acquires* by inference was never compared at all. That is why two
+  narrowings existed: non-private static members required an explicit clause, and eligibility used
+  the declaration's own modifier rather than effective visibility. The pairs are now recorded where
+  the inheritance checker already has them and consumed after inference, so an inferred override
+  requiring more than what it overrides is an error — and both narrowings could go. Static members
+  are ordinary members again, and a `public` method of an `internal` class is inferred, as is a
+  `private init` of a `public` class.
+  **Lesson:** two "temporary" narrowings, months apart in the notes, turned out to be one missing
+  check. Recording *why* a narrowing exists is what made them collapse into a single fix.
 - **I2 closed: local functions infer.** A local function declaration is now an ordinary
   inference-eligible declaration with a capability list of its own — collected from every body
   (including bodies of declarations that are not themselves eligible, which is where the first
