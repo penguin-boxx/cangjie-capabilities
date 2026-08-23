@@ -5,11 +5,11 @@ the proposal from a stabilizable design. Two parts: what the **implementation** 
 what the **proposal** must change. A short third part keeps resolved items whose lessons
 still matter. Updated at every milestone gate.
 
-State: compiler `b71b1034`, runtime `8203c79` (std.core escape hatch), stdx `b8740ba` (leaf
-annotations), tests `61939383c5`; proposal as revised 2026-08-23 (vault `7b031dab` + uncommitted
-edits: level-aware cast rejection, capturing-type cast targets, `resume` as requirement and flow
-sites, effects-reveal deferred, multiplatform matching, glossary). Sections 3, 5 and 6 re-audited
-against the prototype on 2026-08-23 by probing; the plan to close what is left is I.0.
+State: compiler `4b319b12`, runtime `0a1ec17` (escape hatch, deriving fixes), stdx `b8740ba` (leaf
+annotations), tests `3c9485b233`; proposal as revised 2026-08-23 (vault `7b031dab` + the author's
+rulings of that evening: a macro may declare what it throws; capability regions are a Modal
+CangJie requirement, not this tier's). Sections 3, 5 and 6 were re-audited against the prototype
+on 2026-08-23 by probing; the plan to close what is left is I.0.
 
 This document consolidates and replaces: `proposal-implementation-gaps.md` (ledger A–F),
 `proposal-update-review-2026-08-20.md`, `production-gap-analysis.md`, `author-questions.md`,
@@ -30,9 +30,9 @@ rebuilds are called out because they are the expensive part.
 | Batch | Items | Builds | Needs a ruling first? |
 |---|---|---|---|
 | ~~A — the escape hatch + the cheap new rules~~ | **done 2026-08-23** (compiler `d06554d2`, `39ac1dc4`): I1, I21–I25 landed, std green at `warn`, 137/137 in the two targeted groups. The std rebuild cost a defect of its own — see Part III, "The `warn`-level link failure" | — | — |
-| **B — metadata** | I15 (record the checking level; reject an effect-enabled package without `performs` metadata), then I17 (assumption on a clause-recording package) | 1 compiler + std + stdx (`.cjo` schema) | no |
-| **C — assumption imports on function values** | I16 | 1 compiler | Q4 was answered (yes) |
-| **D — capability regions** | I4: rules 1–6 of "Capability regions", resumptions as carriers, `resume with` as a flow boundary — the mode-free stage `architecture.md` describes; design note first, then the pass | 1 compiler, probably 2 | no, but I4's design note should be reviewed before coding |
+| ~~B — metadata~~ | **done 2026-08-23** (compiler `236ff253`): the `.cjo` records the checking level, whether effect handlers were on, and whether it carries capability metadata at all; an assumption over a package verified at `error` is rejected (I17), as is an effect-enabled package with no metadata | — | — |
+| ~~C — assumption imports on function values~~ | **done 2026-08-23** (compiler `4b319b12`): I16, with the artifact that the obligation falls where the value crosses the boundary rather than at the eventual call | — | — |
+| ~~D — capability regions~~ | **out of scope (author, 2026-08-23)**: capability regions are a requirement of Modal CangJie, not of this tier. I4 stays recorded as a gap against the text, unimplemented by decision | — | — |
 | **E — rulings** | I18/Q10 (clauses with checking off), I20/Q11 (the generics example), the stdlib re-parenting of `ContentFormatException` (E-4) | — | **yes**, all three |
 | deferred | I5 (Modal), I7 (deliberate), I14 (now an extension, I.7) | — | — |
 
@@ -40,16 +40,11 @@ rebuilds are called out because they are the expensive part.
 
 | # | Gap | Proposal section | Effort |
 |---|---|---|---|
-| I4 | **No capability-region check.** Rules 1–6 of "Capability regions" (try-region lifetime with its per-clause close rule; carriers and origin sets; the flow condition; forwarding; the call boundary; `spawn`), plus "Resumptions are handler-bound" and "`resume r with v` is an origin-flow boundary" from "Effect requirements". Both canonical escapes are accepted today | Capability regions; Effect requirements rules 4, 6 | L: the mode-free stage of `architecture.md`; the supply stack already gives origins |
+| I4 | **No capability-region check** — rules 1–6 of "Capability regions", resumptions as carriers, `resume with` as a flow boundary. Both canonical escapes are accepted today. **Deferred by the author (2026-08-23): regions are a Modal CangJie requirement, not this tier's.** Kept here because the text still states them for the base design — either the text scopes them to Modal, or this stays a permanent divergence | Capability regions; Effect requirements rules 4, 6 | — (not to be implemented) |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
-| I15 | **Package metadata records no checking level**, so consumers cannot tell verified lists from trusted ones; and an effect-enabled package without `performs` metadata must be rejected rather than read as empty. (The throw-closure summary is gone from the rule: the diagnostic it served moved to an extension.) | Package metadata; Compatibility | M: `.cjo` schema + std/stdx rebuild |
-| I16 | Assumption imports reach **resolved calls only**; the text also imposes the assumed list on every functional type in a covariant position of the dependency's signatures — results, function-typed fields and properties, bound methods | Assumption imports | M: rewrites imported signature types, which the pass never touches today |
-| I17 | An assumption import on a package that **records clauses of its own** must be rejected; we accept it | Assumption imports | S after I15 |
 | I18 | With checking **off**, clauses parse and impose nothing, but still shape `FuncTy` identity and are still written to the `.cjo`; the text says "not recorded" | Compatibility; Package metadata | S–M, after Q10 |
 | I20 | The generics example (`g(0, f)`, parameters only in the argument's list) now compiles; the text says error | Generics | S after Q11 |
-| I26 | **A `macro` declaration cannot carry a clause at all**: `public macro Actor(...): Tokens throws MacroException { ... }` is a parse error (*expected declaration, found 'throws'*), yet every macro in stdx throws `MacroException` and documents it. Either macros carry clauses like any other function, or the text has to say that expansion-time code is outside the checking — it says neither | Clauses on declarations (silent on macros) | S for the parser; the ruling is the real question |
-| I27 | **Macro-expanded code demands capabilities its author cannot declare**: `@Derive[ToString, Hashable, Equatable]` generates members that require `CanThrow<Exception>`, and the diagnostic lands on the `@Derive` line, where no clause can be written. The generated members need clauses of their own (or none of the requirement) — a macro-authoring rule the text does not have | Clauses on declarations; the macro story is absent | M: needs a rule first |
 | I28 | **Incremental compilation does not propagate a changed *inferred* list.** A body edit that gives a declaration a new capability list leaves unchanged callers in the same package served from the cache and never re-checked, so the build is silent where a full build errors (probe: `risky()` gains a `throw`; the caller with an explicit empty clause should be an error and is not). Declared clauses are hashed in both directions and are fine; only exported declarations are excluded from inference, so the exposure is exactly intra-package. Fix: either fold the body hash into the spreading hash for an inference-eligible declaration (conservative, recompiles more), or persist the inferred lists in the cache and force a re-check when they differ (precise) | Capability parameter inference (the text does not mention incremental builds) | M |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
@@ -110,7 +105,17 @@ an error" asks for.
 
 ## I.3 Implementation artifacts not sanctioned by the proposal
 
-- **C5** Macro NodeFormat does not serialize `ThrowsClause` — macro-generated code cannot declare clauses (blocks `std.unittest` from offering checked APIs).
+- **C15** An assumption import pays for a covariant function value **where the value crosses the
+  package boundary**, not where it is finally called. The text puts the assumed list on the type;
+  doing that faithfully needs the imported declarations' types rewritten at load time, since
+  rewriting an expression's type does not reach the variable or field it flows into. The
+  difference is a false positive for a value taken and never called, never a missed obligation.
+- **C5 (narrowed by probe, 2026-08-23)** Macro `NodeFormat` has no `ThrowsClause`, but a
+  declaration **does** keep its clause through a macro: `parseDecl(input).toTokens()` re-emits it
+  and the call site still demands the capability (probed). What is missing is the std.ast *API* —
+  a macro cannot read a declaration's clause, nor attach one to a node it builds programmatically.
+  Fixing that means the schema, the generated `NodeFormat_generated.cj`, and new `std.ast`
+  members, in that order.
 - **C6** `CanThrow` does not exist as a type; entries live directly in `FuncTy::capTys`. Working as intended (strongest form of the intrinsic NOTE in "Type of exception capabilities"); revisit only if effects materialization needs a real type.
 - **C7/C8** Diagnostics: generic inference failure shows the uninstantiated capability row with no dedicated message; override/clause diagnostics print raw `Class-X` names.
 - **C9** LSP/cjd compiler instance no-ops the pass — no IDE diagnostics.
@@ -224,6 +229,12 @@ Blocked on rulings: `Iterator.next` implementations (E-4), `Resource.close` over
   only; that commands may also be captured reaches the reader solely through the blanket
   substitution at the head of "Effect requirements". One clause in the capturing rule would make
   it findable from where it is implemented.
+- **E-17** The text states the "Capability regions" rules for the **base design**, but the author
+  has scoped them to Modal CangJie (2026-08-23). Either the section says so — regions are a Modal
+  requirement, not a base-tier one — or the base design keeps rules the base tier will not enforce,
+  which is exactly the guarantee gap the state table warns about. The same applies to the two
+  region rules that live in "Effect requirements" (resumptions are handler-bound; `resume r with v`
+  is an origin-flow boundary).
 - **E-14** The state table's Modal-less row reads "partial: carrier escape unverified, within a
   function included". The intended reading — the *unverified* part includes the within-a-function
   case, as the Modal-less section states outright — is the opposite of the one a reader takes on
@@ -325,6 +336,7 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 | Q6 | Misplaced `@AssumeThrows` — error or ignored? | error | ratified (D15); flagging only |
 | Q8 | *(answered by the text, pending the spec: implicit `close()` is inside the `try` scope; see E-16)* | nothing is demanded for `close()` either way | none while `Resource.close()` is clause-free |
 | Q12 | `resume throwing e` "resolves in the handler body's enclosing capability scopes". A `handle` body, like a `catch` body, is outside its own `try`'s scope — so the requirement cannot be met by the `try` whose command the handler serves, even when that `try` also catches `E`. Intended (the text calls it the conservative choice), but it means the common shape "perform, handler translates failure into an exception the same `try` catches" needs an outer handler. Confirm, or adopt the refinement the text mentions | not implemented yet (I24) | S either way |
+| Q13 | May a macro carry a **`performs`** clause? The revision lets a macro declare what it throws; it does not say whether it may declare effects. A macro body runs inside the compiler, where no handler for a user effect can be installed | rejected at parse (`a macro cannot carry a 'performs' clause`) | widening is backward-compatible |
 | Q9 | A cast target whose type argument is a **type parameter** — `x as Box<T>` in generic code — passes the invariant-position rejection, since `T` is not a function type at the declaration; instantiating `T` with `() throws E -> R` then launders exactly what the rule closes. Reject such targets, accept the hole, or re-check at instantiation? | accepted (the check runs once, on the generic declaration) | the stdlib already casts to `Box<T>`/`ResourcePool<T>`, so rejecting is a real source break |
 | Q11 | Must a call be rejected when a type parameter occurs **only** in capability lists and nothing else depends on it? The generics section's example says error. After the substitution fix the prototype accepts it (nothing observable is unconstrained: the argument's list still binds nothing, and any other use of the parameter still fails). Restore the rejection, or soften the example? | accepted | S either way |
 | Q10 | With checking **off**, do clauses still shape types? The text says the grammar is unconditional and the clauses "impose no obligations and are not recorded" — but a clause today also makes `() throws E -> R` a distinct type from `() -> R`, which decides subtyping and overloading in code that is not being checked, and is what stops a throwing value crossing into unchecked code. Dropping it makes a package's types change when it flips the flag; keeping it makes an unchecked package feel obligations | kept: clauses shape types at every level (I18) | S–M either way, but it decides what "not recorded" means for the `.cjo` |
@@ -340,6 +352,31 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **The 2026-08-23 evening round: macros, package metadata, assumption reach, and two fixes in
+  std.deriving.** The author ruled that a macro may declare what it throws, and that capability
+  regions belong to Modal CangJie rather than this tier (I4 stays recorded as a divergence, E-17).
+  With the ruling in hand: `ParseMacroBody` takes a clause, `performs` is refused there because a
+  macro body runs inside the compiler where no handler can be installed (Q13), and the 789-case
+  macro suite stayed green. The `.cjo` now records what a package's lists are worth — the level
+  checking ran at, whether effect handlers were on, and whether it carries capability metadata at
+  all, which the first two cannot express for a file written before the feature. Two rules follow:
+  an assumption over a package **verified at `error`** is a contradiction and is rejected, while
+  one over a package built at `warn` stays legal because those lists are knowingly incomplete —
+  that distinction is what keeps assumptions usable during the migration. And an assumption now
+  reaches the function values a dependency hands out, not only the calls that resolve into it.
+  **Lesson (test validity, again).** The first version of the covariant test passed against the
+  unfixed compiler: all three of its assertions were the same message, and the boundary call alone
+  produced it. Asserting the two *locations* that previously produced nothing is what made the test
+  discriminate — a `scan` for a message says nothing about which site raised it.
+  **Lesson (generated code).** Two capability diagnostics in stdx had no possible fix at the site
+  they pointed at, because the code was generated: `@Derive` on a non-exhaustive enum emits
+  `case _ => throw Exception("Should never happen")` into `toString` and `hashCode`, interface
+  implementations that declare no clause. The fix belongs in the generator, and it is a
+  classification question rather than a checking one — reaching that branch is a broken invariant,
+  so it throws `IllegalStateException`, which is unchecked. Any macro that generates a `throw` into
+  someone else's package has the same obligation: either the exception is unchecked, or the
+  generated declaration carries its own clause (which is now possible for macros too).
 
 - **stdx at `warn`, and the ICE it uncovered.** Building stdx with checking on died with an
   internal error — *begin of range is zero* — in `stdx.net.http`. A property accessor declared
