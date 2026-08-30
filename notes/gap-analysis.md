@@ -44,6 +44,7 @@ rebuilds are called out because they are the expensive part.
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
 | I18 | With checking **off**, clauses parse and impose nothing, but still shape `FuncTy` identity and are still written to the `.cjo`; the text says "not recorded" | Compatibility; Package metadata | S–M, after Q10 |
+| I30 | **Semantic form does not reach type identity**: `() throws (Base, Derived) -> R` and `() throws Base -> R` intern as two types, observable wherever identity matters — invariant generic positions (`Box<...>` assignment rejected), and the printed type. Canonicalizing at interning was tried and reverted (subtype queries during type formation, 17 breakages); needs a canonical `CapList` value normalized at one construction boundary | Capability parameters in declarations, rule 2 (semantic form) | M–L |
 | I28 | **Incremental compilation does not propagate a changed *inferred* list.** A body edit that gives a declaration a new list leaves unchanged callers in the same package served from the cache and never re-checked, so the build is silent where a full build errors (probe: `risky()` gains a `throw`; the caller with an explicit empty clause should be an error and is not). Declared clauses are hashed in both directions and are fine; only non-exported declarations are inferred, so the exposure is exactly intra-package. The cheap fix — fold the body hash into the spreading hash — was tried and reverted: it costs 185 `compiler/IncrementalCompilation` failures (Part III). The sound one persists the inferred lists in the incremental cache and compares after inference | Capability parameter inference (the text does not mention incremental builds) | M–L |
 | I29 | **Macros called from other macros are not checked as ordinary calls** (§3.2 rule 5). A macro's clause is handled by the compiler at the **expansion root**; a macro invoked from inside another macro is supposed to behave as an ordinary function, its requirements falling on the enclosing macro. In the prototype an expansion site demands nothing at all, at any depth: the invocation is replaced by the expansion before checking, so there is no call left to check. Unverified whether the text's case is even expressible — it may mean nested expansions in user code rather than macro packages calling each other; ask before implementing | Capability parameters in declarations, rule 5 | S–M once the reading is settled |
 | I20 | The generics example (`g(0, f)`, parameters only in the argument's list) now compiles; the text says error | Generics | S after Q11 |
@@ -144,7 +145,7 @@ an error" asks for.
   whenever the lexer, the AST node set, or the parser headers change.
 - **C14** *(closed 2026-08-23: the golden lists `--enable-chexc`, its two severities and the `chexc` warning group; `compiler/Driver/options/help` is 5/5.)*
 - **C7 (widened)** Capability diagnostics print `Class-X` for class types — `Cannot find a capability for 'Class-AException' (of type 'CanThrow<Class-AException>')`. Not ours to fix locally: stock `cjc` prints the same form everywhere (`expected 'Int64', found 'Class-A'`), so the model message in "Capability argument inference", which spells the source name, describes a compiler-wide diagnostic style CangJie does not have. Either the message is illustrative, or the type printer changes globally.
-- **MF2 half** Inferred lists are written into declaration types, but a requirement at *function-value formation* from a clause-bearing declaration is not demanded; the audit disproved the original premise — recheck against the final text.
+- **MF2 half** *(closed 2026-08-30: formation-site demand landed with the review round — a reference to an INFERRED declaration pays the list where the value is formed; declared clauses ride the reference's type and pay at the call, as before.)*
 - **R6** 118 `GetFunctionTy` call sites do not visibly pass a capability list. Most are capability-free by construction; nothing but an audit separates them from latent drop sites (the reconstruction defect class, Part III).
 
 ## I.4 Production-readiness (prototype → shippable)
@@ -385,6 +386,44 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **External review analyzed (2026-08-30), four defects confirmed by probe, four fixed the same
+  day.** An independent review of `58985730`/`7c1c12c06d`/`0a1ec17`/`4eb1cd8` landed. Its
+  escape-analysis findings (`captures` pre-Modal, `resume with` flow, regions, the closed-build
+  verifier) are out of this tier's scope by the author's ruling and were set aside; of the rest,
+  every claim was probed before being believed. Confirmed and **fixed**:
+  - **The inferred-list leak through function values — the review's P0, and real.** `let w: () ->
+    Unit = risky` with an inferred-throwing `risky` compiled at `error` and leaked at run time:
+    reference expressions are typed before inference, so the completed declaration type never
+    reaches them, and `HandleCall` unioned the side map for calls only. Fixed at the formation
+    site: a reference that turns an inferred declaration into a value demands the inferred list
+    there (`DemandInferredOnValue`), references are call-graph edges as §5.3.4 requires, and the
+    collecting pass picks the demand up so a function that only *references* a thrower infers the
+    requirement itself. Formation-site payment is stricter than the text's type-riding reading —
+    recorded beside C15, which made the same trade for assumption imports.
+  - **A covered entry was still demanded.** `throws Base, Derived` demanded both at the call site;
+    the semantic form says the list is `{Base}`. Call-site demands now pass through
+    `NormalizeCapTys`.
+  - **An entry instantiated to an unchecked type did not vanish from the type.** `safeThrow<ReqExc>`
+    was not assignable to the clause-free shape, though §5.1.2 says the instantiated clause *is*
+    clause-free. Coverage now treats an unchecked sub-entry as trivially satisfied (the type
+    manager learns the `UncheckedException` root at type-check preparation); the entry still
+    prints in the type and still splits identity in invariant positions — the residue below.
+  - **Effect capabilities were named `Handler<C>`;** §5.4 defines `CanPerform<C>`. Renamed.
+  Confirmed and **recorded, not fixed**:
+  - **Semantic form is observable in invariant positions** — `Box<() throws (Base, Derived) ->
+    Unit>` and `Box<() throws Base -> Unit>` are two types where the text says one. The notes
+    previously claimed nothing observes the identity difference; the review found the observer.
+    The fix is canonicalization at construction, which was tried and reverted (17 breakages —
+    subtype queries during type formation); it needs the `CapList` design, not another attempt at
+    interning time. Upgraded from artifact to I30.
+  Already in the ledger, confirmed by the review independently: I28 (incremental inferred lists,
+  with the review agreeing the 1,944 green tests cannot see it), Q10/I18 (checking-off semantics
+  must be normatively chosen), I20/Q11 (the generics example), I29 (nested macros), Q8/E-16
+  (try-with-resources), C9 (LSP/cjd skips the pass), the `GetFunctionTy` defaulted parameter, and
+  the stdlib/tooling state. **Lesson:** the reviewer found the observer for a difference we had
+  declared unobservable, and the leak sat exactly where the notes already pointed (MF2-half) —
+  a recorded "half" defect is a defect, and "nothing observes it" is a claim that expires.
 
 - **Re-read of §3, §5 and §6 against the prototype (2026-08-23, evening).** The text had moved
   again — macros are now listed among the declarations that may carry a clause (§3.2 rule 1), with
