@@ -40,8 +40,8 @@ dedicated post-resolution check, never a solver change (which would break ordina
 
 | Batch | Contents | Size | Builds |
 |---|---|---|---|
-| **R1 — the rulings** | Q11 error restored; Q10 landed from the parked draft; I29 closed by reading | S | 1 compiler |
-| **R2 — Q8: `close()` demand** | must precede stdlib batch 3a | S | 1 compiler |
+| ~~R1 — the rulings~~ | **done** (compiler `51825163`): Q11 rejection, Q10 inert clauses, I29 closed by reading | — | — |
+| ~~R2 — Q8: `close()` demand~~ | **done** (same commit): each resource's effective `close` list demanded in the try's scope | — | — |
 | **R3 — I30: canonical `CapList`** | the reviewer's main remaining correctness item; C16 rides along if kind bits come out | M–L | 1–2 compiler + std/stdx verification |
 | **R4 — I28: incremental inferred lists** | v1 = cache + escalate-to-full on change | M | 1 compiler |
 | **R5 — review tails** | meet test, ABI/erasure test, stale comments, capTysInert kind split; optional file split of CapabilityCheck.cpp last | S each | 1 compiler |
@@ -118,11 +118,8 @@ closed-build verifier (Modal); LSP/cjd (C9), the fixer and the lints (I.4 toolin
 | I4 | **No capability-region check** — rules 1–6 of "Capability regions", resumptions as carriers, `resume with` as a flow boundary. Both canonical escapes are accepted today. **Deferred by the author (2026-08-23): regions are a Modal CangJie requirement, not this tier's.** Kept here because the text still states them for the base design — either the text scopes them to Modal, or this stays a permanent divergence | Capability regions; Effect requirements rules 4, 6 | — (not to be implemented) |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
-| I18 | With checking **off**, clauses parse and impose nothing, but still shape `FuncTy` identity and are still written to the `.cjo`; the text says "not recorded" | Compatibility; Package metadata | S–M, after Q10 |
 | I30 | **Semantic form does not reach type identity**: `() throws (Base, Derived) -> R` and `() throws Base -> R` intern as two types, observable wherever identity matters — invariant generic positions (`Box<...>` assignment rejected), and the printed type. Canonicalizing at interning was tried and reverted (subtype queries during type formation, 17 breakages); needs a canonical `CapList` value normalized at one construction boundary | Capability parameters in declarations, rule 2 (semantic form) | M–L |
 | I28 | **Incremental compilation does not propagate a changed *inferred* list.** A body edit that gives a declaration a new list leaves unchanged callers in the same package served from the cache and never re-checked, so the build is silent where a full build errors (probe: `risky()` gains a `throw`; the caller with an explicit empty clause should be an error and is not). Declared clauses are hashed in both directions and are fine; only non-exported declarations are inferred, so the exposure is exactly intra-package. The cheap fix — fold the body hash into the spreading hash — was tried and reverted: it costs 185 `compiler/IncrementalCompilation` failures (Part III). The sound one persists the inferred lists in the incremental cache and compares after inference | Capability parameter inference (the text does not mention incremental builds) | M–L |
-| I29 | **Macros called from other macros are not checked as ordinary calls** (§3.2 rule 5). A macro's clause is handled by the compiler at the **expansion root**; a macro invoked from inside another macro is supposed to behave as an ordinary function, its requirements falling on the enclosing macro. In the prototype an expansion site demands nothing at all, at any depth: the invocation is replaced by the expansion before checking, so there is no call left to check. Unverified whether the text's case is even expressible — it may mean nested expansions in user code rather than macro packages calling each other; ask before implementing | Capability parameters in declarations, rule 5 | S–M once the reading is settled |
-| I20 | The generics example (`g(0, f)`, parameters only in the argument's list) now compiles; the text says error | Generics | S after Q11 |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
 intrinsic's contravariance and non-denotability; clause placement on functions, instance and
@@ -343,6 +340,11 @@ forward through the interface need to restate it (annotating all of them, as a f
   only; that commands may also be captured reaches the reader solely through the blanket
   substitution at the head of "Effect requirements". One clause in the capturing rule would make
   it findable from where it is implemented.
+- **E-18** §5.3.1's macro sentence — "a non-public macro can never be an expansion root and is an
+  ordinary inference-eligible declaration" — describes a declaration the language does not have:
+  the parser mandates `public` on every macro (*expected 'public' before macro declaration*), so
+  the clause is vacuous. Either drop it, or say plainly that every macro is exported and therefore
+  never inferred.
 - **E-17** The text states the "Capability regions" rules for the **base design**, but the author
   has scoped them to Modal CangJie (2026-08-23). Either the section says so — regions are a Modal
   requirement, not a base-tier one — or the base design keeps rules the base tier will not enforce,
@@ -448,11 +450,8 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 |---|---|---|---|
 | Q5 | Do conversions apply to `throw` expressions or calls only? | planned uniform | moot for v1 (conversions are an extension) |
 | Q6 | Misplaced `@AssumeThrows` — error or ignored? | error | ratified (D15); flagging only |
-| Q8 | *(answered by the text, and the desugaring probe agrees — see E-16)* | **nothing is demanded for `close()` at all**: the capability pass runs before desugar, when the implicit calls do not exist as AST nodes, so a clause-bearing `close()` would run with no capability demanded anywhere — the silent-leak class. Unobservable today: std's `Resource.close()` is clause-free, and at `error` a clause-bearing override of it is stopped by override coverage first. The fix is to synthesize the demand in the `TRY_EXPR` case (each resource's effective `close` list, against the try's own scope) — small, and inert until batch 3a / Q-STD-9(a) puts a clause on `close` | none while `Resource.close()` is clause-free |
 | Q12 | `resume throwing e` "resolves in the handler body's enclosing capability scopes". A `handle` body, like a `catch` body, is outside its own `try`'s scope — so the requirement cannot be met by the `try` whose command the handler serves, even when that `try` also catches `E`. Intended (the text calls it the conservative choice), but it means the common shape "perform, handler translates failure into an exception the same `try` catches" needs an outer handler. Confirm, or adopt the refinement the text mentions | implemented conservatively (I24, batch A): resolves in the handler body's enclosing scopes | S either way |
 | Q9 | *(answered by the revision: "Reflection and runtime casts" rule 2 accepts a parameter-typed target outright and classifies such casts as an unchecked boundary, outside the guarantee — exactly the implemented behavior)* | accepted | none — text and prototype agree |
-| Q11 | Must a call be rejected when a type parameter occurs **only** in capability lists and nothing else depends on it? The generics section's example says error. After the substitution fix the prototype accepts it (nothing observable is unconstrained: the argument's list still binds nothing, and any other use of the parameter still fails). Restore the rejection, or soften the example? | accepted | S either way |
-| Q10 | With checking **off**, do clauses still shape types? The text says the grammar is unconditional and the clauses "impose no obligations and are not recorded" — but a clause today also makes `() throws E -> R` a distinct type from `() -> R`, which decides subtyping and overloading in code that is not being checked, and is what stops a throwing value crossing into unchecked code. Dropping it makes a package's types change when it flips the flag; keeping it makes an unchecked package feel obligations | kept: clauses shape types at every level (I18) | S–M either way, but it decides what "not recorded" means for the `.cjo` |
 
 ## II.4 Upstream compiler defects found on the way (not ours; worked around)
 
@@ -465,6 +464,38 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **R1 + R2 landed (2026-08-30): three rulings and the try-with-resources hole.** Q11's
+  restoration turned on reading the solver before writing anything: the language reports *unable to
+  infer* only for a variable with **no constraints at all**, while a `where T <: Exception` bound
+  seeds the constraint set and the variable is then **solved at its bound**. So `g(0, f)` compiling
+  was ordinary language behaviour, not a capability anomaly — and the ruled rejection had to be a
+  dedicated post-resolution check rather than a solver change, which would have altered ordinary
+  `where`-bounded code and, worse, which overload wins. Two implementation traps on the way, both
+  caught by the tests rather than by reasoning: consulting the solved `instTys` made the check
+  never fire (they are exactly the silent choice being rejected — only author-written arguments
+  count), and reporting per parameter showed one of two (the position+severity dedup again, now
+  encountered for the third time — batching per site is becoming the house pattern).
+  Q10 landed as a single gate at `GetFunctionTy`: with both features off the list is dropped where
+  every `FuncTy` is built, so identity, subtyping, overloading, joins and the `.cjo` follow without
+  each of them being taught the rule. Q8's residue — the implicit `close()` demanded nothing
+  because the pass runs before desugar — is closed by synthesizing the demand per resource inside
+  the try's own scope, which the 2026-08-30 probe had already shown is where the closing lands.
+  **Lesson:** "does the language already do X in the general case?" is worth ten minutes in the
+  solver before touching it — the answer reframed the fix from *change inference* to *add a check
+  beside it*, and that is the difference between a two-file change and a regression in every
+  generic call in the language.
+
+- **I29 closed by reading the language, not by code (2026-08-30).** §3.2 rule 5 says macros called
+  from other macros behave as ordinary functions. Probing showed the premise does not exist in the
+  form the rule seems to describe: a macro cannot be *called* by name at all — `Risky(input)`
+  inside another macro body is *undeclared identifier*. Macro composition exists only as `@Inner`
+  inside a `quote`, i.e. a nested expansion evaluated by the compiler when the consuming package is
+  built. So there is no static call edge to check: each macro body is checked against its own
+  clause where it is compiled (already done), and the expansion root is the compiler's contract
+  (already done). The rule is satisfied vacuously in the prototype, and the clarified text now says
+  "within a macro package", which is the same reading. Side finding: E-18, §5.3.1's non-public
+  macro sentence is about a declaration the parser forbids.
 
 - **External review analyzed (2026-08-30), four defects confirmed by probe, four fixed the same
   day.** An independent review of `58985730`/`7c1c12c06d`/`0a1ec17`/`4eb1cd8` landed. Its
