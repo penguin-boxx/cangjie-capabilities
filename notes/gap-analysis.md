@@ -345,16 +345,51 @@ forward through the interface need to restate it (annotating all of them, as a f
   only; that commands may also be captured reaches the reader solely through the blanket
   substitution at the head of "Effect requirements". One clause in the capturing rule would make
   it findable from where it is implemented.
-- **E-19** "Capability parameters in declarations" rule 1 lists **property accessors** among the
-  places a clause may appear, and "Overriding and redefinition" speaks of "a method *or property
-  accessor*" — but a property in an **interface** cannot carry one in any form. Probed
-  2026-08-30: an accessor without a body is a parse error (*body of function 'get' is missing*),
-  and a clause on the property itself is not grammar (*expected declaration, found 'throws'*). So
-  an interface property contract is always `throws ()`, and an implementation whose accessor
-  throws can only ever be a coverage violation, never a conforming override. Either the grammar
-  grows abstract accessor clauses (`prop p: Int64 { get() throws E; set(x) throws F }`), or the
-  text says plainly that properties carry clauses only where they have bodies. Recorded as a
-  restriction the implementation inherits from the language, not as a prototype gap.
+- **E-19 — a property in an interface can never declare what its accessors throw.** The rule that
+  lists clause-bearing declarations includes property accessors, and the override rule speaks of
+  "a method *or property accessor*" — both true wherever an accessor has a **body**. They are
+  unreachable for an **abstract** accessor, which is exactly the interface contract. Probed
+  2026-08-30, six forms:
+
+  | form | result |
+  |---|---|
+  | `interface I { prop v: Int64 { get() throws E } }` | parse error — *body of function 'get' is missing* |
+  | `interface I { prop v: Int64 throws E }` | parse error — *expected declaration, found 'throws'* |
+  | `interface I { prop v: Int64 { get() throws E { … } } }` (default impl) | **accepted** |
+  | `open class A { public open prop v: Int64 { get() throws E { … } } }`, override narrows | **accepted** |
+  | `interface I { func value(): Int64 throws E }` (the same contract as a **method**) | **accepted** |
+  | interface `prop`, implementation's accessor throws | coverage violation, always |
+
+  So the mechanism is `ParsePropMemberDecl`, which requires a body on every accessor, plus
+  `AddSetterGetterInProp`, which synthesizes the abstract ones with an empty `FuncBody` and no
+  clause — the contract is therefore always `throws ()`. **The asymmetry is the finding:** an
+  interface method may declare what it throws, an interface property may not, though the design's
+  whole motivation ("an interface definition cannot know about all possible types of exceptions
+  that implementations will need to throw") applies identically to both.
+
+  **It bites real code.** `std.net`'s `StreamingSocket.localAddress` and `.remoteAddress` document
+  `@throws SocketException`, and `TcpSocket`'s accessors throw exactly that; the interface cannot
+  say so, so every such implementation is a permanent coverage violation. (Four more properties in
+  the same file document `IllegalArgumentException`, which is unchecked and therefore harmless.)
+
+  **Four ways out, with what each costs:**
+  1. **Abstract accessor clauses** — `prop v: Int64 { get() throws E; set(x) throws F }`. Closest
+     to what the text already promises, keeps getter and setter independent, and needs the parser
+     to accept a bodyless accessor where a bodyless method is accepted. S–M in the compiler; it is
+     a language-grammar change, so it is the author's call, not ours.
+  2. **A clause on the property** — `prop v: Int64 throws E`, distributed to both accessors.
+     Smaller grammar, but loses the getter/setter distinction the text's own example uses.
+  3. **Capture instead** — the implementation declares `captures E` and its accessors require
+     nothing (probed: accepted). This is precisely what "Capability capturing" was designed for,
+     and it works for properties today — but it needs Modal to be sound, and pre-Modal `captures`
+     is outside this tier by ruling.
+  4. **Accept the restriction** and say so in the text: properties carry clauses only where they
+     have bodies; an interface property that can fail is expressed by a method, or by capture.
+
+  **Recommendation: (1) as the design answer, (4) as the text's answer until the grammar changes.**
+  Until then the implementation is correct and the diagnostic is honest — it reports a real
+  divergence between what the implementation throws and what the contract admits.
+
 - **E-18** §5.3.1's macro sentence — "a non-public macro can never be an expansion root and is an
   ordinary inference-eligible declaration" — describes a declaration the language does not have:
   the parser mandates `public` on every macro (*expected 'public' before macro declaration*), so
