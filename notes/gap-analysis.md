@@ -43,7 +43,7 @@ dedicated post-resolution check, never a solver change (which would break ordina
 | ~~R1 — the rulings~~ | **done** (compiler `51825163`): Q11 rejection, Q10 inert clauses, I29 closed by reading | — | — |
 | ~~R2 — Q8: `close()` demand~~ | **done** (same commit): each resource's effective `close` list demanded in the try's scope | — | — |
 | ~~R3 — I30: canonical `CapList`~~ | **done** (compiler `667b9a1c`): normalization at the four producer boundaries; C16 stays recorded, see the design note | — | — |
-| **R4 — I28: incremental inferred lists** | v1 = cache + escalate-to-full on change | M | 1 compiler |
+| ~~R4 — I28: incremental inferred lists~~ | **done** (compiler `ac3856ef`): feature-gated rollback when an inference-eligible declaration is recompiled; v2 (persist lists, invalidate actual dependents) recorded | — | — |
 | **R5 — review tails** | meet test, ABI/erasure test, stale comments, capTysInert kind split; optional file split of CapabilityCheck.cpp last | S each | 1 compiler |
 
 **R1 details.**
@@ -118,7 +118,6 @@ closed-build verifier (Modal); LSP/cjd (C9), the fixer and the lints (I.4 toolin
 | I4 | **No capability-region check** — rules 1–6 of "Capability regions", resumptions as carriers, `resume with` as a flow boundary. Both canonical escapes are accepted today. **Deferred by the author (2026-08-23): regions are a Modal CangJie requirement, not this tier's.** Kept here because the text still states them for the base design — either the text scopes them to Modal, or this stays a permanent divergence | Capability regions; Effect requirements rules 4, 6 | — (not to be implemented) |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
-| I28 | **Incremental compilation does not propagate a changed *inferred* list.** A body edit that gives a declaration a new list leaves unchanged callers in the same package served from the cache and never re-checked, so the build is silent where a full build errors (probe: `risky()` gains a `throw`; the caller with an explicit empty clause should be an error and is not). Declared clauses are hashed in both directions and are fine; only non-exported declarations are inferred, so the exposure is exactly intra-package. The cheap fix — fold the body hash into the spreading hash — was tried and reverted: it costs 185 `compiler/IncrementalCompilation` failures (Part III). The sound one persists the inferred lists in the incremental cache and compares after inference | Capability parameter inference (the text does not mention incremental builds) | M–L |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
 intrinsic's contravariance and non-denotability; clause placement on functions, instance and
@@ -463,6 +462,18 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **I28 closed by deciding where the machinery already decides (2026-08-30).** The hash cannot
+  carry an inferred list — it is computed at `AST_DIFF`, before the inference that derives it — and
+  the attempt to make it carry one anyway cost 185 upstream failures, because it changed the
+  recompilation set of every build whether or not the feature was on. The fix that works is at the
+  scope-analysis result and **gated on the feature**: if any declaration scheduled for
+  recompilation is inference-eligible, the round rolls back to a full package compilation. Builds
+  without the flag keep their sets exactly (1,944/1,944 confirms), and the reproducer that could
+  not be committed as a test in August is a test now.
+  **Lesson:** the second attempt succeeded not because it was cleverer but because it asked *who
+  already owns this decision* — the incremental machinery has a rollback verdict, and the feature
+  only had to raise it. The first attempt tried to teach the hash something the hash cannot know.
 
 - **R3: the semantic form reached identity (2026-08-30).** Normalization moved to the four
   boundaries where a list is *produced* — clause elaboration for declarations and for functional
