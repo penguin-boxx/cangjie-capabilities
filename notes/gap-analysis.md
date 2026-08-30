@@ -368,7 +368,7 @@ forward through the interface need to restate it (annotating all of them, as a f
 
 - **E-1** "Stack traces and cause chains" writes `eErr.suppressed += eFrom`; "Standard library and toolchain impact" specifies `suppressed` as a read-only snapshot with `addSuppressed`. Fix to `eErr.addSuppressed(eFrom)`.
 - **E-2** Audit tense: the toolchain-impact section says the classification is "confirmed by the annotation audit"; the migration section says "to be confirmed". It is *partially* confirmed (26 re-parents, 90 clauses). And the name marked "to confirm" is confirmed: **`UnsupportedException`**, not `UnsupportedOperationException`.
-- **E-3** `unsafeAssumeHandled`'s signature uses `@ local?` in a base-design std.core declaration, but the design explicitly supports a Modal-less tier whose toolchain cannot parse modes. State the degraded-mode surface form (modes stripped).
+- **E-3** *(closed by the 2026-08-30 revision: the intrinsic is `unsafeCanThrow` and the toolchain section states outright that without Modal Cangjie the parameter carries no mode.)*
 - **E-4 — now concrete.** The interface ruling ("streams declare `throws IOException`; implementations narrow") is inconsistent with `ContentFormatException <: Exception`. The inferred-override re-check found the instance the moment it ran over the stdlib: `std.io.StringReader.next()` — both the `Iterator<Rune>` and the `Iterator<String>` implementation — infers `ContentFormatException` against a clause-free `Iterator.next`, which at `error` level is a hard error and at `warn` a warning the migration cannot burn down. Re-parent under `UncheckedException` (it reports malformed input the reader cannot recover from) or under `IOException` and declare it on the stream interfaces — but decide, because the std build now depends on it.
 - **E-5** Two renumberings in one day left internal consistency intact (verified: no stale anchors) but make every external citation rot; consider freezing numbering or publishing stable anchors.
 - **E-13** *(closed — the revision states in "Capability capturing" rule 1 that an entry's kind follows its hierarchy and one list may mix kinds.)*
@@ -541,11 +541,21 @@ conversions were supposed to help, and they are now an extension.
 Single `E` per call; several specific types need nesting or the coarse `E = Exception`. A
 tuple form, consistent with capability list aliases, would cost little.
 
-### D-6 · "The package is the unit of the analysis" sharpens the unresolved Q1
-The per-file-enabling rejection argues the package is the analysis unit, yet assumption
-imports are file-scoped syntax: two files of one package asserting different lists about
-the same dependency feed one inference graph with per-file demands. Coherent (implemented),
-but the text still does not say whether that is intended.
+### D-6 · *(resolved by the revision: assumption imports are package-scoped)*
+
+The tension was that per-file syntax fed a package-unit analysis with per-file claims. The revised
+text rules the annotation package-scoped ("applies to every call into the dependency from the
+whole consuming package, whether or not the calling file repeats it"), and the implementation
+follows; D15's per-file half is superseded.
+
+### D-8 · The `spawn`/lazy restriction is heavier than its placement suggests
+
+Without capability-list polymorphism, `spawn` cannot release checked exceptions, a lazy iterator
+must be consumed inside its handler region, and deferred computations are checked at construction
+rather than execution. "Known limitations" states this honestly, but both external reviews
+independently concluded the same thing: for a language with first-class concurrency the
+restriction is severe, and "Capability-list polymorphism" is practically a prerequisite for any
+real async API, not an optional convenience. The text should say which of the two it is.
 
 ### D-7 · The base design keeps the boilerplate it calls "very common"
 With conversions demoted, handle-convert-rethrow at every abstraction boundary is manual in
