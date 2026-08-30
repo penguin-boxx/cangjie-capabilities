@@ -42,7 +42,7 @@ dedicated post-resolution check, never a solver change (which would break ordina
 |---|---|---|---|
 | ~~R1 — the rulings~~ | **done** (compiler `51825163`): Q11 rejection, Q10 inert clauses, I29 closed by reading | — | — |
 | ~~R2 — Q8: `close()` demand~~ | **done** (same commit): each resource's effective `close` list demanded in the try's scope | — | — |
-| **R3 — I30: canonical `CapList`** | the reviewer's main remaining correctness item; C16 rides along if kind bits come out | M–L | 1–2 compiler + std/stdx verification |
+| ~~R3 — I30: canonical `CapList`~~ | **done** (compiler `667b9a1c`): normalization at the four producer boundaries; C16 stays recorded, see the design note | — | — |
 | **R4 — I28: incremental inferred lists** | v1 = cache + escalate-to-full on change | M | 1 compiler |
 | **R5 — review tails** | meet test, ABI/erasure test, stale comments, capTysInert kind split; optional file split of CapabilityCheck.cpp last | S each | 1 compiler |
 
@@ -118,7 +118,6 @@ closed-build verifier (Modal); LSP/cjd (C9), the fixer and the lints (I.4 toolin
 | I4 | **No capability-region check** — rules 1–6 of "Capability regions", resumptions as carriers, `resume with` as a flow boundary. Both canonical escapes are accepted today. **Deferred by the author (2026-08-23): regions are a Modal CangJie requirement, not this tier's.** Kept here because the text still states them for the base design — either the text scopes them to Modal, or this stays a permanent divergence | Capability regions; Effect requirements rules 4, 6 | — (not to be implemented) |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
-| I30 | **Semantic form does not reach type identity**: `() throws (Base, Derived) -> R` and `() throws Base -> R` intern as two types, observable wherever identity matters — invariant generic positions (`Box<...>` assignment rejected), and the printed type. Canonicalizing at interning was tried and reverted (subtype queries during type formation, 17 breakages); needs a canonical `CapList` value normalized at one construction boundary | Capability parameters in declarations, rule 2 (semantic form) | M–L |
 | I28 | **Incremental compilation does not propagate a changed *inferred* list.** A body edit that gives a declaration a new list leaves unchanged callers in the same package served from the cache and never re-checked, so the build is silent where a full build errors (probe: `risky()` gains a `throw`; the caller with an explicit empty clause should be an error and is not). Declared clauses are hashed in both directions and are fine; only non-exported declarations are inferred, so the exposure is exactly intra-package. The cheap fix — fold the body hash into the spreading hash — was tried and reverted: it costs 185 `compiler/IncrementalCompilation` failures (Part III). The sound one persists the inferred lists in the incremental cache and compares after inference | Capability parameter inference (the text does not mention incremental builds) | M–L |
 
 **Audited and conforming** (implicit capability passing, rule by rule, 2026-08-21): the
@@ -464,6 +463,22 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **R3: the semantic form reached identity (2026-08-30).** Normalization moved to the four
+  boundaries where a list is *produced* — clause elaboration for declarations and for functional
+  type nodes, generic substitution, the inferred write-back — plus the `.cjo` loader, so nothing
+  downstream had to learn the rule: identity, subtyping, invariance, joins, printing and metadata
+  all follow from one canonical value. Interning stays untouched, which is the whole lesson of the
+  reverted 2026-08-22 attempt: coverage needs `IsSubtype`, and `IsSubtype` inside type formation
+  re-enters it. `NormalizeCapTys` also drops a concrete unchecked entry, so §5.1.2 reaches identity
+  too — `safeThrow<Unchecked>` and the clause-free shape are one type now, not merely assignable.
+  One regression appeared and is worth remembering: **making lists legitimately empty broke a
+  defence-in-depth path.** `HandleCall` re-derives the callee's declared list when the call's type
+  carries none — written for types rebuilt by machinery that predates the feature. With
+  normalization, "carries none" became a legitimate state, so the fallback fired and demanded the
+  *uninstantiated* `CanThrow<E>` for a call that had pinned `E` to an unchecked type. The fallback
+  now applies the call's own mapping and normalizes. **Lesson:** a defensive path keyed on "this
+  looks empty, something must have been lost" becomes a bug the moment empty becomes a real answer.
 
 - **R1 + R2 landed (2026-08-30): three rulings and the try-with-resources hole.** Q11's
   restoration turned on reading the solver before writing anything: the language reports *unable to
