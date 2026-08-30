@@ -10,6 +10,8 @@
   implementation questions with the answers the implementation gave them.
 - `autonomous-decisions.md` — the author's rulings 1–14 and the decisions D1–D18 taken without
   consultation, each with its rationale; the "why" behind the code.
+- `property-clauses-design.md` — the design for clauses on properties (E-19/I31): the two ruled
+  forms, where the clause lives in the AST, how it is distributed, and what it costs.
 - `caplist-design.md` — why capability lists are canonicalized at producer boundaries rather than
   at interning, the four sites, and what is deliberately left alone.
 - `test-baseline.md` — the upstream baseline established before any change, the feature's own test

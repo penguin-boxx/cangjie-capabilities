@@ -118,6 +118,7 @@ closed-build verifier (Modal); LSP/cjd (C9), the fixer and the lints (I.4 toolin
 | # | Gap | Proposal section | Effort |
 |---|---|---|---|
 | I4 | **No capability-region check** — rules 1–6 of "Capability regions", resumptions as carriers, `resume with` as a flow boundary. Both canonical escapes are accepted today. **Deferred by the author (2026-08-23): regions are a Modal CangJie requirement, not this tier's.** Kept here because the text still states them for the base design — either the text scopes them to Modal, or this stays a permanent divergence | Capability regions; Effect requirements rules 4, 6 | — (not to be implemented) |
+| I31 | **A property cannot declare what its accessors throw where it matters most — in an interface** (E-19). Ruled 2026-08-30: support a clause on a bodyless accessor and a clause on the property itself, distributed to accessors without one. Design, plan and two open sub-questions in `property-clauses-design.md`; the expensive part is a new `PropDecl` field and its visitor sweep. Closes the `std.net` socket properties, the only real cases in std and stdx | Capability parameters in declarations, rule 1; Overriding and redefinition | M: 1–2 compiler builds + std |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
 
@@ -386,9 +387,10 @@ forward through the interface need to restate it (annotating all of them, as a f
   4. **Accept the restriction** and say so in the text: properties carry clauses only where they
      have bodies; an interface property that can fail is expressed by a method, or by capture.
 
-  **Recommendation: (1) as the design answer, (4) as the text's answer until the grammar changes.**
-  Until then the implementation is correct and the diagnostic is honest — it reports a real
-  divergence between what the implementation throws and what the contract admits.
+  **Ruled by the author 2026-08-30: support both (1) and (2)** — a clause on an abstract accessor
+  and a clause on the property itself, the latter distributed to the accessors that do not carry
+  their own. The design is in `property-clauses-design.md`; the implementation item is I31, and the
+  text needs the grammar section to grow both forms.
 
 - **E-18** §5.3.1's macro sentence — "a non-public macro can never be an expansion root and is an
   ordinary inference-eligible declaration" — describes a declaration the language does not have:
