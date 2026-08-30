@@ -86,6 +86,50 @@ touching `ASTHasher`: the suite asserts precisely which declarations a given edi
 change to what feeds `DeclHash.sig` shows up there in the hundreds — 185 failures for one such
 experiment (gap-analysis I28). Run it whenever the hashing changes; it takes about ten minutes.
 
+## The feature's own suites, 2026-08-30 (after R1–R5)
+
+`compiler/CheckedExceptions` holds **154 source files across twelve groups** — many are
+dependencies of multi-file cases, so the case count is lower:
+
+| group | what it pins |
+|---|---|
+| `parse` | clause grammar: placement, `()`, `...`, duplicates, order, the soft keywords |
+| `types` | functional subtyping, joins **and meets**, overloading, generics, semantic-form identity, cast targets |
+| `scopes` | the four scope introducers and the exclusions; `warn` level; the escape hatch; try-with-resources closing |
+| `inference` | SCC/fixpoint, recursion, effective visibility, overrides, **references as inference edges** |
+| `captures` | the clause, constructors, subclass restatement, mixed kinds |
+| `unchecked` | the taxonomy, unchecked entries, generic instantiation to an unchecked type |
+| `aliases` | tuple aliases, recursive flattening, cycles |
+| `assume` | assumption imports, package scope, covariant function values, recorded-level rejection |
+| `performs` | effect requirements: `perform`, `handle`, kinds kept apart, `resume throwing` |
+| `serialization` | `.cjo` round-trips, cross-package surfaces, incremental cases |
+| `macros` | a `throws` clause on a macro; `performs` refused |
+| `abi` | **erasure**: clause-bearing and clause-free twins must have identical symbol tables |
+
+Gate numbers on `629d4ecd` (compiler), all green:
+
+| suite | result |
+|---|---|
+| `compiler/CheckedExceptions` + `compiler/Sema/effect` | **161 / 161** |
+| `compiler/Sema` (full, includes the above) | **3,502 / 3,502** |
+| `compiler/IncrementalCompilation` | **1,944 / 1,944** |
+| `compiler/Macro` | **789 / 789** |
+| `compiler/Driver/options/help` | **5 / 5** |
+| compiler unit tests (`cj.py test compiler`) | **49 / 49** |
+| std, stdx at `warn` | build clean, no ICE |
+
+Which suite catches what, learned the hard way:
+
+- **`compiler/Sema` in full** is the gate for anything touching type identity — the reverted
+  canonicalization-at-interning attempt failed exactly there and nowhere else.
+- **`compiler/IncrementalCompilation`** asserts *which declarations* an edit recompiles, so any
+  change to what feeds `DeclHash.sig` shows up there in the hundreds (185 failures for one such
+  experiment). A feature-gated change does not move it at all, which is how R4 was made acceptable.
+- **`compiler/Macro`** must run whenever the parser changes: the token-ordinal regression of August
+  and the macro clause grammar both landed there first.
+- A **std build at `warn`** is the only thing that exercises the feature over a real corpus; two
+  defects (the override-pairing link failure, the accessor ICE) appeared there and in no suite.
+
 ## How to reproduce
 
 ```

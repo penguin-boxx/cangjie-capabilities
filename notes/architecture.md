@@ -290,13 +290,54 @@ tied to them all the same), so a first implementation can follow it literally. T
 cast rule of the ABI section is the other half of the same story and is implemented: a cast
 preserves origin sets rather than laundering them.
 
-## Open implementation questions (resolve during detailed planning)
+**Update, 2026-08-30 — what R1–R5 changed in this picture.** Four rows of the table above are
+unchanged (regions and capture sets are still not built, by the author's ruling that they belong to
+Modal), but the "types, capability-blind" row now says more than it did:
 
-1. Where CapLists live for decls: new field on FuncBody/FuncTy vs side table keyed by decl.
-   Field is simpler & serializes naturally; side table keeps Node.h churn minimal.
-2. Interning: confirm no code path relies on FuncTy Hash/== collapsing cap-differing types
-   (overload dup-check must compare modulo caps explicitly).
-3. Diagnostics ordering: capability errors after type errors — confirm acceptable UX.
-4. LSP/cjd (CjdCompilerInstance) integration of the new pass.
-5. Incremental compilation: capability-list changes must invalidate dependents (ASTHasher
-   must include clauses).
+- A capability list is **canonical wherever it is produced** — clause elaboration, generic
+  substitution, the inferred write-back, the `.cjo` loader — so the semantic form reaches type
+  identity, not merely comparisons. Interning stays untouched; normalizing there needs `IsSubtype`
+  inside type formation, which is what broke the 2026-08-22 attempt (`caplist-design.md`).
+- With **both capability features off** the list is dropped at the single `GetFunctionTy` funnel:
+  clauses then shape no type at all, which is the author's Q10 ruling ("an unchecked package
+  ignores `throws` in every position") and makes the feature's effect on typing switch cleanly with
+  the flag.
+- **Inference reaches values, not only calls.** A reference that turns an inferred declaration into
+  a function value pays that declaration's list at the formation site, and references are edges of
+  the inference graph. The type-riding reading of the text — the list travels with the value and is
+  paid at the eventual call — would need expression types rewritten after inference; the boundary
+  reading is stricter and sound, and is recorded as artifact C15.
+- **Incremental builds** are handled where the machinery already decides: if a declaration whose
+  list is inferred is scheduled for recompilation, the round rolls back to a full package build.
+  Gated on the feature, so builds without it keep their recompilation sets exactly.
+
+Erasure is no longer an argument: compiling one package twice, with every clause and with none,
+yields identical symbol tables (130 symbols, zero difference), and that is a test now
+(`abi/erasure_symbols.cj`).
+
+## Implementation questions — how they were resolved
+
+The five questions this section listed before any of the pass existed all have answers now; kept
+with their answers because the answers are the design.
+
+1. **Where capability lists live.** Both: `FuncTy::capTys` carries the list as part of the type
+   (and of interning identity, though never of `typeArgs`), while inference keeps its results in a
+   side map until `CompleteInferredCapabilityTypes` writes them into the declarations between the
+   two phases. The side map exists because inference runs after type check, when the declaration
+   types already exist; it is not a second source of truth — everything downstream reads the type.
+2. **Interning.** Confirmed: capability-differing functional types are distinct interned types, and
+   every place that must ignore lists does so explicitly — overload resolution compares signatures
+   with lists erased, and `IsFuncTySubType`, which *pairs* an override with what it implements, is
+   deliberately blind to them (a capability-aware pairing predicate silently un-recognized
+   overrides, which cost a day of link failures in August). Since R3 the lists that reach interning
+   are canonical, so two spellings of one semantic form are one type.
+3. **Diagnostics ordering.** Capability diagnostics come after type errors and are acceptable in
+   practice. One property of the engine shaped the design more than expected: it deduplicates by
+   position and severity alone, so several capability misses at one site collapse into the first —
+   the reporting handler therefore batches per site and names them all.
+4. **LSP/cjd.** Still open (C9): `CjdCompilerInstance` overrides the pass to a no-op, so the IDE
+   pipeline sees no capability diagnostics. Out of scope by the author's ruling on tooling.
+5. **Incremental compilation.** Clause changes invalidate dependents through `ASTHasher` (clauses
+   are part of the signature hash). Inferred lists cannot go there — the hash is computed before
+   the inference that derives them — so they are handled by the feature-gated rollback described in
+   the update above.
