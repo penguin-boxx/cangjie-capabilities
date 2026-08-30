@@ -22,19 +22,94 @@ in `conversions-adapt-plan.md`; the stdlib classification data stays in
 
 # Part I — What the implementation must change
 
-## I.0 The plan to close the gap (2026-08-23)
+## I.0 The plan (2026-08-30): section 3 conformance + the reviewer's findings
 
-Ordered by value per build; each batch is one compiler build plus the gate, and the std/stdx
-rebuilds are called out because they are the expensive part.
+Supersedes the 2026-08-23 batch plan (A/B/C done, D out of scope, E partly ruled — history in
+Part III). Ordered by value per build; every batch ends with: fmt → compiler build → targeted
+groups (`compiler/CheckedExceptions`, `compiler/Sema/effect`) → std build at `warn` → commit/push
+→ this file. Nothing starts without the author's go-ahead per batch.
 
-| Batch | Items | Builds | Needs a ruling first? |
+**The mechanism behind Q11, established by reading the solver** (`LocalTypeArgumentSynthesis::
+FindSolution`): the language reports *unable to infer* only for a variable with **no constraints
+at all** (`NO_CONSTRAINT` → "no information known for type variable"); a `where T <: Exception`
+bound seeds an upper bound into the constraint set, and a bounded-but-otherwise-unconstrained
+variable is **solved to its bound** by the general machinery. So `g(0, f)` compiling is ordinary
+language behavior, not a capability-feature anomaly — and the ruled restoration must be a
+dedicated post-resolution check, never a solver change (which would break ordinary
+`where`-bounded code).
+
+| Batch | Contents | Size | Builds |
 |---|---|---|---|
-| ~~A — the escape hatch + the cheap new rules~~ | **done 2026-08-23** (compiler `d06554d2`, `39ac1dc4`): I1, I21–I25 landed, std green at `warn`, 137/137 in the two targeted groups. The std rebuild cost a defect of its own — see Part III, "The `warn`-level link failure" | — | — |
-| ~~B — metadata~~ | **done 2026-08-23** (compiler `236ff253`): the `.cjo` records the checking level, whether effect handlers were on, and whether it carries capability metadata at all; an assumption over a package verified at `error` is rejected (I17), as is an effect-enabled package with no metadata | — | — |
-| ~~C — assumption imports on function values~~ | **done 2026-08-23** (compiler `4b319b12`): I16, with the artifact that the obligation falls where the value crosses the boundary rather than at the eventual call | — | — |
-| ~~D — capability regions~~ | **out of scope (author, 2026-08-23)**: "do not implement anything from section 4, it is the requirement for Modal CangJie" — read as the proposal's *Capability regions*, which is what I4 tracks and what needs the Modal machinery. If the intent was this document's I.4 (production readiness), say so and that list stops too; nothing from either has been implemented since | — | — |
-| **E — rulings** | I18/Q10 (clauses with checking off), I20/Q11 (the generics example), the stdlib re-parenting of `ContentFormatException` (E-4) | — | **yes**, all three |
-| deferred | I5 (Modal), I7 (deliberate), I14 (now an extension, I.7) | — | — |
+| **R1 — the rulings** | Q11 error restored; Q10 landed from the parked draft; I29 closed by reading | S | 1 compiler |
+| **R2 — Q8: `close()` demand** | must precede stdlib batch 3a | S | 1 compiler |
+| **R3 — I30: canonical `CapList`** | the reviewer's main remaining correctness item; C16 rides along if kind bits come out | M–L | 1–2 compiler + std/stdx verification |
+| **R4 — I28: incremental inferred lists** | v1 = cache + escalate-to-full on change | M | 1 compiler |
+| **R5 — review tails** | meet test, ABI/erasure test, stale comments, capTysInert kind split; optional file split of CapabilityCheck.cpp last | S each | 1 compiler |
+
+**R1 details.**
+- *Q11/I20*: helper `CollectClauseOnlyTyVars` in TypeCheckUtil — a callee type parameter is
+  clause-only when the full walk (the `CollectUsedTyVarsInto` shape: typeArgs + `capTys`) sees it
+  but the erased walk (`Ty::GetGenericTyArgs`, typeArgs only) does not. Hook at post-resolution
+  call finalization (after the winning candidate is fixed — NOT inside per-candidate solving,
+  which would perturb overload resolution); no explicit type argument for such a parameter →
+  `sema_unable_to_infer_generic_func` plus a dedicated note: *"type parameter 'T' occurs only in
+  capability lists, which take no part in type-argument inference; write it explicitly"*.
+  Constructors of generic capturing classes covered if the same hook sees them, else recorded.
+  Tests: the text's example verbatim as a neg; the `throws T, G`-callee variant flips from
+  demand-at-bound to unable-to-infer; explicit args stay legal (`generics_higher_order.cj`).
+  Verification probe: upstream-general `func p<T>(x: Int64) where T <: Exception; p(0)` —
+  document whether the language accepts it (expected: yes, solved to bound), pinning that our
+  new error is deliberately stricter for clause-only parameters exactly as the text demands.
+- *Q10/I18*: unstash `q10-draft` (capTys dropped at the `GetFunctionTy` funnel when BOTH features
+  are off; set in the CompilerInstance ctor before imports load), restore the two parked tests
+  (`scopes/off_ignores_throws.cj`, `serialization/xpkg_off_consumer.cj`), add a `.cjo` assertion
+  that an off package records no `throws` lists. Residue recorded: the EH-on/chexc-off combo keeps
+  exception entries until R5's kind split.
+- *I29*: no code. Ledger close (composition exists only as `@Inner` inside `quote` → a dynamic
+  cascade; bodies are checked statically, the root is the compiler's contract; no static edge
+  through `quote` exists) + erratum E-18: §5.3.1's non-public-macro sentence is vacuous — the
+  compiler mandates `public` on every macro declaration.
+
+**R2 details.** In the `TRY_EXPR` case of the walker, for each resource of a try-with-resources:
+resolve the resource type's `close()` member, take its effective list (declared `FuncTy::capTys` ∪
+`inferred[close]`, instantiated through the resource's type mapping — reuse the
+`GetInstantiatedAccessorCapTys` shape), and demand each entry **inside the try's pushed scope**
+(the probe of 2026-08-30 confirmed the desugaring puts closing inner to the catches, so the try's
+own capabilities are the right suppliers). Tests at `warn` (a clause-bearing `close` over
+clause-free `Resource.close` is tolerated there); the `error`-level test lands with batch 3a's
+interface ruling (Q-STD-9a).
+
+**R3 details.** Design note first (`notes/caplist-design.md`). Normalization = dedupe +
+coverage-drop + drop concrete unchecked entries (uses the `uncheckedExceptionTy` the manager now
+holds), applied at PRODUCER boundaries — never at interning, where the 2026-08-22 attempt broke 17
+tests: (1) clause elaboration (declaration types in `TypeChecker.cpp`/`PreCheck.cpp:1824`, the
+functional-type-node site), (2) the `FuncTy` branch of `GetInstantiatedTy` (placeholder-guarded —
+`NormalizeCapTys` already returns placeholder lists unchanged), (3) the loader
+(`ReferenceLoader.cpp:380`), (4) `CompleteInferredCapabilityTypes`. Joins/meets already normalize.
+Closes: Box-invariance identity, the printed semantic form, the unchecked-instantiation identity
+residue. Gate: full `compiler/Sema` (3,934) + serialization + CheckedExceptions + std and stdx
+builds. C16 decided during design: if entries carry an elaboration-computed kind bit, the printed
+form splits `performs`/`throws` here; otherwise C16 stays recorded.
+
+**R4 details.** v1, sound and simple: persist each eligible declaration's inferred list in the
+incremental cache (keyed by raw mangle; values as stable normalized type identities); after
+inference, compare with the cache — any change escalates the round to a full-package recompile,
+logged in the incremental decision log; the no-change case keeps today's incrementality. The
+precise dependent-set version stays a recorded v2. Tests: the `incr_inferred.cj` reproducer from
+Part III returns as a real test, plus a no-change case asserting the incremental path via the
+decision log. Gate: `compiler/IncrementalCompilation` (1,944) + CheckedExceptions.
+
+**R5 details.** (1) meet test — the text's own `k = if (cond) { p } else { q }` example; (2)
+ABI/erasure regression — clause-bearing and clause-free twins compiled, `nm` symbol lists compared
+byte-identical; (3) stale comment sweep (the checker header still says effects are ignored); (4)
+kind classification for `capTysInert` (EH-on/chexc-off drops exception entries, keeps commands;
+`SetCommandDecl` beside `SetUncheckedExceptionTy`; loader-side residue recorded); (5) optional,
+last: split `CapabilityCheck.cpp` (~1,500 lines) into checking/inference/assumption units — pure
+refactor, deferred behind R3/R4 to avoid dragging conflicts.
+
+**Out of scope by the author's rulings:** captures lifetime, regions, `resume with` flow, the
+closed-build verifier (Modal); LSP/cjd (C9), the fixer and the lints (I.4 tooling); the
+`throws`/`performs` storage split (D17 — revisited at evidence passing).
 
 ## I.1 Base-design conformance (the proposal says it; we don't do it)
 
