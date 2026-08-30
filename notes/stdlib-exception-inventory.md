@@ -1,5 +1,13 @@
 # Stdlib exception inventory (for §6.3 unchecked classification)
 
+> **Status 2026-08-30.** The classification data below is unchanged and still the working input for
+> the migration. What has happened since: the 26 obvious re-parentings landed in `std.core`, the
+> `fs`/`io` ring is annotated, and the stdx ring reached 1,324 diagnostics over 15 packages (see
+> `gap-analysis.md` I.5). The UNCERTAIN rows here are exactly the ones still waiting on rulings,
+> and they have been consolidated into Q-STD-1…9 there — Q-STD-9 in particular subsumes the
+> recurring "interface in std, implementation elsewhere" shape (`Iterator.next`, `Resource.close`,
+> `ToString.toString`, `Digest.write`).
+
 Prepared during M3 per author ruling 9. Source: `cangjie_runtime/stdlib/libs/std` (plus the
 vendored flatbuffers copy), enumerated via `grep -rn '<: Exception'` and one follow-up level
 of subclassing. Classification principle (author ruling): **contract / state / index /

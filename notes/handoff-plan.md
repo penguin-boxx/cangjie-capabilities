@@ -1,5 +1,12 @@
 # Checked exceptions for CangJie — detailed implementation handoff plan
 
+> **Historical (superseded 2026-08-30).** Written to hand the project to a fresh implementation
+> model when the pass did not exist. Its ground rules (repos, branches, remotes, commit
+> discipline) still hold; everything downstream of them — task lists, "red" test groups, the
+> state of the runtime and stdx branches, the milestone plan — describes August and is wrong now.
+> For the current picture: `gap-analysis.md` (what is left), `architecture.md` (what is built),
+> `test-baseline.md` (what is green). Kept for provenance and for the ground rules.
+
 Audience: an AI implementation model continuing this project. Follow this document
 literally. When something is ambiguous or contradicts observed reality, STOP and ask
 the author (the user) — do not invent semantics. The proposal author is the user.

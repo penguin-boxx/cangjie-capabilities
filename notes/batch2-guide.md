@@ -1,4 +1,10 @@
 {
+
+> **Historical (superseded 2026-08-30).** The working guide for the batch-2 audit round: findings,
+> probes and task framings from that pass. Several of its "deliberately out of scope" notes have
+> since been closed (C1/C2 cjo and incremental, the constructor-call hole, C9 remains open), so
+> read it as a record of that round rather than as current scope.
+
   "summary": "Derive precise, verified fix plans for audit findings MF1, MF6, MF2 (capability loss through desugaring and inference write-back)",
   "agentCount": 7,
   "logs": [],

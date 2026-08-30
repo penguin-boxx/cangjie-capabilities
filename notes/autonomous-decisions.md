@@ -127,12 +127,15 @@ Per the directive: if a feature cannot be finished, its work is committed on a b
 `chexc-<feature>` (not `chexc`), the reason recorded here and in the gaps ledger, and the
 next feature is started. `chexc` stays green at every commit.
 
-## D15 §5.2.2: the annotation is per file, and only `import` may carry it
+## D15 §5.2.2: only `import` may carry the annotation — *scope superseded by the text*
 
-`@AssumeThrows` is recorded per FILE, not per package: imports are file-scoped in CangJie,
-so the file that wrote the import is exactly the scope of the consumer's trust claim. A
-call is matched against the claim of `ce.curFile` (falling back to the file of the
-enclosing declaration, for call sites rebuilt by a desugar that dropped `curFile`).
+**Superseded in part (2026-08-30):** this decision made the claim per FILE, reasoning that
+imports are file-scoped. The revised text rules otherwise — "An assumption import is
+package-scoped: the annotation applies to every call into the dependency from the whole consuming
+package, whether or not the calling file repeats it" — and the implementation follows the text:
+claims are collected for the whole package, keyed by the package they name. What survives of this
+decision is the second half: only an `import` may carry the annotation, and a misplaced one is an
+error rather than being silently ignored (D-rationale below, ratified as the flagged reading).
 
 The claim is registered under every name `ImportContent::GetPossiblePackageNames()` yields,
 so `import legacy.db.*`, `import legacy.db` and `import legacy.db.query` all match a callee

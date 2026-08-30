@@ -1,5 +1,10 @@
 # Implementation plan: proposal §3.1–3.8 (base checked exceptions)
 
+> **Historical (superseded 2026-08-30).** The original milestone plan (M0–M4). Kept for one
+> reason that still matters: it holds the author's rulings 1–14 with their context, which nothing
+> else records in full. The plan itself was overtaken — the milestones landed, the batch plans
+> that followed (A–E, then R1–R5) are in `gap-analysis.md` I.0 and Part III.
+
 Inputs: `Checked exceptions for CangJie.md` §3.1–3.8, notes/architecture.md (stage separation,
 inference-ready), notes/prototype-study.md (colleague's prototype), anchor verification against
 our checkout (upstream main @ 098c1b26a1, 2026-08-14).

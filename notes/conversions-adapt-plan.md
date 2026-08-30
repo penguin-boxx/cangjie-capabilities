@@ -1,5 +1,10 @@
 # Implementation plan: §8.10 conversions (`chexc-conversions`) and §8.11 adapt (`chexc-adapt`)
 
+> **Status 2026-08-30.** Still the plan for the two extensions, and still below Part I of the gap
+> analysis in priority — the extensions moved further out since it was written: the revision made
+> them Section 8 material, and the author's scope rulings (sections 3, 5, 6 plus stdlib
+> annotations) put them outside the current tier entirely. Unchanged and unstarted by design.
+
 Date: 2026-08-15. Base: compiler `85c06a22`, runtime `066a5ab`, tests `85018920dc`.
 Both features are "serious prototypes" per the author directive: own branches, based on
 finished development, extensively tested, all-green suites (revised D13: tests written
