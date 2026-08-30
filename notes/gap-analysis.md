@@ -5,7 +5,7 @@ the proposal from a stabilizable design. Two parts: what the **implementation** 
 what the **proposal** must change. A short third part keeps resolved items whose lessons
 still matter. Updated at every milestone gate.
 
-State: compiler `629d4ecd`, runtime `0a1ec17`, stdx `4eb1cd8`,
+State: compiler `5de33983`, runtime `0a1ec17`, stdx `4eb1cd8`,
 tests `a076e81b07`; proposal as revised 2026-08-23 (vault `7b031dab` + the author's
 rulings of that evening: a macro may declare what it throws; capability regions are a Modal
 CangJie requirement, not this tier's). Sections 3, 5 and 6 were re-audited against the prototype
