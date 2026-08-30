@@ -11,7 +11,9 @@ rulings of that evening: a macro may declare what it throws; capability regions 
 CangJie requirement, not this tier's). Sections 3, 5 and 6 were re-audited against the prototype
 on 2026-08-23 by probing; the plan to close what is left is I.0.
 
-This document consolidates and replaces: `proposal-implementation-gaps.md` (ledger A–F),
+This document consolidates and replaces: `handoff-plan.md`, `implementation-plan.md` and
+`batch2-guide.md` (merged into `README.md`, `architecture.md`, `autonomous-decisions.md` and this
+file on 2026-08-30, then deleted), `proposal-implementation-gaps.md` (ledger A–F),
 `proposal-update-review-2026-08-20.md`, `production-gap-analysis.md`, `author-questions.md`,
 `stdlib-migration-questions.md`, `audit-report.md`, `code-review-2026-08-15.md` — all in
 git history. Decisions (D1–D18) stay in `autonomous-decisions.md`; the extension plan stays
