@@ -121,6 +121,53 @@ parse → macro-expand → sema type check (uses B: subtyping/lambda/override ru
       → MANGLING (untouched) → SAVE_CJO (writes CapLists) → CHIR → codegen (untouched)
 ```
 
+## How the feature is wired into the compiler
+
+The facts a reader needs before touching the code. Established over M0–M3 and kept current; the
+line-level anchors deliberately are not, since they rot — grep for the names.
+
+**Flag.** `--enable-checked-exceptions <level>` with alias `--enable-chexc`, requiring
+`--experimental`; `GlobalOptions::enableChexc` plus `chexcSeverity` (`CS_ERROR` / `CS_WARN`). The
+clause keywords are soft: recognized by spelling, never reserved, so `std.unittest.mock`'s
+`public func throws` keeps compiling. Capability warnings live in the warn group
+`checked-exceptions`, so `-Woff checked-exceptions` composes.
+
+**AST.** One node, `ThrowsClause` (`ASTKind::THROWS_CLAUSE`), serves all three clauses:
+`FuncBody::throwsClause` / `::performsClause`, `FuncType::throwsClause`, `InheritableDecl`'s
+`capturesClause`. Any new AST node or field must update **every** visitor — Walker, Clone,
+PrintNode, ASTChecker, ASTHasher (including the member-signature hash), Collector,
+PartialInstantiation — plus `ASTKind.inc`'s SIZE column and the count in
+`unittests/Utils/CastASTTests.cpp` (`CreateTest.CheckASTSize` prints the exact numbers on failure).
+
+**Types.** `FuncTy::capTys` holds the list as exception/command types directly — there is no
+materialized `CanThrow`, which is what makes the intrinsic non-denotable. It is part of interning
+identity but **not** of `typeArgs`, and that single fact is what erases capabilities from CHIR,
+mangling and codegen. `GetFunctionTy(paramTys, retTy, cfg = {}, capTys = {})` is the one funnel
+every functional type passes through: the Q10 gate (drop lists when both features are off) and, via
+producer-side normalization, the canonical form both live around it. Since R3 the lists reaching it
+are canonical (`caplist-design.md`).
+
+**Subtyping and comparison.** `IsCapTysSubsumed(sub, super)` — every entry of `sub` covered by some
+entry of `super` — wired into `IsFuncSubtype`. Two predicates deliberately ignore lists:
+`EraseCapTys` inside `IsFuncParameterTypesIdentical`, which makes overload, duplicate and shadow
+machinery compare modulo capabilities, and `IsFuncTySubType`, which *pairs* an override with what
+it implements. Making the latter capability-aware once cost a day of undefined-reference link
+failures: a violating override stopped being recognized as an override at all.
+
+**The pass.** `CompileStage::CAPABILITY_CHECK`, between `SEMA` and `DESUGAR_AFTER_SEMA` — before
+desugar destroys `TryExpr` structure and before generic instantiation. It runs when either
+capability feature is on. `src/Sema/CapabilityCheck/CapabilityCheck.cpp` (~1,500 lines) holds four
+things behind one walker: `InferCapabilities` (call graph → Tarjan SCC → Kleene fixpoint, over the
+`CapabilityMissHandler` seam), `CompleteInferredCapabilityTypes` (writes inferred lists into the
+declarations), `CheckInferredOverrides` (the comparison type check could not make, since inference
+runs after it), and `CheckCapabilities` (the reporting walk). Its header comment states the supply
+and demand rules — read it first.
+
+**Diagnostics.** `sema_chexc_missing_capability(_warn)` and its plural form; the plural exists
+because the diagnostic engine deduplicates by **position and severity alone**, so several misses at
+one site would collapse into the first. Type names print in the compiler's own style
+(`Class-AException`), and tests pin those exact strings.
+
 ## Modes vs capabilities: the circularity and its resolution
 
 Authoritative sources: `Modal CangJie updated.md` (symlinked in repo root; esp. "Mode of

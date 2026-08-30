@@ -118,6 +118,13 @@ Gate numbers on `629d4ecd` (compiler), all green:
 | compiler unit tests (`cj.py test compiler`) | **49 / 49** |
 | std, stdx at `warn` | build clean, no ICE |
 
+One trap when writing capability tests, found during the batch-2 audit and still true: the
+`Walker` visits both a node's `desugarExpr` and the node's own children, so a construct the
+compiler desugars — a property read on the right-hand side of a property assignment is the known
+case — is walked twice and can raise the same demand twice. Write assertions with
+`// ASSERT: scan`, **never** with exact error counts, or a test starts failing on an unrelated
+desugar change.
+
 Which suite catches what, learned the hard way:
 
 - **`compiler/Sema` in full** is the gate for anything touching type identity — the reverted

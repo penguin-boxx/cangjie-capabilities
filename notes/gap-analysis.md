@@ -343,6 +343,16 @@ forward through the interface need to restate it (annotating all of them, as a f
   only; that commands may also be captured reaches the reader solely through the blanket
   substitution at the head of "Effect requirements". One clause in the capturing rule would make
   it findable from where it is implemented.
+- **E-19** "Capability parameters in declarations" rule 1 lists **property accessors** among the
+  places a clause may appear, and "Overriding and redefinition" speaks of "a method *or property
+  accessor*" — but a property in an **interface** cannot carry one in any form. Probed
+  2026-08-30: an accessor without a body is a parse error (*body of function 'get' is missing*),
+  and a clause on the property itself is not grammar (*expected declaration, found 'throws'*). So
+  an interface property contract is always `throws ()`, and an implementation whose accessor
+  throws can only ever be a coverage violation, never a conforming override. Either the grammar
+  grows abstract accessor clauses (`prop p: Int64 { get() throws E; set(x) throws F }`), or the
+  text says plainly that properties carry clauses only where they have bodies. Recorded as a
+  restriction the implementation inherits from the language, not as a prototype gap.
 - **E-18** §5.3.1's macro sentence — "a non-public macro can never be an expansion root and is an
   ordinary inference-eligible declaration" — describes a declaration the language does not have:
   the parser mandates `public` on every macro (*expected 'public' before macro declaration*), so

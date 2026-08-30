@@ -1,19 +1,50 @@
-# Autonomous implementation decisions
+# Decisions and rulings
 
-Decisions taken without author consultation, per the directive to work autonomously and
-record core decisions. Each states the decision, why, and how to reverse it. Author: please
-skim; anything marked ⚠ is a judgment call I would most like reviewed.
+Two lists. First the **author's rulings** — what the proposal's author decided, which the
+implementation follows. Then the **autonomous decisions D1–D18** taken without consultation per
+the directive to work autonomously, each stating the decision, why, and how to reverse it;
+anything marked ⚠ is a judgment call worth reviewing.
 
-AUTHOR-CONFIRMED ORDER (2026-08-15):
-1. §6.2 inference → `chexc`
-2. §6.1 aliases → `chexc`
-3. §5.2.2 assumption imports → `chexc`
-4. cjo serialization / package metadata (closes gaps C1–C3) → `chexc`
-   — author moved this AHEAD of conversions and adapt
-5. §8.10 exception conversions → branch `chexc-conversions` (on top of chexc)
-6. §8.11 adapt → branch `chexc-adapt` (on top of the above)
-Features 5 and 6 stay on separate branches by author ruling: both synthesize runtime
-constructs, and §8.11 is explicitly deferred by the proposal itself.
+The 2026-08-15 order the author confirmed (inference → aliases → assumption imports → cjo
+metadata, ahead of conversions and adapt) has been executed in full; the current plan is I.0 of
+`gap-analysis.md`. Its last two items — §8.10 exception conversions (branch `chexc-conversions`)
+and §8.11 adapt (branch `chexc-adapt`, on top of it) — stay on separate branches by author ruling:
+both synthesize runtime constructs, and adapt is deferred by the proposal itself. Neither has
+started; the 2026-08-30 scope ruling puts both outside the current tier.
+
+---
+
+## Author rulings
+
+Numbered as the author gave them, with what became of each. Rulings 1–14 date from 2026-08-14,
+when the pass did not exist; the later ones are dated inline.
+
+| # | Ruling | Status |
+|---|---|---|
+| 1 | §3.7 is an overload-resolution rule only: capability-differing functional types are **distinct** interned types; only overload machinery compares modulo lists | holds — `EraseCapTys` in the identity predicate |
+| 2 | Join = union of lists; meet = entries both lists cover | holds, and tested since R5 |
+| 3 | C FFI: `throws` banned on foreign functions and `CFunc` types, dedicated diagnostic | holds |
+| 4 | Effects are not considered for now — `handle` introduces no capabilities, by omission | **superseded** by ruling 7 and by the 2026-08-21 revision, which put effects in the base design; they are checked on their own axis now |
+| 5 | `spawn` bodies start with an **empty** capability stack: enclosing capabilities are unreachable inside them | holds |
+| 6 | Stdlib warn-mode cleanup: compile with checking at `warn` and fix the obvious warnings; anything needing a decision goes to the author | holds; the ring is at I.5 of the gap analysis |
+| 7 | Effect-handler checking comes **after** the stdlib cleanup, as a later milestone with a design round first | done — effects landed in the 2026-08-21 round |
+| 8 | Warn mode attaches to the flag (`--enable-chexc[=error|warn]`); capability diagnostics form a warn group | holds; the group was renamed `checked-exceptions` on 2026-08-30 to match the text |
+| 9 | Classification: contract/state failures are unchecked; `...` stays banned on public declarations | holds |
+| 10 | **No hand-written escape analysis before Modal** — no use-after-`try`, no assignment-out-of-`try`, for any carrier | holds, and was widened on 2026-08-23: capability regions are a Modal requirement, not this tier's |
+| 11 | Pre-Modal `captures`: every constructor demands the captured capabilities, every method body has them in scope; rules 3–4 become mode-driven when Modal arrives | holds |
+| 12 | Primary constructors banned on capturing classes; `captures` allowed on structs | holds |
+| 13 | Stdlib cleanup in **one pass**, not package by package | holds for std; stdx is being annotated ring by ring, which the author approved separately |
+| 14 | Modal strategy: wait for upstream; our layer stays Modal-ready, no revival of the old PR | holds |
+
+Later rulings, kept here so the list is one:
+
+| when | ruling |
+|---|---|
+| 2026-08-23 | A macro may declare what it throws; `performs` on a macro is refused (the text states it too). Capability regions belong to Modal CangJie — section 4 is not implemented by us |
+| 2026-08-30 | Q11: a call that leaves a clause-only type parameter to inference is an **error** — the language's general behaviour (solving at the bound) is not what the text wants here |
+| 2026-08-30 | Q10: a package compiled without checked exceptions **ignores `throws` in every position**, subtyping included; `throws` never affected overloading anyway |
+| 2026-08-30 | Scope: the implementation surface is proposal sections 3, 5 and 6, plus obvious std and stdx annotations |
+| 2026-08-30 | Process: never start implementation without an explicit go-ahead |
 
 ---
 
