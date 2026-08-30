@@ -6,9 +6,10 @@ what the **proposal** must change. A short third part keeps resolved items whose
 still matter. Updated at every milestone gate.
 
 State: compiler `5de33983`, runtime `0a1ec17`, stdx `4eb1cd8`,
-tests `a076e81b07`; proposal as revised 2026-08-23 (vault `7b031dab` + the author's
-rulings of that evening: a macro may declare what it throws; capability regions are a Modal
-CangJie requirement, not this tier's). Sections 3, 5 and 6 were re-audited against the prototype
+tests `a076e81b07`; proposal as revised **2026-08-30 17:54** (chapter 5 rewritten: the
+`--enable-checked-effects` axis with `@AssumePerforms` and `unsafeCanPerform`, the escape hatch
+renamed `unsafeCanThrow`, free clause order in declarations, the sibling-catch rule for `resume
+throwing`, `where`-bounds in the semantic form). Sections 3, 5 and 6 were re-audited against the prototype
 on 2026-08-23 by probing; the plan to close what is left is I.0.
 
 This document consolidates and replaces: `handoff-plan.md`, `implementation-plan.md` and
@@ -24,7 +25,24 @@ in `conversions-adapt-plan.md`; the stdlib classification data stays in
 
 # Part I — What the implementation must change
 
-## I.0 The plan (2026-08-30): section 3 conformance + the reviewer's findings
+## I.0 The plan (2026-08-30 evening): the chapter-5 revision and its review
+
+The R-plan below is done in full. A second external review arrived against `5de33983`, targeted at
+chapter 5 and the **new text revision of 2026-08-30 17:54**; every implementation claim it makes
+was probed or code-read, and **all twelve were confirmed** — an unusually accurate review. Its
+Modal sections are out of scope by the standing ruling. The batches, awaiting the author's
+go-ahead per batch:
+
+| Batch | Contents | Size |
+|---|---|---|
+| **S1 — quick correctness** | I32 generic-`Error` exemption; I44 plural effect message says `CanPerform`; I43 fabricate only `E`; I45 one shared inference-eligibility predicate (the `...` incremental gap); I35a completion compares content, not size; I35b instantiate entries at reference sites | S, 1 build |
+| **S2 — text sync, small** | I38 free clause order in declarations; I42 rename to `unsafeCanThrow` (compiler constant + std.core + tests); I37 `resume throwing` discharged by the try's own catches | S–M, 1 build + std |
+| **S3 — `where`-bound coverage** | I36: the semantic form uses bounds already in the open generic form | S–M |
+| **S4 — the checked-effects axis** | I39 `--enable-checked-effects off/warn/error` + its warn group + metadata effect level + unchecked-effects boundary; I40 `@AssumePerforms`; I41 `unsafeCanPerform`. Vehicle question: this is where D17's single `capTys` vector stops being tenable — kind-aware severity, filtering, metadata and printing all want `throwsTys`/`performsTys` split (closes C16/C17 too). **Design note first** | L |
+| **S5 — inference completion** | I35: replace the formation-site reading with completed capability components on expression types plus a replay of capability-sensitive constraints (the review's §7.4/7.5). Closes the **confirmed soundness hole** (a value formed under a discharging `try`, stored outward, called after — compiles at `error`, leaks at run time) and retires artifact C15's inferred half. **Design note first** | L |
+| **S6 — inference reach** | I33 field initializers feed every inference-eligible constructor; I34 the `for-in` iterator protocol demands (synthesize like the implicit `close()`) | M |
+
+## I.0-done The plan (2026-08-30): section 3 conformance + the reviewer's findings
 
 Supersedes the 2026-08-23 batch plan (A/B/C done, D out of scope, E partly ruled — history in
 Part III). Ordered by value per build; every batch ends with: fmt → compiler build → targeted
@@ -119,6 +137,20 @@ closed-build verifier (Modal); LSP/cjd (C9), the fixer and the lints (I.4 toolin
 |---|---|---|---|
 | I4 | **No capability-region check** — rules 1–6 of "Capability regions", resumptions as carriers, `resume with` as a flow boundary. Both canonical escapes are accepted today. **Deferred by the author (2026-08-23): regions are a Modal CangJie requirement, not this tier's.** Kept here because the text still states them for the base design — either the text scopes them to Modal, or this stays a permanent divergence | Capability regions; Effect requirements rules 4, 6 | — (not to be implemented) |
 | I31 | **A property cannot declare what its accessors throw where it matters most — in an interface** (E-19). Ruled 2026-08-30: support a clause on a bodyless accessor and a clause on the property itself, distributed to accessors without one. Design, plan and two open sub-questions in `property-clauses-design.md`; the expensive part is a new `PropDecl` field and its visitor sweep. Closes the `std.net` socket properties, the only real cases in std and stdx | Capability parameters in declarations, rule 1; Overriding and redefinition | M: 1–2 compiler builds + std |
+| I32 | **A generic `T <: Error` demands a capability.** The `Error`-hierarchy exemption fires only for `ty->IsClass()`; `throw e` with `E <: Error` demands `CanThrow<Generics-E>` (probed). Classify by provable relation to the two roots, generic upper bounds included | Capability requirement at `throw`, rule 1 | S |
+| I33 | **Field initializers do not feed constructor inference.** A clause-free `init` evaluating a throwing initializer errors at the initializer instead of inferring the requirement into every inference-eligible constructor (probed: construction under a matching `try` still rejected) | What is inferred, point 3 | M |
+| I34 | **`for-in` demands nothing.** The pass runs before desugar, the iterator-protocol calls do not exist yet, and no `FOR_IN_EXPR` case synthesizes them — a `throws ()` function iterating a throwing iterator compiles silently at `warn` (probed; at `error` the interface wall masks it). Same shape and fix as the implicit `close()` | What is inferred, point 2 | M |
+| I35 | **Inferred lists never reach expression types — and the formation-site reading has a confirmed soundness hole.** `var g: () -> Unit`; inside `try { g = risky }` the formation demand is discharged by the try; `g()` after it demands nothing; **compiles at `error`, uncaught at run time** (probed). Sub-items landable early: (a) `CompleteInferredCapabilityTypes` compares sizes, so `throws Derived, ...` inferring `Base` keeps the stale type — probed, the revealed type still says `Derived`; (b) `DemandInferredOnValue` demands uninstantiated entries — `risky<Int64>` demands `GenExc<Generics-T>` (probed). The full fix is completion + replay of capability-sensitive constraints (review §7.4/7.5) | First-class functions; Phase ordering | L (a, b are S) |
+| I36 | **`where`-bound coverage is not applied in the open form.** New rule: `E <: IOException` makes `throws (E, IOException)` the list `{IOException}` already before instantiation; probed — `Box` invariance still splits the two | Capability parameters in declarations, rule 2 (revised) | S–M |
+| I37 | **`resume throwing` ignores the try's own catches.** New rule 5 resolves against the `try`'s catch clauses AND the enclosing scopes; the text's own positive example errors (probed). Needs a resume-only injection supply, not a general reopening of the try scope to the handler body | Effect requirements, rule 5 (revised) | S–M |
+| I38 | **Declaration clause order is still fixed.** The revision lets `where`/`performs`/`throws` order freely in declarations (functional types keep `performs` first); the parser still diagnoses `performs` after `throws`, and `performs_order_neg.cj` pins the old rule | Keyword scheme; Capability parameters in declarations | S |
+| I39 | **The checked-effects axis is absent.** No `--enable-checked-effects off/warn/error`, no effect severity or `checked-effects` warn group, no effect trust level in metadata, no unchecked-effects boundary (a package without the flag must read as `performs`-empty). Today effect errors ride `--enable-eh` unconditionally — `performs_without_chexc.cj` pins the now-wrong behaviour | Effect requirements, rule 2; Compatibility | L (with S4's split) |
+| I40 | **`@AssumePerforms` is absent** (no bare form — no top command type) | Assumption imports (revised) | S–M after I39 |
+| I41 | **`unsafeCanPerform` is absent** | The escape hatch; Effect requirements rule 2 | S after I39 |
+| I42 | **The escape hatch bears the rejected name.** The text ruled `unsafeCanThrow` (naming rationale added — `unsafeAssumeHandled` is kind-ambiguous); compiler constant, std.core declaration and tests all say the old name | The escape hatch | S |
+| I43 | `FabricatedCapabilities` fabricates for **every** generic parameter of the intrinsic, not only `E` — harmless for the current signature, wrong the moment the twin lands | The escape hatch | S |
+| I44 | The **plural** missing-capability message still prints `Handler<C>`; the singular was renamed to `CanPerform` | Effect requirements | trivial |
+| I45 | **Inference eligibility exists twice.** The incremental frontend's copy treats any `throwsClause` as authoritative, but `throws ...` / `throws A, ...` stay inference-eligible — a body edit of such a declaration can again leave callers on a stale contract. One shared predicate | Interaction with an explicit `throws`; the I28 fix | S |
 | I5 | Diagnostic omits the mode (`CanThrow<E>` not `CanThrow<E> @ local!`) | Capability argument inference | trivial at Modal integration (ruling 3) |
 | I7 | CLI takes the level as `--enable-checked-exceptions=warn`; the text spells it as a separate argument. **Deliberate for now**: the bare form is used everywhere and the option table has no "optional separate value" kind | Compatibility - checked and unchecked code | S once the option kinds allow it |
 
@@ -346,6 +378,17 @@ forward through the interface need to restate it (annotating all of them, as a f
   only; that commands may also be captured reaches the reader solely through the blanket
   substitution at the head of "Effect requirements". One clause in the capturing rule would make
   it findable from where it is implemented.
+- **E-20** Effect requirements say requirement checking is "level-independent" — meant as
+  "independent of the **exception** level", which the new independent effect axis makes ambiguous.
+  Say it explicitly (review finding).
+- **E-21** The heading "No unchecked commands" now sits above a rule that introduces
+  unchecked-effects packages, `@AssumePerforms` and `unsafeCanPerform`. True as stated — there is
+  no unchecked command *hierarchy* — but it reads as "no unchecked escape mechanisms". Reword
+  (review finding).
+- **E-22** `unsafeCanThrow`'s subsection derives the carrier restriction from the regions section
+  but does not state it locally; for an `unsafe` intrinsic the rule ("the callback must not return
+  or store a carrier of the fabricated capability") should be visible at the declaration (review
+  finding).
 - **E-19 — a property in an interface can never declare what its accessors throw.** The rule that
   lists clause-bearing declarations includes property accessors, and the override rule speaks of
   "a method *or property accessor*" — both true wherever an accessor has a **body**. They are
@@ -454,6 +497,19 @@ references — it is the design's future-proofing contract against evidence pass
 capability propagation step) from "open question" to "blocking dependency on the Modal
 authors".
 
+### D-0b · "Skeletons" underspecified — the review's central architectural point, confirmed
+
+Phase ordering says *type/mode skeletons → capability parameters → clause components of types →
+capability arguments*, and adds that no earlier stage consults inferred lists. The prototype read
+`SEMA` as a **finished** type checker, and every confirmed inference defect of the 2026-08-30
+review — the reference leak, the stale joins, the size-compared completion, the generic reference
+demanding `Generics-T` — is one mechanism: an early stage **fixed a result computed while a list
+was temporarily empty**, and completion could not reach it. The text never says which type
+products must be completed after inference (references, bound methods, inferred variable types,
+returns, joins, invariant containers, generated wrappers) nor which constraints must be replayed.
+Until it does, every implementation will rediscover the same holes. The implementation side is
+I35/S5; the text side is a normative paragraph in Phase ordering enumerating exactly that.
+
 ### D-1 · Capturing iterators buy uniformity with three costs
 (a) The flagship IO use case — iterating a file's lines — now depends on an *unconfirmed*
 Modal requirement (`for-in` over `local!` iterators). (b) The obligation moves to
@@ -496,6 +552,12 @@ With conversions demoted, handle-convert-rethrow at every abstraction boundary i
 v1. A defensible trade (elaboration out of checking) — but state it as an accepted v1 cost
 in "Forcing a decision nobody can make" or "Migrating user code".
 
+**Cross-proposal obligation (from the review's Modal analysis, recorded, out of tier):** the
+capability-blind treatment of a literal's mode — Modal computes modes from ordinary captures only,
+capability captures arrive later and only cap — contradicts Modal's own "a lambda's mode is
+determined by its captures" as written. When Modal integration starts, this must land as an
+explicit amendment to the Modal proposal, not remain an internal assumption of this one.
+
 ## II.3 Open readings to rule (each implemented conservatively; widening is backward-compatible)
 
 | # | Question | Implemented | Reversal cost |
@@ -516,6 +578,25 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **The chapter-5 review analyzed (2026-08-30 evening): twelve claims, twelve confirmed.** The
+  reviewer worked against the same-day text revision, which is ahead of the implementation by one
+  round: the effects axis (`--enable-checked-effects`, `@AssumePerforms`, `unsafeCanPerform`), the
+  `unsafeCanThrow` rename, free declaration clause order, the sibling-catch rule for `resume
+  throwing`, and `where`-bounds in the semantic form are all new text. Probed and confirmed as
+  implementation defects regardless of revision: the generic-`Error` demand, field initializers
+  outside inference, `for-in` demanding nothing, the **formation-site soundness hole** (a value
+  formed under a discharging `try` and called after it — compiles at `error`, leaks at run time),
+  uninstantiated entries at reference sites, the size-compared completion, and the open-form
+  `where`-bound coverage. Code-read and confirmed: the plural `Handler<`, fabricate-all-params,
+  the duplicated eligibility predicate with the `...` gap, the fixed clause order. The review's
+  phase-ordering critique is accepted as D-0b: our own R-round fixes (formation-site demand, the
+  side-map union in `HandleCall`, the late override recheck, the incremental rollback) are four
+  patches over one missing mechanism — completion of capability components in expression types.
+  Its Modal chapter is out of tier by standing ruling; one obligation from it is recorded above as
+  a cross-proposal note. **Lesson:** the reviewer graded the same code B against the old text and
+  C+ against the new one in the same document — a moving spec makes "conformance" a two-argument
+  predicate, and the ledger's state line must always say which revision it is measured against.
 
 - **R5: the review's tails (2026-08-30).** The meet had never been tested — the join was, and the
   contravariant half rode along untested for months; both of the text's examples are tests now,
