@@ -44,7 +44,7 @@ dedicated post-resolution check, never a solver change (which would break ordina
 | ~~R2 — Q8: `close()` demand~~ | **done** (same commit): each resource's effective `close` list demanded in the try's scope | — | — |
 | ~~R3 — I30: canonical `CapList`~~ | **done** (compiler `667b9a1c`): normalization at the four producer boundaries; C16 stays recorded, see the design note | — | — |
 | ~~R4 — I28: incremental inferred lists~~ | **done** (compiler `ac3856ef`): feature-gated rollback when an inference-eligible declaration is recompiled; v2 (persist lists, invalidate actual dependents) recorded | — | — |
-| **R5 — review tails** | meet test, ABI/erasure test, stale comments, capTysInert kind split; optional file split of CapabilityCheck.cpp last | S each | 1 compiler |
+| ~~R5 — review tails~~ | **done** except two recorded items: meet tests, the ABI/erasure symbol test, the stale header. The `capTysInert` kind split (EH-on/chexc-off) and the optional file split of `CapabilityCheck.cpp` stay open — see I.3 | — | — |
 
 **R1 details.**
 - *Q11/I20*: helper `CollectClauseOnlyTyVars` in TypeCheckUtil — a callee type parameter is
@@ -189,6 +189,11 @@ an error" asks for.
   Fixing that means the schema, the generated `NodeFormat_generated.cj`, and new `std.ast`
   members, in that order.
 - **C6** `CanThrow` does not exist as a type; entries live directly in `FuncTy::capTys`. Working as intended (strongest form of the intrinsic NOTE in "Type of exception capabilities"); revisit only if effects materialization needs a real type.
+- **C17** `capTysInert` (the Q10 gate) drops the whole list when both features are off, which is
+  right, but the EH-on/chexc-off combination keeps exception entries too: the gate cannot tell the
+  kinds apart without a `Command` root in the type manager, beside the `UncheckedException` one it
+  now holds. Small and self-contained; nothing observes it today, since effect-only builds are
+  rare and exception entries there impose nothing.
 - **C16** `FuncTy` printing folds both capability kinds into one `throws (...)` — a command entry
   prints under `throws`, though the syntax of "Functional types" and "Effect requirements" keeps
   `performs` before `throws` as two clauses. Cosmetic until evidence passing, but every diagnostic
@@ -462,6 +467,16 @@ in "Forcing a decision nobody can make" or "Migrating user code".
 ---
 
 # Part III — Resolved, kept for the lessons
+
+- **R5: the review's tails (2026-08-30).** The meet had never been tested — the join was, and the
+  contravariant half rode along untested for months; both of the text's examples are tests now,
+  plus the comparable case where the meet keeps the narrower entry. Erasure had the opposite
+  problem: it was *argued* (capability lists sit outside `typeArgs`, so CHIR and codegen never see
+  them) and believed, but nothing checked it. Compiling one package twice — with every clause and
+  with none — and diffing the symbol tables gives **130 symbols, zero difference**, which is now a
+  test rather than an argument. And the checker's header comment still described a pass that
+  ignored `handle` clauses: the reviewer read it and took it for the design, which is the cost of a
+  stale comment stated exactly.
 
 - **I28 closed by deciding where the machinery already decides (2026-08-30).** The hash cannot
   carry an inferred list — it is computed at `AST_DIFF`, before the inference that derives it — and
