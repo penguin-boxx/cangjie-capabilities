@@ -42,6 +42,29 @@ go-ahead per batch:
 | **S5 — inference completion** | I35: replace the formation-site reading with completed capability components on expression types plus a replay of capability-sensitive constraints (the review's §7.4/7.5). Closes the **confirmed soundness hole** (a value formed under a discharging `try`, stored outward, called after — compiles at `error`, leaks at run time) and retires artifact C15's inferred half. **Design note first** | L |
 | **S6 — inference reach** | I33 field initializers feed every inference-eligible constructor; I34 the `for-in` iterator protocol demands (synthesize like the implicit `close()`) | M |
 
+### The decision-free ordering (2026-08-31, chapters 3/5/6)
+
+The S-batches above, reordered and completed by the author's request into a queue where **nothing
+waits on a ruling**: every item is fully specified by the current text, by an already-given
+ruling, or is implementation-internal. Sub-choices that exist are recorded with the recommended
+default and are reversible. Each batch ends with the standard gate (fmt → build → targeted groups
+→ std at `warn` → commit/push → this file) plus the extra suites named per batch.
+
+| # | Contents | Size | Extra gate |
+|---|---|---|---|
+| **T1** = S1 | Quick correctness: I32 generic-`Error` exemption (provable relation to the roots, bounds included); I44 plural `CanPerform`; I43 fabricate only `E`; I45 one shared eligibility predicate (`...` incremental gap); I35a content-compare in completion; I35b instantiate entries at reference sites | S | IncrementalCompilation (I45) |
+| **T2** = S2 | Text sync: I38 free declaration clause order; I42 rename → `unsafeCanThrow` (constant, std.core file, tests); I37 `resume throwing` discharged by the try's own catches — mechanism: a resume-only injection supply pushed for handler bodies, consumed by `RESUME_EXPR` demands alone, so ordinary `throw` in a handler stays outside the try's scope | S–M | Macro suite (parser), std build (rename) |
+| **T3** = S3 | I36 `where`-bound coverage in the open form: `IsSubtype` over a `GenericsTy` entry must consult declared upper bounds where normalization runs (investigate whether the loss is in `IsSubtype` or in normalization running before constraints attach) | S–M | full `compiler/Sema` (type identity) |
+| **T4** = S6 | Inference reach: I33 field initializers contribute to every inference-eligible constructor (collect each initializer's residual demands into every ctor's equation, mirroring the explicit-clause path); I34 `for-in` demands — synthesize `iterator()`/`next()` effective lists at `FOR_IN_EXPR`, the implicit-`close()` pattern | M | — |
+| **T5** = S5 | **Inference completion** (closes the confirmed `error`-level leak): after `CompleteInferredCapabilityTypes`, complete the capability components of expression types — references, bound methods, inferred variable types, returns, joins, invariant containers, generated wrappers — and replay capability-sensitive subtype/equality checks recorded during Sema; retire `DemandInferredOnValue` and artifact C15's inferred half. Internal design note first (`inference-completion-design.md`); semantics is the text's own (the list rides the type, the call pays) | L | full `compiler/Sema` + serialization + IncrementalCompilation |
+| **T6** = S4 | **The checked-effects axis**: `--enable-checked-effects off/warn/error`, effect severity and the `checked-effects` warn group, metadata effect level, unchecked-effects boundary (`performs` reads empty without the flag), `@AssumePerforms` (no bare form), `unsafeCanPerform`; `performs_without_chexc.cj` flips to the new semantics. Vehicle: the `throwsTys`/`performsTys` split (D17 revisited — implementation-internal), which also closes C16 (printing) and C17 (inert-gate kinds). Internal design note first | L | effect groups + stdx build + serialization |
+| **T7** = I31 | Property clauses, on the ruling and the two recorded recommendations (Q14 distribution, Q15 distributed-only metadata; both reversible): `PropDecl::throwsClause`/`::performsClause` + visitor sweep, bodyless accessors where bodyless methods are legal, distribution in `ParsePropBody` and `AddSetterGetterInProp`, then the `std.net` socket interfaces — the annotation this was for. Independent of T5/T6; can run in any slot | M | Macro suite (parser), std build |
+| **T8** | Cleanup tail: split `CapabilityCheck.cpp` into checking/inference/assumptions/completion units (pure refactor, after T5/T6 so it moves final code); inference instrumentation (SCC count/size, iterations, re-walked nodes — the review's numbers, behind a flag or the profile recorder); incremental v2 (persist inferred fingerprints, invalidate actual dependents instead of full rollback) | M | full targeted set |
+
+**Excluded, because they wait on the author:** every text item (`proposal-shortcomings.md`), the
+Q-STD rulings and everything they block (stdlib batch 3a, the zlib/tar/http/tls stdx rings), E-4,
+E-17/E-19 text sides, I5/I7, and all of chapter 4 / Modal.
+
 ## I.0-done The plan (2026-08-30): section 3 conformance + the reviewer's findings
 
 Supersedes the 2026-08-23 batch plan (A/B/C done, D out of scope, E partly ruled — history in
