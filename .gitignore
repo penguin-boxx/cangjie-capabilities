@@ -16,3 +16,4 @@ cases_without_level.txt
 .clangd
 .cache/
 cangjie_tools/
+cangjie_docs/

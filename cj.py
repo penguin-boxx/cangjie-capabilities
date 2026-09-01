@@ -18,17 +18,26 @@ Usage examples:
 """
 
 import argparse
+import errno
+import fcntl
+import glob
 import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 IMAGE = "cangjie-dev"
 WORK = "/work"  # mount point of ROOT inside the container
-# Parallelism for builds and test runs (container is capped to the same number).
-JOBS = 8
+# Cores this script may use IN TOTAL, across every container it has running at once -- one short
+# of the host's eight, so the desktop stays responsive. '--cpus' is a per-container cap, so two
+# concurrent runs at the full budget would ask for twice the machine; the registry below divides
+# this number among the live runs instead and rebalances as they come and go.
+CPU_BUDGET = 7
+JOBS = CPU_BUDGET  # default '-j' when a run has the budget to itself
+CPU_STATE_DIR = os.path.join(tempfile.gettempdir(), f"cj-cpu-{os.getuid()}")
 
 _docker_ok = None
 
@@ -71,20 +80,118 @@ def run(cmd, **kwargs):
     return subprocess.call(cmd, **kwargs)
 
 
+class _CpuRegistry:
+    """CPU_BUDGET shared across every concurrent cj.py container.
+
+    Each live container owns a slot file naming it and the pid that launched it. Joining and
+    leaving recompute an equal share and push it onto the containers already running with
+    'docker update', so a build started beside a long test run halves both rather than
+    oversubscribing the host. Slots whose launcher died are pruned on the next join.
+    """
+
+    def __init__(self, name):
+        self.name = name
+        self.slot = os.path.join(CPU_STATE_DIR, f"{name}.slot")
+
+    def _locked(self):
+        os.makedirs(CPU_STATE_DIR, exist_ok=True)
+        fd = os.open(os.path.join(CPU_STATE_DIR, "lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+
+    @staticmethod
+    def _unlock(fd):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+        except OSError as e:
+            return e.errno == errno.EPERM
+        return True
+
+    def _live_slots(self):
+        """Slot paths whose launching process still exists; the rest are removed."""
+        live = []
+        for path in sorted(glob.glob(os.path.join(CPU_STATE_DIR, "*.slot"))):
+            try:
+                with open(path) as f:
+                    pid = int(f.read().strip() or "0")
+            except (OSError, ValueError):
+                pid = 0
+            if pid and self._alive(pid):
+                live.append(path)
+            else:
+                _quiet_unlink(path)
+        return live
+
+    def _rebalance(self, slots):
+        """Give every live container an equal share, skipping the one that is not up yet."""
+        share = max(0.5, round(CPU_BUDGET / max(1, len(slots)), 2))
+        for path in slots:
+            other = os.path.basename(path)[: -len(".slot")]
+            if other == self.name:
+                continue
+            # A container that has already exited is not an error: its slot goes on the next pass.
+            subprocess.call(["docker", "update", f"--cpus={share}", other],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return share
+
+    def join(self):
+        fd = self._locked()
+        try:
+            slots = self._live_slots()
+            with open(self.slot, "w") as f:
+                f.write(str(os.getpid()))
+            slots.append(self.slot)
+            return self._rebalance(slots)
+        finally:
+            self._unlock(fd)
+
+    def leave(self):
+        fd = self._locked()
+        try:
+            _quiet_unlink(self.slot)
+            self._rebalance(self._live_slots())
+        finally:
+            self._unlock(fd)
+
+
+def _quiet_unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+_run_seq = 0
+
+
 def docker_run(script, cwd=WORK, interactive=False):
-    """Run a bash script string inside the build container."""
+    """Run a bash script string inside the build container, on this run's share of CPU_BUDGET."""
+    global _run_seq
+    _run_seq += 1
+    name = f"cj-{os.getpid()}-{_run_seq}"
+    registry = _CpuRegistry(name)
+    share = registry.join()
     flags = ["-it"] if interactive else ["-i"]
     cmd = [
         "docker", "run", "--rm", *flags,
-        # Hard cap: whatever a build tool decides internally, the container cannot use
-        # more than JOBS cores.
-        f"--cpus={JOBS}",
+        "--name", name,
+        # Hard cap: whatever a build tool decides internally, this container cannot exceed its
+        # share -- which the registry raises again as the other runs finish.
+        f"--cpus={share}",
         "-v", f"{ROOT}:{WORK}",
         "-w", cwd,
         IMAGE,
         "bash", "-c", script,
     ]
-    return run(cmd)
+    try:
+        return run(cmd)
+    finally:
+        registry.leave()
 
 
 def sh_quote(s):
@@ -251,7 +358,8 @@ def cmd_fmt(args):
     repo = FMT_REPO_ALIASES.get(args.repo, args.repo)
     base = args.base
     check = " --dry-run --Werror" if args.check else " -i"
-    script = f"""set -e
+    # Raw: the awk program contains '\+', which is a regex escape, not a Python one.
+    script = rf"""set -e
 if [ ! -d {WORK}/{repo}/.git ]; then
   echo "error: {repo} is not a repo under the workdir" >&2
   exit 2
