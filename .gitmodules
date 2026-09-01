@@ -1,0 +1,23 @@
+# The four repositories the prototype changes, each pinned at the head of its
+# `chexc` line, plus the upstream test framework the LLT suites run under.
+
+[submodule "cangjie_compiler"]
+	path = cangjie_compiler
+	url = https://github.com/penguin-boxx/cangjie-compiler-capabilities.git
+	branch = chexc
+[submodule "cangjie_test"]
+	path = cangjie_test
+	url = https://github.com/penguin-boxx/cangjie-test-capabilities.git
+	branch = chexc
+[submodule "cangjie_runtime"]
+	path = cangjie_runtime
+	url = https://github.com/penguin-boxx/cangjie-runtime-capabilities.git
+	branch = chexc
+[submodule "cangjie_stdx"]
+	path = cangjie_stdx
+	url = https://github.com/penguin-boxx/cangjie-stdx-capabilities.git
+	branch = chexc
+[submodule "cangjie_test_framework"]
+	path = cangjie_test_framework
+	url = https://gitcode.com/Cangjie/cangjie_test_framework.git
+	branch = main
