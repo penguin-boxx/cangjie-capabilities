@@ -1,0 +1,189 @@
+From b1302d1d63ff99a3324ccf8b2e28f0f5207da4a5 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 14 Aug 2026 19:15:25 +0300
+Subject: [PATCH 02/43] test(chexc): M2 types green + new negatives (FFI ban,
+ non-Exception entries, M1 diag pins)
+
+types/ 10/10 and parse/ 11/11 against the M2 compiler; negative ASSERTs
+pinned to actual diagnostics.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../parse/neg_duplicate_clause.cj             | 16 ++++++++++++
+ .../parse/neg_missing_type_after_throws.cj    | 12 +++++++++
+ .../types/clause_not_exception_neg.cj         | 25 +++++++++++++++++++
+ .../CheckedExceptions/types/ffi_neg.cj        | 16 ++++++++++++
+ .../types/generics_no_inference.cj            |  3 ++-
+ .../CheckedExceptions/types/overload_dup.cj   |  2 +-
+ .../types/overload_functype_dup.cj            |  2 +-
+ .../CheckedExceptions/types/override_neg.cj   |  2 +-
+ .../CheckedExceptions/types/subtype_neg.cj    |  3 ++-
+ 9 files changed, 76 insertions(+), 5 deletions(-)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_type_after_throws.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/clause_not_exception_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/ffi_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+new file mode 100644
+index 0000000000..00b502e2bc
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+@@ -0,0 +1,16 @@
++// Checked exceptions (§3.2): a declaration may carry at most one `throws` clause;
++// a second clause (even separated by a `where` block) is a parse error.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: duplicate 'throws' clause
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func f(): Unit throws AException throws BException {
++    throw AException()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_type_after_throws.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_type_after_throws.cj
+new file mode 100644
+index 0000000000..ea28117cc7
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_type_after_throws.cj
+@@ -0,0 +1,12 @@
++// Checked exceptions (§3.2): `throws` in a declaration must be followed by an
++// exception type (or a parenthesized list); a bare clause is a parse error.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: expected exception type after 'throws', found '{'
++
++func f(): Unit throws {
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/clause_not_exception_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/clause_not_exception_neg.cj
+new file mode 100644
+index 0000000000..7fdbb5dfdc
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/clause_not_exception_neg.cj
+@@ -0,0 +1,25 @@
++// Checked exceptions (§3.2 rule 3): every type in a `throws` clause must be a
++// subtype of class `Exception` (type parameters must be bounded by it).
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: type 'NotAnException' in 'throws' clause is not a subtype of class 'Exception'
++// ASSERT: scan error: type 'Int64' in 'throws' clause is not a subtype of class 'Exception'
++// ASSERT: scan error: type 'T' in 'throws' clause is not a subtype of class 'Exception'
++
++class NotAnException {}
++
++// A plain class is not an Exception.
++func f(): Unit throws NotAnException {
++}
++
++// A primitive type is not an Exception.
++func g(): Unit throws Int64 {
++}
++
++// An unbounded type parameter is not provably an Exception.
++func h<T>(x: T): Unit throws T {
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/ffi_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/ffi_neg.cj
+new file mode 100644
+index 0000000000..2c8336dd0c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/ffi_neg.cj
+@@ -0,0 +1,16 @@
++// Checked exceptions (FFI ruling): a `throws` clause is banned on foreign
++// functions and on CFunc function types — C code provides no capabilities.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: a 'throws' clause is not allowed on a foreign function
++// ASSERT: scan error: a 'throws' clause is not allowed on a 'CFunc' type
++
++class AException <: Exception {}
++
++foreign func fooc(): Unit throws AException
++
++var g: CFunc<() throws AException -> Unit> = { => }
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
+index 114f472e0d..6d5b4652f0 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
+@@ -2,7 +2,8 @@
+ // considered in type-argument inference (no row unification).
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error
++// ASSERT: scan error: mismatched types
++// ASSERT: scan found '() throws (Class-AException) -> Nothing'
+ 
+ class AException <: Exception {}
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj b/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj
+index 69b1e5974d..53fd287bc3 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj
+@@ -2,7 +2,7 @@
+ // lists are duplicate declarations.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error
++// ASSERT: scan error: function 'f' has overload conflicts
+ 
+ class AException <: Exception {}
+ class BException <: Exception {}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj b/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj
+index f7f2ad3d9d..1735cdaf85 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj
+@@ -2,7 +2,7 @@
+ // lists are the same type for overload purposes — such overloads are duplicates.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error
++// ASSERT: scan error: function 'h' has overload conflicts
+ 
+ class AException <: Exception {}
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj
+index fbf5721a0a..eed95e0dee 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj
+@@ -2,7 +2,7 @@
+ // original does not provide for.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error
++// ASSERT: scan error: exception type 'Class-BException' in 'throws' clause of 'm' is not covered by the overridden or implemented declaration
+ 
+ class AException <: Exception {}
+ class BException <: Exception {}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj
+index 8bf83ce528..edebce3556 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj
+@@ -2,7 +2,8 @@
+ // the target type must cover every capability the source function requires.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error
++// ASSERT: scan error: mismatched types
++// ASSERT: scan expected '() throws (Class-AException) -> Unit', found '() throws (Class-AException, Class-BException) -> Nothing'
+ 
+ class AException <: Exception {}
+ class BException <: Exception {}
+-- 
+2.54.0
+

@@ -1,0 +1,154 @@
+From 0d33a12b74a940457f7fa8d28a6c6cac903d1d0e Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 02:28:49 +0300
+Subject: [PATCH 25/43] test(chexc): generic higher-order APIs, and the effects
+ test the fix unblocks
+
+- types/generics_higher_order.cj: a clause naming the declaration's type parameter
+  inside a parameter's functional type, exercised four ways -- explicit type
+  argument with a function reference, explicit with a literal taking its list from
+  the expected type, inference from an ordinary argument, and a member of a generic
+  class instantiated through its receiver. This is the 'retrying' shape.
+- types/generics_no_inference.cj now pins the guarantee that survives: the
+  argument's own list never binds a type parameter of the callee. The previous
+  shape -- parameters occurring ONLY in the block's list -- compiled after the fix,
+  because the old rejection came from the filtering bug rather than from a rule;
+  that difference from the text is recorded as a question rather than pinned here.
+- Sema/effect/effect_perform_02.cj carries the 'performs T' annotation the design
+  intends for a callback that performs, which now compiles.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../types/generics_higher_order.cj            | 63 +++++++++++++++++++
+ .../types/generics_no_inference.cj            | 20 +++---
+ .../compiler/Sema/effect/effect_perform_02.cj |  4 +-
+ 3 files changed, 75 insertions(+), 12 deletions(-)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/generics_higher_order.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_higher_order.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_higher_order.cj
+new file mode 100644
+index 0000000000..71f66b42a9
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_higher_order.cj
+@@ -0,0 +1,63 @@
++// Checked exceptions (generics, first-class functions): a capability list may mention the type
++// parameters of the declaration it belongs to, including inside a parameter's functional type. The
++// call site instantiates the whole signature, so the callback's requirement is the instantiated one:
++// a function reference carrying it fits, a literal takes it from the expected type, and the
++// requirement is discharged inside the higher-order function -- the `retrying` shape of the design.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func thrower(): Unit throws AException {
++    throw AException()
++}
++
++// the callback's requirement is discharged here and never reaches the caller
++func handling<E>(fn: () throws E -> Unit): Int64 where E <: Exception {
++    try {
++        fn()
++        0
++    } catch (e: E) {
++        1
++    }
++}
++
++// the type parameter also appears in an ordinary position, so it can be inferred
++func handlingBoth<E>(fn: () throws E -> Unit, witness: E): Int64 where E <: Exception {
++    try {
++        fn()
++        0
++    } catch (e: E) {
++        1
++    }
++}
++
++// a member of a generic class: the mapping comes from the receiver
++class Handler<E> where E <: Exception {
++    func run(fn: () throws E -> Unit): Int64 {
++        try {
++            fn()
++            0
++        } catch (e: E) {
++            1
++        }
++    }
++}
++
++main(): Int64 {
++    if (handling<AException>(thrower) != 1) {
++        return 1
++    }
++    if (handling<BException>({ => throw BException() }) != 1) {
++        return 1
++    }
++    if (handlingBoth(thrower, AException()) != 1) {
++        return 1
++    }
++    if (Handler<AException>().run(thrower) != 1) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
+index 1dc65b8b48..3b1dc2f707 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
+@@ -1,9 +1,10 @@
+-// Checked exceptions (generics): capability parameters of argument functions are NOT
+-// considered in type-argument inference (no row unification).
++// Checked exceptions (generics): capability parameters of argument functions are not considered in
++// type argument inference -- there is no row unification. The argument's own list therefore never
++// binds a type parameter of the callee: below, `T` and `G` occur in the block's capability list and
++// `T` also in the return type, and the call is rejected because nothing else determines them.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error: mismatched types
+-// ASSERT: scan found '() throws (Class-AException) -> Nothing'
++// ASSERT: scan error: unable to infer generic argument of this function
+ 
+ class AException <: Exception {}
+ 
+@@ -11,16 +12,13 @@ func f() throws AException {
+     throw AException()
+ }
+ 
+-func g<T, G>(x: Int64, block: () throws (T, G) -> Unit)
++func g<T, G>(x: Int64, block: () throws (T, G) -> Unit): T
+ where T <: Exception, G <: Exception {
+-    try {
+-        block()
+-    } catch (e: Exception) {
+-    }
++    throw Exception()
+ }
+ 
+ main() {
+-    // T and G cannot be inferred from f's capability list
+-    g(0, f)
++    // the block's list says AException, but that says nothing about T and G
++    let bad: Int64 = g(0, f)
+     return 0
+ }
+diff --git a/testsuites/LLT/compiler/Sema/effect/effect_perform_02.cj b/testsuites/LLT/compiler/Sema/effect/effect_perform_02.cj
+index 88bf14cf72..ccc5c77a1f 100644
+--- a/testsuites/LLT/compiler/Sema/effect/effect_perform_02.cj
++++ b/testsuites/LLT/compiler/Sema/effect/effect_perform_02.cj
+@@ -5,7 +5,9 @@ import stdx.effect.Command
+ 
+ class Eff <: Command<Int64> {}
+ 
+-public func assertPerformed<T>(fn: ()->Int64, msg!: String = ""): Int64 where T <: Command<Int64> {
++// Effect requirements are checked wherever handlers are enabled, and a literal takes its capability
++// list from the expected type -- so the callback's type says what it performs.
++public func assertPerformed<T>(fn: () performs T -> Int64, msg!: String = ""): Int64 where T <: Command<Int64> {
+     try{
+         return fn()
+     } handle (e: T){
+-- 
+2.54.0
+

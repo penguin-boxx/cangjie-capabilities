@@ -1,0 +1,455 @@
+From 236ff2538d2cdb6ff8a59a75284b49205f0fc442 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 12:58:31 +0300
+Subject: [PATCH 32/44] feat(chexc): package metadata records what a package's
+ capability lists are worth
+
+A consumer could not tell a verified list from a trusted one: the '.cjo' recorded nothing about
+how the package was checked. It now carries three facts -- the severity capability checking ran
+at, whether effect handlers were enabled, and whether the package carries capability metadata at
+all, which the first two cannot express for a '.cjo' written before the feature. All three are
+additive fields with defaults, so an old '.cjo' still loads and reports exactly that: nothing
+recorded.
+
+Two rules follow immediately. An '@AssumeThrows' on a package verified at 'error' is rejected --
+an assumption stands in for lists a dependency does not have, and where it has proven ones the
+two contradict each other; at 'warn' the lists are knowingly incomplete, which is when an
+assumption is still the tool for the job, so that stays legal. And a package compiled with effect
+handlers but no capability metadata is rejected rather than read as empty: its 'performs' lists
+were never written, so an empty one means "unknown", not "performs nothing".
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../Basic/DiagRefactor/DiagnosticSema.def     |  6 +++
+ include/cangjie/Modules/ASTSerialization.h    |  5 ++-
+ include/cangjie/Modules/CjoManager.h          |  7 ++++
+ include/cangjie/Modules/ImportManager.h       |  3 ++
+ .../cangjie/Modules/PackageCapabilityInfo.h   | 32 ++++++++++++++
+ schema/ModuleFormat.fbs                       | 17 ++++++++
+ src/Modules/ASTSerialization/ASTLoader.cpp    | 28 +++++++++++++
+ src/Modules/ASTSerialization/ASTLoaderImpl.h  |  1 +
+ src/Modules/ASTSerialization/ASTWriter.cpp    | 25 +++++++----
+ src/Modules/ASTSerialization/ASTWriterImpl.h  |  2 +-
+ src/Modules/CjoManager.cpp                    |  9 ++++
+ src/Modules/ImportManager.cpp                 | 11 +++--
+ src/Sema/TypeChecker.cpp                      | 42 +++++++++++++++++++
+ src/Sema/TypeCheckerImpl.h                    |  2 +
+ 14 files changed, 178 insertions(+), 12 deletions(-)
+ create mode 100644 include/cangjie/Modules/PackageCapabilityInfo.h
+
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index 7c820a9e..156d2804 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -444,6 +444,12 @@ ERROR(sema_chexc_performs_type_not_command, "type '%s' in 'performs' clause is n
+ ERROR(sema_chexc_performs_in_main, "'main' cannot declare a 'performs' clause",
+     "there is no default effect handler, unlike the default exception handler")
+ 
++ERROR(sema_chexc_assume_on_checked_package,
++    "'@AssumeThrows' names package '%s', whose capability lists are verified",
++    "an assumption stands in for lists a package does not have; this one was checked at 'error'")
++ERROR(sema_chexc_import_without_capability_metadata,
++    "package '%s' was compiled with effect handlers but records no capability metadata",
++    "its 'performs' lists cannot be read as empty ones; rebuild it with this compiler")
+ ERROR(sema_chexc_assume_throws_not_on_import, "'@AssumeThrows' is only allowed on an 'import'",
+     "an assumption applies to a whole imported package")
+ 
+diff --git a/include/cangjie/Modules/ASTSerialization.h b/include/cangjie/Modules/ASTSerialization.h
+index facc4e81..cb680366 100644
+--- a/include/cangjie/Modules/ASTSerialization.h
++++ b/include/cangjie/Modules/ASTSerialization.h
+@@ -25,6 +25,7 @@
+ #include "cangjie/AST/Node.h"
+ #include "cangjie/Basic/DiagnosticEngine.h"
+ #include "cangjie/Modules/ASTSerializationTypeDef.h"
++#include "cangjie/Modules/PackageCapabilityInfo.h"
+ #include "cangjie/Sema/TypeManager.h"
+ 
+ namespace Cangjie {
+@@ -48,7 +49,7 @@ public:
+ 
+     // Add for cjmp
+     void SetSerializingCommon();
+-    void SaveOptions(bool debug, GlobalOptions::OptimizationLevel level);
++    void SaveOptions(const GlobalOptions& opts);
+ 
+     /** Export external decls of a package AST to a buffer. */
+     void ExportAST(const AST::PackageDecl& package) const;
+@@ -87,6 +88,8 @@ public:
+     // Add for cjmp
+     bool PreloadCommonPartOfPackage(AST::Package& pkg) const;
+     std::vector<std::string> ReadFileNames() const;
++    /** Checked exceptions: the package's capability metadata, defaulted for a pre-feature '.cjo'. */
++    PackageCapabilityInfo GetCapabilityInfo() const;
+ 
+     Ptr<AST::Ty> LoadType(FormattedIndex type) const;
+     // A flag to avoid conflicts when we are reusing the AST serialiser from CHIR
+diff --git a/include/cangjie/Modules/CjoManager.h b/include/cangjie/Modules/CjoManager.h
+index a5be87f5..a18cf82f 100644
+--- a/include/cangjie/Modules/CjoManager.h
++++ b/include/cangjie/Modules/CjoManager.h
+@@ -15,6 +15,7 @@
+ 
+ #include "cangjie/AST/Node.h"
+ #include "cangjie/Basic/DiagnosticEngine.h"
++#include "cangjie/Modules/PackageCapabilityInfo.h"
+ #include "cangjie/Sema/TypeManager.h"
+ 
+ namespace Cangjie {
+@@ -66,6 +67,12 @@ public:
+     std::string GetPackageDepInfo(const std::string& cjoPath) const;
+ 
+     Ptr<AST::PackageDecl> GetPackageDecl(const std::string& fullPackageName) const;
++    /**
++     * Checked exceptions: the capability metadata of a loaded package -- the level its lists were
++     * verified at, whether effect handlers were on, whether it carries the metadata at all. A
++     * package that is not loaded, or one written before the feature, reports the defaults.
++     */
++    PackageCapabilityInfo GetPackageCapabilityInfo(const std::string& fullPackageName) const;
+     /* Load files from common part to current package.
+      * This is required to correctly handle imports from common part.
+      */
+diff --git a/include/cangjie/Modules/ImportManager.h b/include/cangjie/Modules/ImportManager.h
+index 0e2f4d95..49407b9f 100644
+--- a/include/cangjie/Modules/ImportManager.h
++++ b/include/cangjie/Modules/ImportManager.h
+@@ -24,6 +24,7 @@
+ #include "cangjie/Basic/DiagnosticEngine.h"
+ #include "cangjie/CHIR/Interpreter/BCHIR.h"
+ #include "cangjie/Modules/CjoManager.h"
++#include "cangjie/Modules/PackageCapabilityInfo.h"
+ #include "cangjie/Utils/CheckUtils.h"
+ 
+ #include "CjoManager.h"
+@@ -304,6 +305,8 @@ public:
+      * @return if found, return the packageDecl, otherwise return nullptr.
+      */
+     Ptr<AST::PackageDecl> GetPackageDecl(const std::string& fullPackageName) const;
++    /** Checked exceptions: capability metadata of an imported package; see 'CjoManager'. */
++    PackageCapabilityInfo GetPackageCapabilityInfo(const std::string& fullPackageName) const;
+     Ptr<AST::Package> GetPackage(const std::string& fullPackageName) const;
+     void SetImportedPackageFromASTNode(std::vector<OwnedPtr<AST::Package>>& pkgs);
+     using DeclImportsMap = std::unordered_map<Ptr<const AST::Decl>, std::vector<Ptr<const AST::ImportSpec>>>;
+diff --git a/include/cangjie/Modules/PackageCapabilityInfo.h b/include/cangjie/Modules/PackageCapabilityInfo.h
+new file mode 100644
+index 00000000..8c95bf68
+--- /dev/null
++++ b/include/cangjie/Modules/PackageCapabilityInfo.h
+@@ -0,0 +1,32 @@
++// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
++// This source file is part of the Cangjie project, licensed under Apache-2.0
++// with Runtime Library Exception.
++//
++// See https://cangjie-lang.cn/pages/LICENSE for license information.
++
++/**
++ * @file
++ *
++ * This file declares what a loaded package's capability metadata says about it.
++ */
++
++#ifndef CANGJIE_MODULES_PACKAGECAPABILITYINFO_H
++#define CANGJIE_MODULES_PACKAGECAPABILITYINFO_H
++
++#include <cstdint>
++
++namespace Cangjie {
++/**
++ * Checked exceptions: what a loaded package's capability metadata is worth to its consumers.
++ * The defaults describe a package produced before the feature existed: nothing recorded, so an
++ * empty capability list means "unknown", not "requires nothing".
++ */
++struct PackageCapabilityInfo {
++    enum class Level : uint8_t { OFF, WARN, ERROR };
++    Level level{Level::OFF};         /**< Severity capability checking ran at, 'OFF' if it did not. */
++    bool effectsEnabled{false};      /**< Whether effect handlers were enabled for the package. */
++    bool recordsCapabilities{false}; /**< Whether the package carries capability metadata at all. */
++};
++} // namespace Cangjie
++
++#endif // CANGJIE_MODULES_PACKAGECAPABILITYINFO_H
+diff --git a/schema/ModuleFormat.fbs b/schema/ModuleFormat.fbs
+index a841ac21..009d7ead 100644
+--- a/schema/ModuleFormat.fbs
++++ b/schema/ModuleFormat.fbs
+@@ -688,9 +688,26 @@ enum OptimizationLevel : uint8 {
+   O0, O1, O2, O3, Os, Oz
+ }
+ 
++/// Checked exceptions: the severity capability checking ran at when the package was compiled.
++/// 'Off' also covers every package produced before the feature existed, which is what the default
++/// gives an old '.cjo'.
++enum ChexcLevel : byte {
++  Off = 0,
++  Warn,
++  Error
++}
++
+ table CompilationOptions {
+   optimization_level: OptimizationLevel;
+   debug: bool;
++  // Checked exceptions: what the capability lists in this package are worth. 'chexc_level' says
++  // whether they were verified and how strictly; 'effects_enabled' says whether effect handlers
++  // were on, so an empty 'performs' list means "performs nothing" rather than "was not recorded";
++  // 'records_capabilities' distinguishes a package this compiler produced from one that predates
++  // capability metadata entirely, which the two enums above cannot express on their own.
++  chexc_level: ChexcLevel = Off;
++  effects_enabled: bool = false;
++  records_capabilities: bool = false;
+ }
+ 
+ // all SemaTys, decls are saved here, and indexed by other nodes.
+diff --git a/src/Modules/ASTSerialization/ASTLoader.cpp b/src/Modules/ASTSerialization/ASTLoader.cpp
+index 2c932909..906f537a 100644
+--- a/src/Modules/ASTSerialization/ASTLoader.cpp
++++ b/src/Modules/ASTSerialization/ASTLoader.cpp
+@@ -512,6 +512,34 @@ void ASTLoader::ASTLoaderImpl::AddDeclToImportedPackage(Decl& decl)
+ /**
+  * @brief Convert fb optimization level enum to the GlobalOptions' enum
+  */
++PackageCapabilityInfo ASTLoader::GetCapabilityInfo() const
++{
++    return pImpl->GetCapabilityInfo();
++}
++
++PackageCapabilityInfo ASTLoader::ASTLoaderImpl::GetCapabilityInfo() const
++{
++    PackageCapabilityInfo info;
++    if (package == nullptr || package->options() == nullptr) {
++        return info; // A '.cjo' from before capability metadata: every default already says so.
++    }
++    auto options = package->options();
++    switch (options->chexc_level()) {
++        case PackageFormat::ChexcLevel::ChexcLevel_Warn:
++            info.level = PackageCapabilityInfo::Level::WARN;
++            break;
++        case PackageFormat::ChexcLevel::ChexcLevel_Error:
++            info.level = PackageCapabilityInfo::Level::ERROR;
++            break;
++        default:
++            info.level = PackageCapabilityInfo::Level::OFF;
++            break;
++    }
++    info.effectsEnabled = options->effects_enabled();
++    info.recordsCapabilities = options->records_capabilities();
++    return info;
++}
++
+ GlobalOptions::OptimizationLevel ASTLoader::ASTLoaderImpl::LoadOptimizationLevel(
+     const PackageFormat::CompilationOptions& options)
+ {
+diff --git a/src/Modules/ASTSerialization/ASTLoaderImpl.h b/src/Modules/ASTSerialization/ASTLoaderImpl.h
+index 2bfd56ee..0ff8a541 100644
+--- a/src/Modules/ASTSerialization/ASTLoaderImpl.h
++++ b/src/Modules/ASTSerialization/ASTLoaderImpl.h
+@@ -141,6 +141,7 @@ private:
+     void LoadInheritableDeclAdvancedInfo(const PackageFormat::Decl& decl, AST::InheritableDecl& id);
+     void AddDeclToImportedPackage(AST::Decl& decl);
+     GlobalOptions::OptimizationLevel LoadOptimizationLevel(const PackageFormat::CompilationOptions& options);
++    PackageCapabilityInfo GetCapabilityInfo() const;
+ 
+     // Get decl pointer according to DeclId obtained from flatbuffers.
+     Ptr<AST::Decl> GetDeclFromIndex(const PackageFormat::FullId* fullId);
+diff --git a/src/Modules/ASTSerialization/ASTWriter.cpp b/src/Modules/ASTSerialization/ASTWriter.cpp
+index d6372748..ebc25d70 100644
+--- a/src/Modules/ASTSerialization/ASTWriter.cpp
++++ b/src/Modules/ASTSerialization/ASTWriter.cpp
+@@ -511,20 +511,21 @@ template <typename T> TVectorOffset<FormattedIndex> ASTWriter::ASTWriterImpl::Ge
+ /**
+  * @brief Save compilation options to the cjo file
+  * @param debug Whether debug mode is enabled
+- * @param level The optimization level
++ * @param opts The compilation options of the package being written
+  */
+-void ASTWriter::SaveOptions(bool debug, GlobalOptions::OptimizationLevel level)
++void ASTWriter::SaveOptions(const GlobalOptions& opts)
+ {
+-    pImpl->SaveOptions(debug, level);
++    pImpl->SaveOptions(opts);
+ }
+ 
+ /**
+  * @brief Save compilation options to the cjo file
+- * @param debug Whether debug mode is enabled
+- * @param level The optimization level
++ * @param opts The compilation options of the package being written
+  */
+-void ASTWriter::ASTWriterImpl::SaveOptions(bool debug, GlobalOptions::OptimizationLevel level)
++void ASTWriter::ASTWriterImpl::SaveOptions(const GlobalOptions& opts)
+ {
++    bool debug = opts.enableCompileDebug;
++    auto level = opts.optimizationLevel;
+     PackageFormat::OptimizationLevel saveLevel;
+     switch (level) {
+         case GlobalOptions::OptimizationLevel::O0:
+@@ -549,7 +550,17 @@ void ASTWriter::ASTWriterImpl::SaveOptions(bool debug, GlobalOptions::Optimizati
+             return InternalError("Unsupported optimization level");
+     }
+ 
+-    options = PackageFormat::CreateCompilationOptions(builder, saveLevel, debug);
++    // Checked exceptions: what this package's capability lists are worth to a consumer. A list
++    // written at 'Off' was never verified -- the clauses are the author's word, like an assumption
++    // import -- and 'recordsCapabilities' separates a package this compiler wrote from one that
++    // predates capability metadata, whose absent lists must not read as empty ones.
++    auto chexcLevel = PackageFormat::ChexcLevel::ChexcLevel_Off;
++    if (opts.enableChexc) {
++        chexcLevel = opts.chexcSeverity == GlobalOptions::ChexcSeverity::CS_WARN
++            ? PackageFormat::ChexcLevel::ChexcLevel_Warn
++            : PackageFormat::ChexcLevel::ChexcLevel_Error;
++    }
++    options = PackageFormat::CreateCompilationOptions(builder, saveLevel, debug, chexcLevel, opts.enableEH, true);
+ }
+ 
+ /**
+diff --git a/src/Modules/ASTSerialization/ASTWriterImpl.h b/src/Modules/ASTSerialization/ASTWriterImpl.h
+index 7bc2d7f7..40dd026d 100644
+--- a/src/Modules/ASTSerialization/ASTWriterImpl.h
++++ b/src/Modules/ASTSerialization/ASTWriterImpl.h
+@@ -67,7 +67,7 @@ public:
+ 
+     void SetSerializingCommon();
+     void PreSaveFullExportDecls(AST::Package& package);
+-    void SaveOptions(bool debug, GlobalOptions::OptimizationLevel level);
++    void SaveOptions(const GlobalOptions& opts);
+     inline bool NeedToExportDecl(Ptr<const AST::Decl> decl);
+     void DFSCollectFilesDeclarations(Ptr<AST::File> file,
+         std::unordered_set<AST::File*>& alreadyVisitedFiles,
+diff --git a/src/Modules/CjoManager.cpp b/src/Modules/CjoManager.cpp
+index a0e444f8..70afcbce 100644
+--- a/src/Modules/CjoManager.cpp
++++ b/src/Modules/CjoManager.cpp
+@@ -183,6 +183,15 @@ Ptr<PackageDecl> CjoManager::GetPackageDecl(const std::string& fullPackageName)
+     return info->pkgDecl.get();
+ }
+ 
++PackageCapabilityInfo CjoManager::GetPackageCapabilityInfo(const std::string& fullPackageName) const
++{
++    auto info = impl->GetPackageInfo(fullPackageName);
++    if (info == nullptr || info->loader == nullptr) {
++        return {};
++    }
++    return info->loader->GetCapabilityInfo();
++}
++
+ Ptr<Package> CjoManager::GetPackage(const std::string& fullPackageName) const
+ {
+     auto info = impl->GetPackageInfo(fullPackageName);
+diff --git a/src/Modules/ImportManager.cpp b/src/Modules/ImportManager.cpp
+index 29a882ea..28d7391e 100644
+--- a/src/Modules/ImportManager.cpp
++++ b/src/Modules/ImportManager.cpp
+@@ -312,7 +312,7 @@ void ImportManager::ExportAST(bool saveFileWithAbsPath, std::vector<uint8_t>& as
+         writer.PreSaveFullExportDecls(*packageDecl->srcPackage);
+     }
+     realWriter->ExportAST(*packageDecl);
+-    realWriter->SaveOptions(opts.enableCompileDebug, opts.optimizationLevel);
++    realWriter->SaveOptions(opts);
+ 
+     additionalSerializations(*realWriter);
+ 
+@@ -332,7 +332,7 @@ std::vector<uint8_t> ImportManager::ExportASTSignature(const Package& pkg)
+     CJC_NULLPTR_CHECK(packageDecl);
+     writer.PreSaveFullExportDecls(*packageDecl->srcPackage);
+     writer.ExportAST(*packageDecl);
+-    writer.SaveOptions(opts.enableCompileDebug, opts.optimizationLevel);
++    writer.SaveOptions(opts);
+ 
+     std::vector<uint8_t> astData;
+     writer.AST2FB(astData, *packageDecl);
+@@ -355,7 +355,7 @@ void ImportManager::ExportDeclsWithContent(bool saveFileWithAbsPath, Package& pa
+         writer->SetSerializingCommon();
+     }
+     writer->PreSaveFullExportDecls(package);
+-    writer->SaveOptions(opts.enableCompileDebug, opts.optimizationLevel);
++    writer->SaveOptions(opts);
+     if (auto [it, success] = astWriters.emplace(&package, writer); !success) {
+         delete it->second;
+         astWriters[&package] = writer;
+@@ -1081,6 +1081,11 @@ Ptr<PackageDecl> ImportManager::GetPackageDecl(const std::string& fullPackageNam
+     return cjoManager->GetPackageDecl(fullPackageName);
+ }
+ 
++PackageCapabilityInfo ImportManager::GetPackageCapabilityInfo(const std::string& fullPackageName) const
++{
++    return cjoManager->GetPackageCapabilityInfo(fullPackageName);
++}
++
+ Ptr<Package> ImportManager::GetPackage(const std::string& fullPackageName) const
+ {
+     return cjoManager->GetPackage(fullPackageName);
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index 56f08a33..9b5a6e6b 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -318,6 +318,47 @@ void TypeChecker::TypeCheckerImpl::ChkCapturesClauseOfDecl(ASTContext& ctx, Inhe
+     }
+ }
+ 
++void TypeChecker::TypeCheckerImpl::ChkImportedCapabilityMetadata(Package& pkg)
++{
++    bool checkExceptions = ci->invocation.globalOptions.enableChexc;
++    if (!checkExceptions && !ci->invocation.globalOptions.enableEH) {
++        return;
++    }
++    for (auto& file : pkg.files) {
++        CJC_NULLPTR_CHECK(file);
++        for (auto& import : file->imports) {
++            if (!import || import->IsImportMulti()) {
++                continue; // Desugared into single imports, which carry copies of the annotations.
++            }
++            bool assumes = std::any_of(import->annotations.begin(), import->annotations.end(),
++                [](auto& anno) { return anno && anno->assumeThrows; });
++            for (auto& name : import->content.GetPossiblePackageNames()) {
++                auto info = importManager.GetPackageCapabilityInfo(name);
++                if (!info.recordsCapabilities) {
++                    // Effects: a package built with handlers but no capability metadata has
++                    // 'performs' lists that were never written, and an empty list would read as
++                    // "performs nothing". Exception lists are safe to read that way -- an
++                    // unchecked package simply requires nothing of its callers.
++                    if (info.effectsEnabled) {
++                        diag.DiagnoseRefactor(
++                            DiagKindRefactor::sema_chexc_import_without_capability_metadata, *import, name);
++                    }
++                    continue;
++                }
++                // An assumption stands in for lists the dependency does not have. Where it has
++                // verified ones, the two are contradictory: the assumption would override what the
++                // compiler proved, in whichever direction the author guessed wrong. Only 'error'
++                // counts as verified -- a package built at 'warn' is mid-migration, its lists are
++                // knowingly incomplete, and that is exactly when an assumption is still the tool
++                // for the job.
++                if (assumes && checkExceptions && info.level == PackageCapabilityInfo::Level::ERROR) {
++                    diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_assume_on_checked_package, *import, name);
++                }
++            }
++        }
++    }
++}
++
+ void TypeChecker::TypeCheckerImpl::ChkAssumeThrowsAnnotations(ASTContext& ctx, Package& pkg)
+ {
+     if (!ci->invocation.globalOptions.enableChexc) {
+@@ -2276,6 +2317,7 @@ void TypeChecker::TypeCheckerImpl::PostTypeCheck(std::vector<Ptr<ASTContext>>& c
+     for (auto& ctx : contexts) {
+         CheckOverflow(*ctx->curPackage);
+         ChkAssumeThrowsAnnotations(*ctx, *ctx->curPackage);
++        ChkImportedCapabilityMetadata(*ctx->curPackage);
+         CheckUnusedImportSpec(*ctx->curPackage);
+         // Check duplicated super interfaces in class, interface when type arguments applied.
+         CheckInstDupSuperInterfacesEntry(*ctx->curPackage);
+diff --git a/src/Sema/TypeCheckerImpl.h b/src/Sema/TypeCheckerImpl.h
+index 2ff73c42..9d0354ae 100644
+--- a/src/Sema/TypeCheckerImpl.h
++++ b/src/Sema/TypeCheckerImpl.h
+@@ -1325,6 +1325,8 @@ private:
+     void ChkPerformsClauseTypes(ASTContext& ctx, AST::ThrowsClause& clause);
+     /// Checked exceptions: validate the '@AssumeThrows' annotations of a package.
+     void ChkAssumeThrowsAnnotations(ASTContext& ctx, AST::Package& pkg);
++    /// Checked exceptions: validate what the imported packages' capability metadata allows.
++    void ChkImportedCapabilityMetadata(AST::Package& pkg);
+     /**
+      * Checked exceptions: validate the 'captures' clause of a class or struct declaration
+      * -- elaborate and validate its entries like 'throws' entries and ban
+-- 
+2.54.0
+

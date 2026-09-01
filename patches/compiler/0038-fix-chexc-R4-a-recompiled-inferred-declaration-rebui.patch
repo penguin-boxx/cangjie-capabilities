@@ -1,0 +1,98 @@
+From ac3856efeef072cb7dc7eff9d884097a853500bd Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 30 Aug 2026 17:10:48 +0300
+Subject: [PATCH 38/44] =?UTF-8?q?fix(chexc):=20R4=20=E2=80=94=20a=20recomp?=
+ =?UTF-8?q?iled=20inferred=20declaration=20rebuilds=20its=20package=20(I28?=
+ =?UTF-8?q?)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A declaration whose capability list is INFERRED takes it from its own body, so editing that body
+changes what every caller in the package must supply. The incremental hashes cannot express that:
+they are computed at AST_DIFF, before the inference that derives the list. The consequence was a
+silent wrong answer -- an unchanged caller served from the cache, checked against a stale
+contract, where a full build reports the missing capability.
+
+The earlier attempt put the body hash into the spreading hash and cost 185 upstream
+IncrementalCompilation failures, because it changed which declarations every edit recompiles for
+every build. This one decides at the same place the machinery already decides -- the scope
+analysis result -- and only when the feature is on: if any declaration scheduled for
+recompilation is inference-eligible (no written clause, does not leave the module by effective
+visibility), the round rolls back to a full package compilation, logged in the incremental
+decision log. A build without '--enable-checked-exceptions' keeps exactly the recompilation sets
+it had, which the 1,944-case suite confirms.
+
+Coarser than the precise fix (persist the lists, compare after inference, invalidate the actual
+dependents), which stays recorded as v2: this one never recompiles less than it must, and the
+cost falls only on packages that both use the feature and edit an internal body.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../IncrementalCompilerInstance.cpp           | 43 +++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+
+diff --git a/src/FrontendTool/IncrementalCompilerInstance.cpp b/src/FrontendTool/IncrementalCompilerInstance.cpp
+index f7772703..1b790b2e 100644
+--- a/src/FrontendTool/IncrementalCompilerInstance.cpp
++++ b/src/FrontendTool/IncrementalCompilerInstance.cpp
+@@ -43,6 +43,37 @@ IncrementalCompilerInstance::~IncrementalCompilerInstance()
+ {
+ }
+ 
++namespace {
++/**
++ * Checked exceptions: whether any declaration scheduled for recompilation takes its capability
++ * list from its own body -- no explicit 'throws' clause, and not exported ("Which declarations are
++ * inferred": effective visibility, the narrowest of its own modifier and its enclosing ones). For
++ * such a declaration a body edit is a signature change, which the incremental hashes cannot see.
++ */
++bool IsInferenceEligible(const Decl& decl)
++{
++    auto fd = DynamicCast<const FuncDecl*>(&decl);
++    if (!fd || !fd->funcBody || !fd->funcBody->body || fd->funcBody->throwsClause) {
++        return false;
++    }
++    for (auto current = Ptr<const Decl>(&decl); current; current = current->outerDecl) {
++        if (current->outerDecl && current->outerDecl->astKind == ASTKind::INTERFACE_DECL) {
++            continue; // an interface member is a public contract, written modifier or not
++        }
++        if (!current->TestAttr(Attribute::PUBLIC) && !current->TestAttr(Attribute::PROTECTED)) {
++            return true; // does not leave the module: its list is inferred
++        }
++    }
++    return false;
++}
++
++bool HasRecompiledInferredDecl(const IncreResult& res)
++{
++    return std::any_of(res.declsToRecompile.begin(), res.declsToRecompile.end(),
++        [](Ptr<Decl> decl) { return decl && IsInferenceEligible(*decl); });
++}
++} // namespace
++
+ bool IncrementalCompilerInstance::InitCompilerInstance()
+ {
+     return CompilerInstance::InitCompilerInstance();
+@@ -220,6 +251,18 @@ bool IncrementalCompilerInstance::PerformIncrementalScopeAnalysis()
+ 
+     auto increRes = IncrementalScopeAnalysis({rawMangleName2DeclMap, std::move(astCacheInfo), *package, options,
+         *importManager, cachedInfo, fileMap, std::move(directExtends)});
++    if (increRes.kind == IncreKind::INCR && options.enableChexc && HasRecompiledInferredDecl(increRes)) {
++        // Checked exceptions: a declaration whose capability list is INFERRED takes it from its own
++        // body, so editing that body can change what every caller in the package must supply --
++        // the list is part of the call-site contract, and the hashes cannot know that, because
++        // they are computed here, before the inference that derives it. Rather than let the
++        // unchanged callers be served from the cache and checked against a stale contract (silent
++        // where a full build errors), the package is recompiled whole. Gated on the feature, so a
++        // build without it keeps exactly the recompilation sets it had.
++        increRes.kind = IncreKind::ROLLBACK;
++        IncrementalCompilationLogger::GetInstance().LogLn(
++            "a declaration with an inferred capability list is recompiled, roll back to full compilation");
++    }
+     if (increRes.kind == IncreKind::INCR) {
+         // check cached bitcode infos
+         const std::string& packageName = package->fullPackageName;
+-- 
+2.54.0
+

@@ -1,0 +1,45 @@
+From 3caa9430afb16214370c1dbf27ba05d098cca1ab Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Mon, 31 Aug 2026 15:14:16 +0300
+Subject: [PATCH 6/6] feat(chexc): rename the escape hatch to unsafeCanThrow
+
+Named for the capability it fabricates, matching the specified effect twin 'unsafeCanPerform'.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ stdlib/libs/std/core/CMakeLists.txt                             | 2 +-
+ .../std/core/{unsafe_assume_handled.cj => unsafe_can_throw.cj}  | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+ rename stdlib/libs/std/core/{unsafe_assume_handled.cj => unsafe_can_throw.cj} (91%)
+
+diff --git a/stdlib/libs/std/core/CMakeLists.txt b/stdlib/libs/std/core/CMakeLists.txt
+index c1c94fd..8b4f963 100644
+--- a/stdlib/libs/std/core/CMakeLists.txt
++++ b/stdlib/libs/std/core/CMakeLists.txt
+@@ -32,7 +32,7 @@ set(CANGJIE_CORE_SRCS
+     arithmetic_exception.cj
+     illegal_argument_exception.cj
+     unchecked_exception.cj
+-    unsafe_assume_handled.cj
++    unsafe_can_throw.cj
+     illegal_format_exception.cj
+     illegal_state_exception.cj
+     index_out_of_bounds_exception.cj
+diff --git a/stdlib/libs/std/core/unsafe_assume_handled.cj b/stdlib/libs/std/core/unsafe_can_throw.cj
+similarity index 91%
+rename from stdlib/libs/std/core/unsafe_assume_handled.cj
+rename to stdlib/libs/std/core/unsafe_can_throw.cj
+index af7c0d3..238c04f 100644
+--- a/stdlib/libs/std/core/unsafe_assume_handled.cj
++++ b/stdlib/libs/std/core/unsafe_can_throw.cj
+@@ -21,6 +21,6 @@ package std.core
+  * The compiler supplies the fabricated capability inside this declaration; no source operation
+  * fabricates capabilities.
+  */
+-public func unsafeAssumeHandled<E, R>(f: () throws E -> R): R where E <: Exception {
++public func unsafeCanThrow<E, R>(f: () throws E -> R): R where E <: Exception {
+     f()
+ }
+-- 
+2.54.0
+

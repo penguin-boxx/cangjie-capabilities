@@ -1,0 +1,659 @@
+From 91745cb9b71ee739cb106c92878b320650d97536 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 14:23:03 +0300
+Subject: [PATCH 13/44] feat(chexc): effect requirement checking, 'performs'
+ clause (proposal 8.2)
+
+'perform c' requires a handler capability for the command's type, exactly as
+'throw e' requires one for the exception's; a 'handle' clause supplies one per
+command type it lists, over the region a 'catch' covers; and a 'performs' clause
+declares the requirement, preceding 'throws' (proposal 9.1 rule 8).
+
+Entries share FuncTy::capTys with 'throws' rather than getting a parallel list.
+This is sound because the roots are disjoint -- an effect entry is a Command
+subtype, an exception entry an Exception subtype -- and discharge is by
+subtyping, so a catch can never discharge a perform nor a handle a throw. That
+disjointness is what carries interning, instantiation, functional-type subtyping
+and cjo serialization for effects with no further change (decision D17). Under
+evidence passing (8.2) effect capabilities become real runtime values while
+exception ones stay erased, and at that point the lists MUST split; recorded.
+
+The 9.1 policy differences are enforced where they bite:
+- effect requirements are NEVER inferred. Command-typed residuals are excluded
+  from collection, so an undeclared 'perform' is reported rather than silently
+  added to the declaration -- where an exception in the same position would be
+  inferred. IsCommandTy compares DECLARATIONS through the supertype set, not
+  IsSubtype against the uninstantiated 'Command<T>', which never matches a
+  concrete 'C <: Command<Int64>'; getting this wrong reopened exactly the
+  inference hole the policy forbids, and the internal-function negative test is
+  what caught it.
+- 'main' cannot declare 'performs': there is no default effect handler.
+- entries must be Command subtypes, mirroring the Exception rule for 'throws'.
+
+Also fixes a pre-existing hole this work exposed (ledger E2): the try block of a
+try/handle was never capability-checked at all. With handlers present the parser
+rebuilds the block as a lambda and sema types THAT copy, leaving the original
+untyped; since every demand is guarded by Ty::IsTyCorrect, walking the untyped
+copy raised nothing -- dropping EXCEPTION demands too, not just effect ones. The
+pass now walks whichever copy carries the types, and treats handler bodies like
+catch bodies, outside the try's own scope.
+
+Tests: compiler/CheckedExceptions/performs, 4 cases -- handler round trip, the
+undeclared-perform error, non-discharge across both capability kinds in both
+directions, and Command-subtype validation. CheckedExceptions 74/74; ctest 49/49.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ include/cangjie/AST/ASTKind.inc               |   4 +-
+ include/cangjie/AST/Node.h                    |  10 +-
+ .../Basic/DiagRefactor/DiagnosticSema.def     |   5 +
+ src/AST/Clone.cpp                             |   6 +
+ src/AST/Walker.cpp                            |   6 +
+ src/Parse/ParseDecl.cpp                       |  46 ++++++--
+ src/Parse/ParseType.cpp                       |  14 ++-
+ src/Parse/ParserImpl.h                        |   2 +
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 103 ++++++++++++++++--
+ src/Sema/Collector.cpp                        |  14 ++-
+ src/Sema/Desugar/DesugarInTypeCheck.cpp       |   1 +
+ .../PartialInstantiation.cpp                  |   6 +
+ src/Sema/PreCheck.cpp                         |  11 +-
+ src/Sema/TypeCheckUtil.cpp                    |  16 ++-
+ src/Sema/TypeChecker.cpp                      |  40 +++++++
+ src/Sema/TypeCheckerImpl.h                    |   2 +
+ 16 files changed, 250 insertions(+), 36 deletions(-)
+
+diff --git a/include/cangjie/AST/ASTKind.inc b/include/cangjie/AST/ASTKind.inc
+index d422109b..a6bbc775 100644
+--- a/include/cangjie/AST/ASTKind.inc
++++ b/include/cangjie/AST/ASTKind.inc
+@@ -48,7 +48,7 @@ ASTKIND(CONSTANT_TYPE, "constant_type", ConstantType, 416)
+ ASTKIND(VARRAY_TYPE, "varray_type", VArrayType, 464)
+ ASTKIND(PRIMITIVE_TYPE, "primitive_type", PrimitiveType, 424)
+ ASTKIND(PAREN_TYPE, "paren_type", ParenType, 440)
+-ASTKIND(FUNC_TYPE, "func_type", FuncType, 504)
++ASTKIND(FUNC_TYPE, "func_type", FuncType, 512)
+ ASTKIND(TUPLE_TYPE, "tuple_type", TupleType, 472)
+ ASTKIND(THIS_TYPE, "this_type", ThisType, 384)
+ ASTKIND(INVALID_TYPE, "invalid_type", InvalidType, 384) // end of subtypes of Type.
+@@ -106,7 +106,7 @@ ASTKIND(MATCH_CASE_OTHER, "match_case_other", MatchCaseOther, 296)
+ ASTKIND(FUNC_ARG, "func_arg", FuncArg, 416)
+ ASTKIND(FUNC_PARAM_LIST, "func_param_list", FuncParamList, 344)
+ ASTKIND(THROWS_CLAUSE, "throws_clause", ThrowsClause, 368)
+-ASTKIND(FUNC_BODY, " func_body", FuncBody, 456)
++ASTKIND(FUNC_BODY, " func_body", FuncBody, 464)
+ ASTKIND(STRUCT_BODY, "struct_body", StructBody, 328)
+ ASTKIND(CLASS_BODY, "class_body", ClassBody, 328)
+ ASTKIND(INTERFACE_BODY, "interface_body", InterfaceBody, 328)
+diff --git a/include/cangjie/AST/Node.h b/include/cangjie/AST/Node.h
+index ea195f21..ea0059ec 100644
+--- a/include/cangjie/AST/Node.h
++++ b/include/cangjie/AST/Node.h
+@@ -912,9 +912,11 @@ struct FuncType : Type {
+     Position leftParenPos;                  /**< Position of '('. */
+     std::vector<OwnedPtr<Type>> paramTypes; /**< Splitted by comma, type(s) of parameter(s) */
+     Position rightParenPos;                 /**< Position of ')'. */
+-    OwnedPtr<ThrowsClause> throwsClause;    /**< Checked-exception clause (experimental). Optional, may be null. */
+-    Position arrowPos;                      /**< Position of '->'. */
+-    OwnedPtr<Type> retType;                 /**< Split from last "->", take the right parts. */
++    /**< Effect `performs` clause (experimental, proposal 8.2). Precedes 'throws'. Optional. */
++    OwnedPtr<ThrowsClause> performsClause;
++    OwnedPtr<ThrowsClause> throwsClause; /**< Checked-exception clause (experimental). Optional, may be null. */
++    Position arrowPos;                   /**< Position of '->'. */
++    OwnedPtr<Type> retType;              /**< Split from last "->", take the right parts. */
+     FuncType() : Type(ASTKind::FUNC_TYPE)
+     {
+     }
+@@ -1328,6 +1330,8 @@ struct FuncBody : Node {
+     Position colonPos;                               /**< Position of ':'. Generated by parser, Optional */
+     OwnedPtr<Type>
+         retType; /**< Return type (node) of the function. ret->retType = ParseType(); Generated by parser, Optional */
++    /**< Effect `performs` clause (experimental, proposal 8.2). Precedes 'throws'. Optional. */
++    OwnedPtr<ThrowsClause> performsClause;
+     OwnedPtr<ThrowsClause>
+         throwsClause;          /**< Checked-exception `throws` clause (experimental). Generated by parser, Optional */
+     OwnedPtr<Block> body;      /**< Body of the function. Generated by parser */
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index eda71a70..733a0ff4 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -430,6 +430,11 @@ WARNING(sema_chexc_missing_capability_warn, CHEXC,
+     "Cannot find a capability for '%s' (of type 'CanThrow<%s>') in the current scope",
+     "required by %s")
+ 
++ERROR(sema_chexc_performs_type_not_command, "type '%s' in 'performs' clause is not a subtype of 'Command'",
++    "this type must be a subtype of 'Command'")
++ERROR(sema_chexc_performs_in_main, "'main' cannot declare a 'performs' clause",
++    "there is no default effect handler, unlike the default exception handler")
++
+ ERROR(sema_chexc_assume_throws_not_on_import, "'@AssumeThrows' is only allowed on an 'import'",
+     "an assumption applies to a whole imported package")
+ 
+diff --git a/src/AST/Clone.cpp b/src/AST/Clone.cpp
+index f66a50ff..d3db7a0f 100644
+--- a/src/AST/Clone.cpp
++++ b/src/AST/Clone.cpp
+@@ -415,6 +415,9 @@ OwnedPtr<FuncType> ASTCloner::CloneFuncType(const FuncType& node, const VisitFun
+     for (auto& paramType : node.paramTypes) {
+         ret->paramTypes.emplace_back(CloneType(paramType.get(), visitor));
+     }
++    if (node.performsClause) {
++        ret->performsClause = CloneThrowsClause(*node.performsClause, visitor);
++    }
+     if (node.throwsClause) {
+         ret->throwsClause = CloneThrowsClause(*node.throwsClause, visitor);
+     }
+@@ -1404,6 +1407,9 @@ OwnedPtr<FuncBody> ASTCloner::CloneFuncBody(const FuncBody& fb, const VisitFunc&
+     ret->doubleArrowPos = fb.doubleArrowPos;
+     ret->colonPos = fb.colonPos;
+     ret->retType = CloneType(fb.retType.get(), visitor);
++    if (fb.performsClause) {
++        ret->performsClause = CloneThrowsClause(*fb.performsClause, visitor);
++    }
+     if (fb.throwsClause) {
+         ret->throwsClause = CloneThrowsClause(*fb.throwsClause, visitor);
+     }
+diff --git a/src/AST/Walker.cpp b/src/AST/Walker.cpp
+index 4f5807d6..b0f72ce0 100644
+--- a/src/AST/Walker.cpp
++++ b/src/AST/Walker.cpp
+@@ -191,6 +191,9 @@ VisitAction WalkerT<NodeT>::Walk(Ptr<NodeT> curNode) const
+                 if (Walk(fb->retType.get()) == VisitAction::STOP_NOW) {
+                     return VisitAction::STOP_NOW;
+                 }
++                if (Walk(fb->performsClause.get()) == VisitAction::STOP_NOW) {
++                    return VisitAction::STOP_NOW;
++                }
+                 if (Walk(fb->throwsClause.get()) == VisitAction::STOP_NOW) {
+                     return VisitAction::STOP_NOW;
+                 }
+@@ -985,6 +988,9 @@ VisitAction WalkerT<NodeT>::Walk(Ptr<NodeT> curNode) const
+                         return VisitAction::STOP_NOW;
+                     }
+                 }
++                if (Walk(ft->performsClause.get()) == VisitAction::STOP_NOW) {
++                    return VisitAction::STOP_NOW;
++                }
+                 if (Walk(ft->throwsClause.get()) == VisitAction::STOP_NOW) {
+                     return VisitAction::STOP_NOW;
+                 }
+diff --git a/src/Parse/ParseDecl.cpp b/src/Parse/ParseDecl.cpp
+index 5e2e6ff0..35c2205a 100644
+--- a/src/Parse/ParseDecl.cpp
++++ b/src/Parse/ParseDecl.cpp
+@@ -2284,6 +2284,10 @@ void ParserImpl::ParsePropMemberBody(const ScopeKind& scopeKind, FuncBody& fb)
+     }
+     // Checked exceptions (experimental): property accessors may carry a `throws` clause,
+     // e.g. `get() throws GException { ... }` (proposal rule: clauses on all callables).
++    // Effects (proposal 8.2, 9.1 rule 8): 'performs' precedes 'throws'.
++    if (SeeingChexcClause("performs")) {
++        fb.performsClause = ParseThrowsClause(true);
++    }
+     if (SeeingChexcClause("throws")) {
+         fb.throwsClause = ParseThrowsClause(true);
+     }
+@@ -2335,19 +2339,11 @@ OwnedPtr<FuncBody> ParserImpl::ParseFuncBody(ScopeKind scopeKind)
+         }
+     }
+     // Checked exceptions (experimental): a `throws` clause and generic constraints may appear
+-    // in either order after the return type (proposal §3.2 rule 4).
+-    if (SeeingChexcClause("throws")) {
+-        ret->throwsClause = ParseThrowsClause(true);
+-    }
++    // in either order after the return type (proposal §3.2 rule 4). Effects (proposal 8.2) add a
++    // 'performs' clause, which precedes 'throws' (proposal 9.1 rule 8).
++    ParseCapabilityClauses(*ret);
+     ParseFuncGenericConstraints(*ret);
+-    if (SeeingChexcClause("throws")) {
+-        if (ret->throwsClause) {
+-            ParseDiagnoseRefactor(DiagKindRefactor::parse_duplicate_throws_clause, lookahead.Begin());
+-            (void)ParseThrowsClause(true); // Parse and drop the duplicate to recover.
+-        } else {
+-            ret->throwsClause = ParseThrowsClause(true);
+-        }
+-    }
++    ParseCapabilityClauses(*ret);
+     if (Seeing(TokenKind::LCURL)) {
+         ret->body = ParseBlock(ScopeKind::FUNC_BODY);
+         ret->end = ret->body->end;
+@@ -2383,6 +2379,32 @@ void ParserImpl::ParseFuncParameters(const ScopeKind& scopeKind, FuncBody& fb)
+     }
+ }
+ 
++/**
++ * Checked exceptions and effects: parse the capability clauses of a function body, in the fixed
++ * order 'performs' then 'throws' (proposal 9.1 rule 8). Called on both sides of the generic
++ * constraints, which may precede or follow the clauses (proposal 3.2 rule 4); a clause seen twice
++ * is diagnosed and dropped so the rest of the declaration still parses.
++ */
++void ParserImpl::ParseCapabilityClauses(FuncBody& fb)
++{
++    if (SeeingChexcClause("performs")) {
++        if (fb.performsClause) {
++            ParseDiagnoseRefactor(DiagKindRefactor::parse_duplicate_throws_clause, lookahead.Begin());
++            (void)ParseThrowsClause(true);
++        } else {
++            fb.performsClause = ParseThrowsClause(true);
++        }
++    }
++    if (SeeingChexcClause("throws")) {
++        if (fb.throwsClause) {
++            ParseDiagnoseRefactor(DiagKindRefactor::parse_duplicate_throws_clause, lookahead.Begin());
++            (void)ParseThrowsClause(true);
++        } else {
++            fb.throwsClause = ParseThrowsClause(true);
++        }
++    }
++}
++
+ void ParserImpl::ParseFuncGenericConstraints(const FuncBody& fb)
+ {
+     if (Skip(TokenKind::WHERE)) {
+diff --git a/src/Parse/ParseType.cpp b/src/Parse/ParseType.cpp
+index 7e269e80..ebc84e03 100644
+--- a/src/Parse/ParseType.cpp
++++ b/src/Parse/ParseType.cpp
+@@ -213,8 +213,17 @@ OwnedPtr<AST::Type> ParserImpl::ParseTypeWithParen()
+     }
+     // Checked exceptions (experimental): a contextual `throws` after ')' also selects the
+     // function-type path, e.g. `(A) throws (E1, E2) -> R`. The clause must be followed by '->'.
+-    if (SeeingChexcClause("throws")) {
+-        auto throwsClause = ParseThrowsClause(false);
++    // Effects (proposal 8.2): 'performs' does the same and precedes 'throws' (9.1 rule 8), so
++    // `(A) performs H throws E -> R` stacks both.
++    if (SeeingChexcClause("performs") || SeeingChexcClause("throws")) {
++        OwnedPtr<ThrowsClause> performsClause;
++        OwnedPtr<ThrowsClause> throwsClause;
++        if (SeeingChexcClause("performs")) {
++            performsClause = ParseThrowsClause(false);
++        }
++        if (SeeingChexcClause("throws")) {
++            throwsClause = ParseThrowsClause(false);
++        }
+         if (!Skip(TokenKind::ARROW)) {
+             ParseDiagnoseRefactor(DiagKindRefactor::parse_expected_arrow_after_throws_clause, lookahead.Begin());
+             auto invalid = MakeOwned<InvalidType>(lookahead.Begin());
+@@ -222,6 +231,7 @@ OwnedPtr<AST::Type> ParserImpl::ParseTypeWithParen()
+             return invalid;
+         }
+         auto ft = ParseFuncType(std::move(types), lParenPos, rParenPos);
++        ft->performsClause = std::move(performsClause);
+         ft->throwsClause = std::move(throwsClause);
+         return ft;
+     }
+diff --git a/src/Parse/ParserImpl.h b/src/Parse/ParserImpl.h
+index d8732cce..731a9f8a 100644
+--- a/src/Parse/ParserImpl.h
++++ b/src/Parse/ParserImpl.h
+@@ -536,6 +536,8 @@ private:
+     void DiagMissingPropertyBody(AST::PropDecl& prop);
+     void ParsePropBody(const std::set<AST::Modifier>& modifiers, AST::PropDecl& propDecl);
+     OwnedPtr<AST::FuncDecl> ParsePropMemberDecl(const std::set<AST::Modifier>& modifiers);
++    /// Parse 'performs' then 'throws' clauses of a function body (proposal 9.1 rule 8).
++    void ParseCapabilityClauses(AST::FuncBody& fb);
+     void ParseFuncGenericConstraints(const AST::FuncBody& fb);
+     void ParsePropMemberBody(const ScopeKind& scopeKind, AST::FuncBody& fb);
+     void ParseFuncParameters(const ScopeKind& scopeKind, AST::FuncBody& fb);
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index b539feca..782d9c4a 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -117,6 +117,31 @@ AssumedThrowsByFile CollectAssumedThrows(const Package& pkg, const ImportManager
+     return byFile;
+ }
+ 
++/// Effects (proposal 8.2): an entry is an effect requirement iff it is a 'Command' subtype, and
++/// an exception requirement iff it is an 'Exception' subtype. The two roots are disjoint, which is
++/// what lets one capability list carry both kinds (decision D17).
++bool IsCommandTy(TypeManager& typeManager, const ImportManager& importManager, Ptr<Ty> ty)
++{
++    if (!Ty::IsTyCorrect(ty)) {
++        return false;
++    }
++    auto command = importManager.GetImportedDecl(EFFECT_PACKAGE_NAME, CLASS_COMMAND);
++    if (!command) {
++        return false; // No effect handlers in this build: nothing is a command.
++    }
++    // Compare DECLARATIONS, not types: 'Command' is generic, so a subtype test against the
++    // uninstantiated 'Command<T>' fails for a concrete 'C <: Command<Int64>'.
++    if (Ty::GetDeclPtrOfTy(ty) == command) {
++        return true;
++    }
++    for (auto superTy : typeManager.GetAllSuperTys(*ty)) {
++        if (Ty::GetDeclPtrOfTy(superTy) == command) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ class CapabilityChecker {
+ public:
+     CapabilityChecker(TypeManager& typeManager, const ImportManager& importManager,
+@@ -395,6 +420,15 @@ private:
+                 }
+                 return VisitAction::WALK_CHILDREN;
+             }
++            case ASTKind::PERFORM_EXPR: {
++                // Effects (proposal 8.2): 'perform c' requires a handler capability for the
++                // command's own type, exactly as 'throw e' requires one for the exception's.
++                auto& pe = StaticCast<PerformExpr&>(*node);
++                if (pe.expr && Ty::IsTyCorrect(pe.expr->GetTy())) {
++                    Demand(pe.expr->GetTy(), pe, "this 'perform' expression");
++                }
++                return VisitAction::WALK_CHILDREN;
++            }
+             case ASTKind::CALL_EXPR:
+                 HandleCall(StaticCast<CallExpr&>(*node));
+                 return VisitAction::WALK_CHILDREN;
+@@ -420,21 +454,42 @@ private:
+ 
+     void HandleTry(TryExpr& te)
+     {
+-        // Effect-handler clauses ('handle') introduce no capabilities and are not checked
+-        // (author ruling); 'te.handlers', 'te.tryLambda' and 'te.finallyLambda' are ignored.
+-        supplies.emplace_back(CollectCatchCapTys(te));
++        // A 'handle' clause supplies a handler capability for each command type it lists
++        // (proposal 8.2), over the same region a 'catch' covers. 'te.tryLambda' and
++        // 'te.finallyLambda' are the desugared forms of the blocks walked below, so they are
++        // deliberately not walked again.
++        auto caps = CollectCatchCapTys(te);
++        for (auto handlerCap : CollectHandlerCapTys(te)) {
++            caps.emplace_back(handlerCap);
++        }
++        supplies.emplace_back(std::move(caps));
+         for (auto& resource : te.resourceSpec) {
+             // Resource initializers of try-with-resources are inside the try's scope: their
+             // exceptions are caught by the same clauses (proposal 3.3).
+             WalkScoped(resource.get());
+         }
+-        WalkScoped(te.tryBlock.get());
++        // With 'handle' clauses present the parser rebuilds the try block as a lambda, and THAT
++        // copy is the one sema types; the original block keeps untyped nodes, so walking it would
++        // silently raise no demands at all. Walk whichever copy carries the types.
++        if (te.tryLambda) {
++            WalkScoped(te.tryLambda.get());
++        } else {
++            WalkScoped(te.tryBlock.get());
++        }
+         supplies.pop_back();
+         // A 'catch' block is not inside its try's capability scope: rethrowing a caught checked
+-        // exception requires a capability from the enclosing scopes. Same for 'finally'.
++        // exception requires a capability from the enclosing scopes. Same for 'finally' and for
++        // a 'handle' body, which runs where the handler was installed.
+         for (auto& catchBlock : te.catchBlocks) {
+             WalkScoped(catchBlock.get());
+         }
++        for (auto& handler : te.handlers) {
++            if (handler.desugaredLambda) {
++                WalkScoped(handler.desugaredLambda.get());
++            } else {
++                WalkScoped(handler.block.get());
++            }
++        }
+         WalkScoped(te.finallyBlock.get());
+     }
+ 
+@@ -463,6 +518,25 @@ private:
+         return caps;
+     }
+ 
++    /// The command types listed by the 'handle' clauses of @p te (proposal 8.2). A pattern
++    /// 'c: C1 | C2' introduces two, mirroring how a catch pattern introduces one per exception.
++    SupplyScope CollectHandlerCapTys(const TryExpr& te) const
++    {
++        SupplyScope caps;
++        for (auto& handler : te.handlers) {
++            auto ctp = DynamicCast<CommandTypePattern*>(handler.commandPattern.get());
++            if (ctp == nullptr) {
++                continue;
++            }
++            for (auto& type : ctp->types) {
++                if (type && Ty::IsTyCorrect(type->GetTy())) {
++                    caps.emplace_back(type->GetTy());
++                }
++            }
++        }
++        return caps;
++    }
++
+     void HandleSpawn(SpawnExpr& se)
+     {
+         // The thread context argument is evaluated at the spawn site, in the current scopes.
+@@ -669,11 +743,22 @@ private:
+ /// Collects residual demands instead of diagnosing them (proposal 6.3, the miss-handler seam).
+ class CollectingMissHandler : public Sema::CapabilityMissHandler {
+ public:
++    CollectingMissHandler(TypeManager& typeManager, const ImportManager& importManager)
++        : typeManager(typeManager), importManager(importManager)
++    {
++    }
+     void HandleMiss(const Sema::CapabilityDemand& demand) override
+     {
+-        if (Ty::IsTyCorrect(demand.exceptionTy)) {
+-            collected.emplace_back(demand.exceptionTy);
++        if (!Ty::IsTyCorrect(demand.exceptionTy)) {
++            return;
+         }
++        // Effect requirements are never inferred (proposal 9.1, policy table): they are semantic
++        // contract and, under evidence passing, ABI. Dropping them here leaves them undischarged,
++        // so the reporting pass diagnoses them instead of silently widening the declaration.
++        if (IsCommandTy(typeManager, importManager, demand.exceptionTy)) {
++            return;
++        }
++        collected.emplace_back(demand.exceptionTy);
+     }
+     std::vector<Ptr<Ty>> Take()
+     {
+@@ -683,6 +768,8 @@ public:
+     }
+ 
+ private:
++    TypeManager& typeManager;
++    const ImportManager& importManager;
+     std::vector<Ptr<Ty>> collected;
+ };
+ 
+@@ -939,7 +1026,7 @@ private:
+     /// Kleene iteration to the least fixed point. Members outside a cycle stabilize in one pass.
+     void SolveComponent(const std::vector<size_t>& component)
+     {
+-        CollectingMissHandler handler;
++        CollectingMissHandler handler(typeManager, importManager);
+         CapabilityChecker checker(typeManager, importManager, handler, assumed, inferred);
+         bool changed = true;
+         while (changed) {
+diff --git a/src/Sema/Collector.cpp b/src/Sema/Collector.cpp
+index 9084f786..55e59a5f 100644
+--- a/src/Sema/Collector.cpp
++++ b/src/Sema/Collector.cpp
+@@ -358,10 +358,13 @@ void Collector::CollectFuncBody(ASTContext& ctx, FuncBody& fb, bool buildTrie)
+         BuildSymbolTable(ctx, funcParamList.get(), buildTrie);
+     }
+     BuildSymbolTable(ctx, fb.retType.get(), buildTrie);
+-    if (fb.throwsClause) {
++    for (auto clause : {fb.performsClause.get(), fb.throwsClause.get()}) {
++        if (clause == nullptr) {
++            continue;
++        }
+         // Checked exceptions (experimental): capability types may reference the function's
+         // generic parameters, so they are collected inside the function's scope.
+-        for (auto& capType : fb.throwsClause->capTypes) {
++        for (auto& capType : clause->capTypes) {
+             BuildSymbolTable(ctx, capType.get(), buildTrie);
+         }
+     }
+@@ -1343,8 +1346,11 @@ void Collector::BuildSymbolTable(ASTContext& ctx, Ptr<Node> node, bool buildTrie
+             for (auto& paramType : ft->paramTypes) {
+                 BuildSymbolTable(ctx, paramType.get(), buildTrie);
+             }
+-            if (ft->throwsClause) {
+-                for (auto& capType : ft->throwsClause->capTypes) {
++            for (auto clause : {ft->performsClause.get(), ft->throwsClause.get()}) {
++                if (clause == nullptr) {
++                    continue;
++                }
++                for (auto& capType : clause->capTypes) {
+                     BuildSymbolTable(ctx, capType.get(), buildTrie);
+                 }
+             }
+diff --git a/src/Sema/Desugar/DesugarInTypeCheck.cpp b/src/Sema/Desugar/DesugarInTypeCheck.cpp
+index 5376e8c2..b2a3fb15 100644
+--- a/src/Sema/Desugar/DesugarInTypeCheck.cpp
++++ b/src/Sema/Desugar/DesugarInTypeCheck.cpp
+@@ -668,6 +668,7 @@ void DesugarPrimaryCtor(Decl& decl, PrimaryCtorDecl& fd)
+     // inference eligibility — so without this the clause is parsed and then dropped. Cloned
+     // rather than moved: the primary constructor declaration keeps living in the AST for name
+     // resolution, LSP and incremental hashing, exactly like the return type above.
++    funcBody->performsClause = ASTCloner::Clone(fd.funcBody->performsClause.get(), SetIsClonedSourceCode);
+     funcBody->throwsClause = ASTCloner::Clone(fd.funcBody->throwsClause.get(), SetIsClonedSourceCode);
+     auto funcParamList = MakeOwned<FuncParamList>();
+     CopyFileID(funcParamList.get(), &fd);
+diff --git a/src/Sema/GenericInstantiation/PartialInstantiation.cpp b/src/Sema/GenericInstantiation/PartialInstantiation.cpp
+index 33efb5be..b6d29152 100644
+--- a/src/Sema/GenericInstantiation/PartialInstantiation.cpp
++++ b/src/Sema/GenericInstantiation/PartialInstantiation.cpp
+@@ -494,6 +494,9 @@ OwnedPtr<FuncType> PartialInstantiation::InstantiateFuncType(const FuncType& nod
+     for (auto& paramType : node.paramTypes) {
+         ret->paramTypes.emplace_back(InstantiateType(paramType.get(), visitor));
+     }
++    if (node.performsClause) {
++        ret->performsClause = InstantiateThrowsClause(*node.performsClause, visitor);
++    }
+     if (node.throwsClause) {
+         ret->throwsClause = InstantiateThrowsClause(*node.throwsClause, visitor);
+     }
+@@ -1446,6 +1449,9 @@ OwnedPtr<FuncBody> PartialInstantiation::InstantiateFuncBody(const FuncBody& fb,
+     ret->doubleArrowPos = fb.doubleArrowPos;
+     ret->colonPos = fb.colonPos;
+     ret->retType = InstantiateType(fb.retType.get(), visitor);
++    if (fb.performsClause) {
++        ret->performsClause = InstantiateThrowsClause(*fb.performsClause, visitor);
++    }
+     if (fb.throwsClause) {
+         ret->throwsClause = InstantiateThrowsClause(*fb.throwsClause, visitor);
+     }
+diff --git a/src/Sema/PreCheck.cpp b/src/Sema/PreCheck.cpp
+index c1021287..097a9a1b 100644
+--- a/src/Sema/PreCheck.cpp
++++ b/src/Sema/PreCheck.cpp
+@@ -606,14 +606,19 @@ Ptr<Ty> TypeChecker::TypeCheckerImpl::GetTyFromASTType(ASTContext& ctx, FuncType
+     // Checked exceptions: elaborate the 'throws' clause types into the functional type's capability
+     // list. CFunc types never carry capabilities (the clause is rejected during type check).
+     std::vector<Ptr<Ty>> capTys;
+-    if (funcType.throwsClause && !funcType.isC) {
+-        for (auto& capType : funcType.throwsClause->capTypes) {
++    // Effects (proposal 8.2): 'performs' entries come first, then 'throws' (proposal 9.1 rule 8).
++    for (auto clause : {funcType.performsClause.get(), funcType.throwsClause.get()}) {
++        if (clause == nullptr || funcType.isC) {
++            continue;
++        }
++        for (auto& capType : clause->capTypes) {
+             CJC_NULLPTR_CHECK(capType);
+             capType->SetTy(GetTyFromASTType(ctx, capType.get()));
+         }
+         // A tuple entry — written directly or reached through a type alias — is itself a
+         // capability list and is spliced into this one (proposal 6.1).
+-        capTys = TypeCheckUtil::ExpandCapabilityList(funcType.throwsClause->capTypes);
++        auto expanded = TypeCheckUtil::ExpandCapabilityList(clause->capTypes);
++        capTys.insert(capTys.end(), expanded.begin(), expanded.end());
+     }
+     funcType.SetTy(typeManager.GetFunctionTy(paramTys, funcType.retType->GetTy(), {funcType.isC}, capTys));
+     return funcType.GetTy();
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index 16c32ed6..99d0ce6c 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -322,10 +322,22 @@ std::vector<Ptr<Ty>> GetFuncBodyCapTys(const FuncBody& fb)
+     // name resolution) become the capability list of the declaration's functional type.
+     // Foreign/C functions never carry capabilities; the clause on them is diagnosed separately.
+     bool isCLike = fb.TestAttr(Attribute::C) || (fb.funcDecl && fb.funcDecl->TestAttr(Attribute::FOREIGN));
+-    if (!fb.throwsClause || isCLike) {
++    if (isCLike) {
+         return {};
+     }
+-    return ExpandCapabilityList(fb.throwsClause->capTypes);
++    // Effects (proposal 8.2): 'performs' entries join the same list, ahead of the 'throws' ones
++    // (proposal 9.1 rule 8). The kinds stay apart by type, not by position: an effect entry is a
++    // 'Command' subtype and an exception entry an 'Exception' subtype, and discharge is by
++    // subtyping, so neither can ever satisfy the other.
++    std::vector<Ptr<Ty>> caps;
++    if (fb.performsClause) {
++        caps = ExpandCapabilityList(fb.performsClause->capTypes);
++    }
++    if (fb.throwsClause) {
++        auto thrown = ExpandCapabilityList(fb.throwsClause->capTypes);
++        caps.insert(caps.end(), thrown.begin(), thrown.end());
++    }
++    return caps;
+ }
+ 
+ std::vector<Ptr<Ty>> GetInstantiatedAccessorCapTys(TypeManager& tyMgr, const FuncDecl& accessor, Ptr<Ty> receiverTy)
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index 32207381..aa518ad6 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -286,8 +286,48 @@ void TypeChecker::TypeCheckerImpl::ChkAssumeThrowsAnnotations(ASTContext& ctx, P
+     }).Walk();
+ }
+ 
++void TypeChecker::TypeCheckerImpl::ChkPerformsClauseTypes(ASTContext& ctx, ThrowsClause& clause)
++{
++    // Effects (proposal 8.2): a 'performs' entry names an effect command, so it must be a subtype
++    // of 'Command'. Validated separately from 'throws', whose entries must be 'Exception'
++    // subtypes: the disjointness of the two roots is what keeps the two kinds of capability from
++    // ever discharging one another.
++    auto command = importManager.GetImportedDecl(EFFECT_PACKAGE_NAME, CLASS_COMMAND);
++    for (auto& capType : clause.capTypes) {
++        CJC_NULLPTR_CHECK(capType);
++        CheckReferenceTypeLegality(ctx, *capType);
++        if (!Ty::IsTyCorrect(capType->GetTy())) {
++            continue;
++        }
++        std::vector<OwnedPtr<Type>> single;
++        single.emplace_back(std::move(capType));
++        auto elements = TypeCheckUtil::ExpandCapabilityList(single);
++        capType = std::move(single.front());
++        bool expanded = elements.size() != 1 || elements.front() != capType->GetTy();
++        for (auto capTy : elements) {
++            if (!Ty::IsTyCorrect(capTy)) {
++                continue;
++            }
++            auto entryName = expanded ? Ty::ToString(capTy) : capType->ToString();
++            bool isCommand = capTy->IsGeneric() ||
++                (command && Ty::IsTyCorrect(command->GetTy()) && !promotion.Promote(*capTy, *command->GetTy()).empty());
++            if (!isCommand) {
++                diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_performs_type_not_command, *capType, entryName);
++            }
++        }
++    }
++}
++
+ void TypeChecker::TypeCheckerImpl::ChkThrowsClauseOfFuncBody(ASTContext& ctx, FuncBody& fb)
+ {
++    if (fb.performsClause) {
++        // No default effect handler exists, so 'main' cannot carry effect requirements the way it
++        // may carry exception ones (proposal 9.1, policy table).
++        if (fb.funcDecl && fb.funcDecl->identifier == MAIN_INVOKE) {
++            diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_performs_in_main, *fb.performsClause);
++        }
++        ChkPerformsClauseTypes(ctx, *fb.performsClause);
++    }
+     if (!fb.throwsClause) {
+         return;
+     }
+diff --git a/src/Sema/TypeCheckerImpl.h b/src/Sema/TypeCheckerImpl.h
+index a50a4f8f..7f86e459 100644
+--- a/src/Sema/TypeCheckerImpl.h
++++ b/src/Sema/TypeCheckerImpl.h
+@@ -1311,6 +1311,8 @@ private:
+     void ChkThrowsClauseTypes(ASTContext& ctx, AST::ThrowsClause& clause, const std::string& clauseKeyword = "throws");
+     /** Checked exceptions: diagnose 'throws' clauses on foreign/C functions and CFunc types. */
+     void ChkThrowsClauseOfFuncBody(ASTContext& ctx, AST::FuncBody& fb);
++    /// Effects (proposal 8.2): validate that every 'performs' entry is a 'Command' subtype.
++    void ChkPerformsClauseTypes(ASTContext& ctx, AST::ThrowsClause& clause);
+     /// Checked exceptions (proposal 5.2.2): validate the '@AssumeThrows' annotations of a package.
+     void ChkAssumeThrowsAnnotations(ASTContext& ctx, AST::Package& pkg);
+     /**
+-- 
+2.54.0
+

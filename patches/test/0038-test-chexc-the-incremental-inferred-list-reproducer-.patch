@@ -1,0 +1,90 @@
+From f27869a542a7abc020a2d9ee8f6cb4032047b9aa Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 30 Aug 2026 17:10:51 +0300
+Subject: [PATCH 38/43] test(chexc): the incremental inferred-list reproducer
+ is a test again
+
+Two builds; the second gives an internal 'risky' a throw it did not have, and the untouched
+caller with an explicit empty clause must be rejected. It failed against every implementation
+before R4 -- the incremental build was silent where the full build errored.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../serialization/incr_inferred.cj              | 17 +++++++++++++++++
+ .../serialization/incr_inferred.new.cj          | 16 ++++++++++++++++
+ .../serialization/incr_inferred.old.cj          | 16 ++++++++++++++++
+ 3 files changed, 49 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.new.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.old.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.cj
+new file mode 100644
+index 0000000000..6624411803
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.cj
+@@ -0,0 +1,17 @@
++// Checked exceptions (capability parameter inference across incremental builds): a declaration
++// whose list is INFERRED takes its call-site contract from its own body, so editing that body can
++// change what its callers must supply. The incremental hashes are computed before inference and
++// cannot see that, so a package where such a declaration is recompiled is rebuilt whole -- the
++// alternative is serving the unchanged caller from the cache and checking it against a stale
++// contract, which is silent where a full build errors.
++//
++// Here the second build gives 'risky' a 'throw' it did not have; 'caller' is untouched, written
++// with an explicit empty clause, and must still be re-checked and rejected.
++
++// DEPENDENCE: %n.old.cj %n.new.cj
++
++// EXEC: %compiler %incrementalCompile %cmp_opt --enable-checked-exceptions %n.old.cj -o %output
++// EXEC: %rmfile %n.old.cj
++// EXEC: %cpfile %n.new.cj %n.old.cj
++// EXEC-PIPE-1: %compiler %incrementalCompile %cmp_opt --enable-checked-exceptions %n.old.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: Cannot find a capability for 'Class-IncrExc'
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.new.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.new.cj
+new file mode 100644
+index 0000000000..0791b1a29d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.new.cj
+@@ -0,0 +1,16 @@
++package p
++
++class IncrExc <: Exception {}
++
++// No clause: the list is inferred from this body, which raises nothing in this version.
++func risky(): Unit {
++    throw IncrExc()
++}
++
++// Unchanged between the two builds, and not inference-eligible: its clause is written.
++public func caller(): Unit
++throws () {
++    risky()
++}
++
++main(): Int64 { caller(); return 0 }
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.old.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.old.cj
+new file mode 100644
+index 0000000000..152b9594fe
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_inferred.old.cj
+@@ -0,0 +1,16 @@
++package p
++
++class IncrExc <: Exception {}
++
++// No clause: the list is inferred from this body, which raises nothing in this version.
++func risky(): Unit {
++    ()
++}
++
++// Unchanged between the two builds, and not inference-eligible: its clause is written.
++public func caller(): Unit
++throws () {
++    risky()
++}
++
++main(): Int64 { caller(); return 0 }
+-- 
+2.54.0
+

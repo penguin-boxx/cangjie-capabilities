@@ -1,0 +1,292 @@
+From 539d81cb9a46b9ee1a8bc4e7b73440230ff17b90 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 04:56:54 +0300
+Subject: [PATCH 13/43] test(chexc): property accessor and primary constructor
+ clause coverage
+
+Pins audit MF1 (accessor clauses demanded at every use site, with generic
+instantiation through the receiver) and MF6 (primary constructor clauses
+surviving desugaring), plus positive twins guarding against over-demanding.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../parse/decl_primary_ctor.cj                | 60 ++++++++++++++++++
+ .../scopes/prop_accessor_demand.cj            | 62 +++++++++++++++++++
+ .../scopes/prop_accessor_demand_neg.cj        | 49 +++++++++++++++
+ .../types/prop_accessor_generic.cj            | 34 ++++++++++
+ .../types/prop_accessor_generic_neg.cj        | 30 +++++++++
+ 5 files changed, 235 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/decl_primary_ctor.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/prop_accessor_generic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/prop_accessor_generic_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_primary_ctor.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_primary_ctor.cj
+new file mode 100644
+index 0000000000..b0fb78e0c6
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_primary_ctor.cj
+@@ -0,0 +1,60 @@
++// Checked exceptions (§3.2 rule 1): a primary constructor may carry a `throws` clause. The
++// clause must survive desugaring into the synthesized `init`, so construction sites demand it
++// and the constructor's own body may discharge it.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class CreationException <: Exception {}
++class FieldException <: Exception {}
++
++func mayThrowField(): Int64 throws FieldException {
++    7
++}
++
++// class primary constructor with a clause (the proposal's §3.2 example shape)
++public class A {
++    public A(let x: Int64) throws CreationException {
++        if (x < 0) {
++            throw CreationException() // discharged by the primary constructor's own clause
++        }
++    }
++}
++
++// struct primary constructor takes the same desugar path
++public struct S {
++    public S(let y: Int64) throws CreationException {
++        if (y < 0) {
++            throw CreationException()
++        }
++    }
++}
++
++// an instance field initializer's requirement must be satisfiable in every constructor's scope
++public class B {
++    let field: Int64 = mayThrowField()
++
++    public B(let z: Int64) throws FieldException {
++    }
++}
++
++// an authoritative empty clause on a primary constructor
++public class E {
++    public E(let w: Int64) throws () {
++    }
++}
++
++main() {
++    try {
++        let a = A(1)
++        let s = S(2)
++        let b = B(3)
++        let e = E(4)
++        if (a.x + s.y + b.z + e.w != 10) {
++            return 1
++        }
++    } catch (e: Exception) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand.cj
+new file mode 100644
+index 0000000000..e421f4b372
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand.cj
+@@ -0,0 +1,62 @@
++// Checked exceptions (§3.2/§3.3): the positive twin of prop_accessor_demand_neg — the same
++// accesses are fine once the capabilities are supplied, either by a try-catch or by the
++// caller's own clause. Guards against over-demanding.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class GException <: Exception {}
++class SException <: Exception {}
++
++public class C {
++    var store: Int64 = 0
++
++    public mut prop p: Int64 {
++        get() throws GException {
++            if (store < 0) {
++                throw GException()
++            }
++            store
++        }
++        set(x) throws SException {
++            if (x < 0) {
++                throw SException()
++            }
++            store = x
++        }
++    }
++}
++
++// discharged by a try-catch
++public func handled(c: C): Int64 {
++    try {
++        c.p = 3
++        c.p += 1
++        c.p
++    } catch (e: GException) {
++        0
++    } catch (e: SException) {
++        0
++    }
++}
++
++// propagated through the caller's own clause
++public func propagated(c: C): Int64 throws GException, SException {
++    c.p++
++    c.p
++}
++
++main() {
++    let c = C()
++    if (handled(c) != 4) {
++        return 1
++    }
++    try {
++        if (propagated(c) != 5) {
++            return 1
++        }
++    } catch (e: Exception) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand_neg.cj
+new file mode 100644
+index 0000000000..e6032234a3
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand_neg.cj
+@@ -0,0 +1,49 @@
++// Checked exceptions (§3.2/§3.3): a property accessor's `throws` clause is demanded at every
++// use site — read, write, compound assign and increment — not only inside the accessor body.
++// The accessors are public so inference cannot mask the result.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-GException'
++// ASSERT: scan Cannot find a capability for 'Class-SException'
++
++class GException <: Exception {}
++class SException <: Exception {}
++
++public class C {
++    var store: Int64 = 0
++
++    public mut prop p: Int64 {
++        get() throws GException {
++            if (store < 0) {
++                throw GException()
++            }
++            store
++        }
++        set(x) throws SException {
++            if (x < 0) {
++                throw SException()
++            }
++            store = x
++        }
++    }
++}
++
++public func read(c: C): Int64 {
++    c.p // demands GException
++}
++
++public func write(c: C): Unit {
++    c.p = 1 // demands SException
++}
++
++public func bump(c: C): Unit {
++    c.p++ // demands both
++}
++
++public func plus(c: C): Unit {
++    c.p += 1 // demands both
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/prop_accessor_generic.cj b/testsuites/LLT/compiler/CheckedExceptions/types/prop_accessor_generic.cj
+new file mode 100644
+index 0000000000..d316b7a927
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/prop_accessor_generic.cj
+@@ -0,0 +1,34 @@
++// Checked exceptions: an accessor clause naming a class type parameter is demanded at the
++// INSTANTIATED type. The `D <: P<Int64>` shape means the mapping must come from the receiver's
++// type (walking the inheritance chain), not from the accessor's owner.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class MyExc<T> <: Exception {}
++
++public open class P<T> {
++    public prop q: Int64 {
++        get() throws MyExc<T> {
++            0
++        }
++    }
++}
++
++public class D <: P<Int64> {}
++
++// the demand is MyExc<Int64>, so this handler discharges it
++public func ok(d: D): Int64 {
++    try {
++        d.q
++    } catch (e: MyExc<Int64>) {
++        1
++    }
++}
++
++main() {
++    if (ok(D()) != 0) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/prop_accessor_generic_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/prop_accessor_generic_neg.cj
+new file mode 100644
+index 0000000000..89448a34a4
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/prop_accessor_generic_neg.cj
+@@ -0,0 +1,30 @@
++// Checked exceptions: the instantiated demand must be exactly MyExc<Int64> — a handler for a
++// different instantiation does not discharge it (generics are monomorphized, so MyExc<String>
++// and MyExc<Int64> are distinct classes).
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-MyExc<Int64>'
++
++class MyExc<T> <: Exception {}
++
++public open class P<T> {
++    public prop q: Int64 {
++        get() throws MyExc<T> {
++            0
++        }
++    }
++}
++
++public class D <: P<Int64> {}
++
++public func bad(d: D): Int64 {
++    try {
++        d.q // demands MyExc<Int64>
++    } catch (e: MyExc<String>) {
++        1
++    }
++}
++
++main() {
++    return 0
++}
+-- 
+2.54.0
+

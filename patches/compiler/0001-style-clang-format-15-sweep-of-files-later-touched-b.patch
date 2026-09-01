@@ -1,0 +1,31 @@
+From 2e67df6985dca1895a1df5dddfde927be7ea8663 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Thu, 20 Aug 2026 15:51:14 +0300
+Subject: [PATCH 01/44] style: clang-format-15 sweep of files later touched by
+ chexc
+
+Mechanical, no semantic change. Concentrates the whole-file formatting
+churn that cj.py's old fmt spread across every feature commit; the
+feature commits that follow are pure semantic diffs against this.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ include/cangjie/Option/Option.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/cangjie/Option/Option.h b/include/cangjie/Option/Option.h
+index d4c12ca9..96260c06 100644
+--- a/include/cangjie/Option/Option.h
++++ b/include/cangjie/Option/Option.h
+@@ -27,7 +27,7 @@
+ #include "cangjie/Option/OptionTable.h"
+ #include "cangjie/Utils/FileUtil.h"
+ #include "cangjie/Utils/Utils.h"
+-#include  "cangjie/Utils/Semaphore.h"
++#include "cangjie/Utils/Semaphore.h"
+ 
+ namespace Cangjie {
+ 
+-- 
+2.54.0
+

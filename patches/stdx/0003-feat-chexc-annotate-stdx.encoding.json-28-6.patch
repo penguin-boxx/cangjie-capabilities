@@ -1,0 +1,381 @@
+From 1c61f3f079c9f8c777d7cfeca9c1b6daf0c58a5b Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 14:14:58 +0300
+Subject: [PATCH 3/4] feat(chexc): annotate stdx.encoding.json (28 -> 6)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+'JsonValue.toJsonString', 'toStringWithoutEscaping' and 'toJsonStringWithoutEscaping', the
+'ToJson' interface's two members, the typed accessors of 'JsonValue' ('asInt', 'asObject', …),
+'JsonValue.fromStr' and the two indexing operators declare 'JsonException' -- which every one of
+them already documented with an '@throws' line.
+
+What is left is six 'toString()' implementations that raise 'JsonException' over a clause-free
+'std.core.ToString'. That is a ruling for the author, not a local fix (gap-analysis Q-STD-8): the
+clause cannot be written where the failure happens, so either 'toString' stays clause-free and
+these raise an unchecked exception, or 'ToString' declares a clause and every call site in the
+language pays for it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/stdx/encoding/json/json_object.cj | 60 ++++++++++++++++++---------
+ src/stdx/encoding/json/json_value.cj  | 27 ++++++++----
+ src/stdx/encoding/json/to_json.cj     |  8 +++-
+ 3 files changed, 65 insertions(+), 30 deletions(-)
+
+diff --git a/src/stdx/encoding/json/json_object.cj b/src/stdx/encoding/json/json_object.cj
+index a49726e..8abd2ac 100644
+--- a/src/stdx/encoding/json/json_object.cj
++++ b/src/stdx/encoding/json/json_object.cj
+@@ -98,7 +98,8 @@ public class JsonNull <: JsonValue { // cjlint-ignore !G.ENU.01
+      *
+      * @since 0.21.1
+      */
+-    public func toJsonString(): String {
++    public func toJsonString(): String
++    throws JsonException {
+         return toString()
+     }
+ 
+@@ -116,7 +117,8 @@ public class JsonNull <: JsonValue { // cjlint-ignore !G.ENU.01
+      *
+      * @return json-converted prettified String is "".
+      */
+-    public func toJsonStringWithoutEscaping(): String {
++    public func toJsonStringWithoutEscaping(): String
++    throws JsonException {
+         return toJsonString()
+     }
+ }
+@@ -180,7 +182,8 @@ public class JsonBool <: JsonValue { // cjlint-ignore !G.ENU.01
+      *
+      * @since 0.21.1
+      */
+-    public func toJsonString(): String {
++    public func toJsonString(): String
++    throws JsonException {
+         return toString()
+     }
+ 
+@@ -198,7 +201,8 @@ public class JsonBool <: JsonValue { // cjlint-ignore !G.ENU.01
+      *
+      * @return json-converted prettified String is value string data: true or false Without Escaping.
+      */
+-    public func toJsonStringWithoutEscaping(): String {
++    public func toJsonStringWithoutEscaping(): String
++    throws JsonException {
+         return toString()
+     }
+ }
+@@ -262,7 +266,8 @@ public class JsonInt <: JsonValue {
+      *
+      * @since 0.21.1
+      */
+-    public func toJsonString(): String {
++    public func toJsonString(): String
++    throws JsonException {
+         return toString()
+     }
+ 
+@@ -280,7 +285,8 @@ public class JsonInt <: JsonValue {
+      *
+      * @return json-converted prettified String is value string data.
+      */
+-    public func toJsonStringWithoutEscaping(): String {
++    public func toJsonStringWithoutEscaping(): String
++    throws JsonException {
+         return toString()
+     }
+ }
+@@ -356,7 +362,8 @@ public class JsonFloat <: JsonValue {
+      *
+      * @since 0.21.1
+      */
+-    public func toJsonString(): String {
++    public func toJsonString(): String
++    throws JsonException {
+         return toString()
+     }
+ 
+@@ -374,7 +381,8 @@ public class JsonFloat <: JsonValue {
+      *
+      * @return json-converted prettified String is value string data.
+      */
+-    public func toJsonStringWithoutEscaping(): String {
++    public func toJsonStringWithoutEscaping(): String
++    throws JsonException {
+         return toString()
+     }
+ }
+@@ -440,7 +448,8 @@ public class JsonString <: JsonValue { // cjlint-ignore !G.ENU.01
+      *
+      * @since 0.21.1
+      */
+-    public func toJsonString(): String {
++    public func toJsonString(): String
++    throws JsonException {
+         let buff = WriteBuffer(value.size + 2)
+         jsonWriteWithoutFormat(this, buff)
+         return bufferToString(buff)
+@@ -462,7 +471,8 @@ public class JsonString <: JsonValue { // cjlint-ignore !G.ENU.01
+      *
+      * @return json-converted prettified String is value string data.
+      */
+-    public func toJsonStringWithoutEscaping(): String {
++    public func toJsonStringWithoutEscaping(): String
++    throws JsonException {
+         let buff = WriteBuffer(value.size + 2)
+         jsonWriteWithoutFormat(this, buff, htmlSafe: false)
+         return bufferToString(buff)
+@@ -533,7 +543,8 @@ public class JsonArray <: JsonValue {
+      *
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+-    public func toJsonString(): String {
++    public func toJsonString(): String
++    throws JsonException {
+         return toJsonStringBase(0)
+     }
+ 
+@@ -544,7 +555,8 @@ public class JsonArray <: JsonValue {
+      *
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+-    public func toJsonStringWithoutEscaping(): String {
++    public func toJsonStringWithoutEscaping(): String
++    throws JsonException {
+         return toJsonStringBase(0, htmlSafe: false)
+     }
+ 
+@@ -558,7 +570,8 @@ public class JsonArray <: JsonValue {
+      *
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+-    public func toJsonString(depth: Int64, bracketInNewLine!: Bool = false, indent!: String = "  "): String {
++    public func toJsonString(depth: Int64, bracketInNewLine!: Bool = false, indent!: String = "  "): String
++    throws JsonException {
+         return toJsonStringBase(depth, bracketInNewLine: bracketInNewLine, indent: indent)
+     }
+ 
+@@ -582,7 +595,8 @@ public class JsonArray <: JsonValue {
+      *
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+-    public func toJsonStringWithoutEscaping(depth: Int64, bracketInNewLine!: Bool = false, indent!: String = "  "): String {
++    public func toJsonStringWithoutEscaping(depth: Int64, bracketInNewLine!: Bool = false, indent!: String = "  "): String
++    throws JsonException {
+         return toJsonStringBase(depth, bracketInNewLine: bracketInNewLine, indent: indent, htmlSafe: false)
+     }
+ 
+@@ -655,7 +669,8 @@ public class JsonArray <: JsonValue {
+      *
+      * @throws JsonException if index of JsonArray does not exist.
+      */
+-    public operator func [](index: Int64): JsonValue {
++    public operator func [](index: Int64): JsonValue 
++    throws JsonException {
+         return match (items.get(index)) {
+             case Some(v) => v
+             case None => throw JsonException("The index ${index} of JsonArray does not exist.")
+@@ -727,7 +742,8 @@ public class JsonObject <: JsonValue {
+      *
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+-    public func toJsonString(): String {
++    public func toJsonString(): String
++    throws JsonException {
+         return toJsonStringBase(0)
+     }
+ 
+@@ -738,7 +754,8 @@ public class JsonObject <: JsonValue {
+      *
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+-    public func toJsonStringWithoutEscaping(): String {
++    public func toJsonStringWithoutEscaping(): String
++    throws JsonException {
+         return toJsonStringBase(0, htmlSafe: false)
+     }
+ 
+@@ -752,7 +769,8 @@ public class JsonObject <: JsonValue {
+      *
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+-    public func toJsonString(depth: Int64, bracketInNewLine!: Bool = false, indent!: String = "  "): String {
++    public func toJsonString(depth: Int64, bracketInNewLine!: Bool = false, indent!: String = "  "): String
++    throws JsonException {
+         return toJsonStringBase(depth, bracketInNewLine: bracketInNewLine, indent: indent)
+     }
+ 
+@@ -776,7 +794,8 @@ public class JsonObject <: JsonValue {
+      *
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+-    public func toJsonStringWithoutEscaping(depth: Int64, bracketInNewLine!: Bool = false, indent!: String = "  "): String {
++    public func toJsonStringWithoutEscaping(depth: Int64, bracketInNewLine!: Bool = false, indent!: String = "  "): String
++    throws JsonException {
+         return toJsonStringBase(depth, bracketInNewLine: bracketInNewLine, indent: indent, htmlSafe: false)
+     }
+ 
+@@ -861,7 +880,8 @@ public class JsonObject <: JsonValue {
+      *
+      * @throws JsonException if key of JsonObject does not exist.
+      */
+-    public operator func [](key: String): JsonValue {
++    public operator func [](key: String): JsonValue 
++    throws JsonException {
+         return match (fields.get(key)) {
+             case Some(v) => v
+             case None => throw JsonException("The Value of JsonObject does not exist")
+diff --git a/src/stdx/encoding/json/json_value.cj b/src/stdx/encoding/json/json_value.cj
+index 8cf4f1f..6ee691d 100644
+--- a/src/stdx/encoding/json/json_value.cj
++++ b/src/stdx/encoding/json/json_value.cj
+@@ -46,6 +46,7 @@ sealed abstract class JsonValue <: ToString {
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+     public func toJsonString(): String
++    throws JsonException
+ 
+     /**
+      * Convert JsonValue to String Without Escaping.
+@@ -55,6 +56,7 @@ sealed abstract class JsonValue <: ToString {
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+     public func toStringWithoutEscaping(): String
++    throws JsonException
+ 
+     /**
+      * Convert JsonValue to json-String Without Escaping.
+@@ -64,6 +66,7 @@ sealed abstract class JsonValue <: ToString {
+      * @throws JsonException if there exists JsonValue which cannot be converted to String.
+      */
+     public func toJsonStringWithoutEscaping(): String
++    throws JsonException
+ 
+     /**
+      * Parses string data into JsonValue.
+@@ -76,7 +79,8 @@ sealed abstract class JsonValue <: ToString {
+      *
+      * @throws JsonException if malloc failed or json structure is non-standard.
+      */
+-    public static func fromStr(s: String): JsonValue {
++    public static func fromStr(s: String): JsonValue 
++    throws JsonException {
+         parseString(s)
+     }
+ 
+@@ -98,7 +102,8 @@ sealed abstract class JsonValue <: ToString {
+      *
+      * @throws JsonException if JsonValue cannot be converted to JsonNull.
+      */
+-    public func asNull(): JsonNull {
++    public func asNull(): JsonNull 
++    throws JsonException {
+         match (this) {
+             case jsonNull: JsonNull => jsonNull
+             case _ => throw JsonException("Fail to convert to JsonNull")
+@@ -114,7 +119,8 @@ sealed abstract class JsonValue <: ToString {
+      *
+      * @throws JsonException if JsonValue cannot be converted to JsonBool.
+      */
+-    public func asBool(): JsonBool {
++    public func asBool(): JsonBool 
++    throws JsonException {
+         match (this) {
+             case jsonBool: JsonBool => jsonBool
+             case _ => throw JsonException("Fail to convert to JsonBool")
+@@ -130,7 +136,8 @@ sealed abstract class JsonValue <: ToString {
+      *
+      * @throws JsonException if JsonValue cannot be converted to JsonInt.
+      */
+-    public func asInt(): JsonInt {
++    public func asInt(): JsonInt 
++    throws JsonException {
+         match (this) {
+             case jsonInt: JsonInt => jsonInt
+             case _ => throw JsonException("Fail to convert to JsonInt")
+@@ -146,7 +153,8 @@ sealed abstract class JsonValue <: ToString {
+      *
+      * @throws JsonException if JsonValue cannot be converted to JsonFloat.
+      */
+-    public func asFloat(): JsonFloat {
++    public func asFloat(): JsonFloat 
++    throws JsonException {
+         match (this) {
+             case jsonFloat: JsonFloat => jsonFloat
+             case jsonInt: JsonInt => JsonFloat(jsonInt.getValue())
+@@ -163,7 +171,8 @@ sealed abstract class JsonValue <: ToString {
+      *
+      * @throws JsonException if JsonValue cannot be converted to JsonString.
+      */
+-    public func asString(): JsonString {
++    public func asString(): JsonString 
++    throws JsonException {
+         match (this) {
+             case jsonString: JsonString => jsonString
+             case _ => throw JsonException("Fail to convert to JsonString")
+@@ -179,7 +188,8 @@ sealed abstract class JsonValue <: ToString {
+      *
+      * @throws JsonException if JsonValue cannot be converted to JsonArray.
+      */
+-    public func asArray(): JsonArray {
++    public func asArray(): JsonArray 
++    throws JsonException {
+         match (this) {
+             case jsonArray: JsonArray => jsonArray
+             case _ => throw JsonException("Fail to convert to JsonArray")
+@@ -195,7 +205,8 @@ sealed abstract class JsonValue <: ToString {
+      *
+      * @throws JsonException if JsonValue cannot be converted to JsonObject.
+      */
+-    public func asObject(): JsonObject {
++    public func asObject(): JsonObject 
++    throws JsonException {
+         match (this) {
+             case jsonObject: JsonObject => jsonObject
+             case _ => throw JsonException("Fail to convert to JsonObject")
+diff --git a/src/stdx/encoding/json/to_json.cj b/src/stdx/encoding/json/to_json.cj
+index b8a0768..e7c927d 100644
+--- a/src/stdx/encoding/json/to_json.cj
++++ b/src/stdx/encoding/json/to_json.cj
+@@ -30,6 +30,7 @@ public interface ToJson {
+      * @throws JsonException if DataModel cannot be converted to JsonValue.
+      */
+     func toJson(): JsonValue
++    throws JsonException
+ 
+     /**
+      * Parses JsonValue data into DataModel.
+@@ -42,6 +43,7 @@ public interface ToJson {
+      * @throws JsonException if jv cannot be converted to DataModel.
+      */
+     static func fromJson(jv: JsonValue): DataModel
++    throws JsonException
+ }
+ 
+ /**
+@@ -58,7 +60,8 @@ extend DataModel <: ToJson {
+      *
+      * @throws JsonException if jv cannot be converted to DataModel.
+      */
+-    public static func fromJson(jv: JsonValue): DataModel {
++    public static func fromJson(jv: JsonValue): DataModel 
++    throws JsonException {
+         match (jv) {
+             case jb: JsonBool => DataModelBool(jb.getValue())
+             case ji: JsonInt => DataModelInt(ji.getValue())
+@@ -122,7 +125,8 @@ extend DataModel <: ToJson {
+      *
+      * @throws JsonException if DataModel cannot be converted to JsonValue.
+      */
+-    public func toJson(): JsonValue {
++    public func toJson(): JsonValue 
++    throws JsonException {
+         match (this) {
+             case _: DataModelNull => return JsonNull()
+             case dmb: DataModelBool => return JsonBool(dmb.getValue())
+-- 
+2.54.0
+

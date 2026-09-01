@@ -1,0 +1,549 @@
+From d06554d2327daefa908ebfd8f84f1eb117570d8e Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 09:03:16 +0300
+Subject: [PATCH 28/44] feat(chexc): the escape hatch, cast targets by level,
+ 'resume throwing', '...' placement
+
+Five rules from the revised text, all small:
+
+- 'std.core.unsafeAssumeHandled<E, R>' is a compiler intrinsic with a library-visible
+  signature: inside it, and nowhere else, a capability for its own 'E' is fabricated, which
+  is what lets it invoke a callback requiring one. Instantiating it with an unchecked type
+  is warned about -- nothing was being assumed away.
+- A functional cast target is rejected at the level in force: a warning at 'warn', an error
+  wherever effect handlers are on, since erasure leaves no list to check.
+- A capturing type cannot be a cast target at all: its instances hold capabilities and are
+  bound to the handlers that supplied them, which a cast result cannot be.
+- 'resume r throwing e' is a requirement site classified by the static type of 'e', exactly
+  as 'throw e' is, resolved in the handler body's enclosing scopes.
+- '...' must be the last entry of a clause and may appear at most once.
+
+'IsCommandTy' moves to TypeCheckUtil, beside 'IsUncheckedExceptionTy': telling the two kinds
+of entry in one capability list apart is needed outside the capability pass too.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../Basic/DiagRefactor/DiagnosticParser.def   |   2 +
+ .../Basic/DiagRefactor/DiagnosticSema.def     |  19 +++
+ include/cangjie/Sema/CapabilityCheck.h        |   5 +-
+ include/cangjie/Utils/ConstantsUtils.h        |   2 +
+ src/Frontend/CompilerInstance.cpp             |   4 +-
+ src/Parse/ParseType.cpp                       |  10 ++
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 115 ++++++++++++------
+ src/Sema/MultiTypeSubstUtils.cpp              |  35 +++++-
+ src/Sema/TypeCheckExpr/IsAsExprs.cpp          |  23 +++-
+ src/Sema/TypeCheckUtil.cpp                    |  34 ++++++
+ src/Sema/TypeCheckUtil.h                      |  13 ++
+ 11 files changed, 215 insertions(+), 47 deletions(-)
+
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+index 78593be2..9d0dc6e0 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+@@ -96,6 +96,8 @@ ERROR(parse_empty_capability_list_not_alone, "'()' is only allowed as the whole
+     "remove '()', or the entries it is mixed with")
+ ERROR(parse_empty_assume_throws_list, "'@AssumeThrows[]' assumes nothing",
+     "drop the brackets to assume 'Exception', or list the exception types to assume")
++ERROR(parse_ellipsis_not_last, "'...' must be the last entry of a 'throws' clause",
++    "it may appear at most once, at the end")
+ ERROR(parse_ellipsis_in_clause, "'...' is not allowed in a '%s' clause",
+     "only an inferable 'throws' list can be opened to inference")
+ ERROR(parse_duplicate_throws_clause, "duplicate 'throws' clause",
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index e1688d34..7c820a9e 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -423,6 +423,9 @@ ERROR(sema_chexc_clause_on_cfunc, "a 'throws' clause is not allowed on %s", "'th
+ ERROR(sema_chexc_override_missing_capability,
+     "exception type '%s' in 'throws' clause of '%s' is not covered by the overridden or implemented declaration",
+     "no exception type in the original declaration's 'throws' clause is a supertype of '%s'")
++WARNING(sema_chexc_override_missing_capability_warn, CHEXC,
++    "exception type '%s' in 'throws' clause of '%s' is not covered by the overridden or implemented declaration",
++    "no exception type in the original declaration's 'throws' clause is a supertype of '%s'")
+ ERROR(sema_chexc_missing_capability,
+     "Cannot find a capability for '%s' (of type 'CanThrow<%s>') in the current scope",
+     "required by %s")
+@@ -452,10 +455,26 @@ ERROR(sema_chexc_cast_target_func,
+     "'%s' cannot be a runtime cast target: it contains a function type",
+     "erasure leaves no capability list to check, so such a cast would launder the requirements of "
+     "the value it accepts")
++WARNING(sema_chexc_cast_target_func_warn, CHEXC,
++    "'%s' cannot be a runtime cast target: it contains a function type",
++    "erasure leaves no capability list to check, so such a cast would launder the requirements of "
++    "the value it accepts")
++ERROR(sema_chexc_cast_target_capturing,
++    "'%s' cannot be a runtime cast target: it is a capturing type",
++    "its instances hold capabilities and are bound to the handlers that supplied them, which a "
++    "cast result cannot be")
++WARNING(sema_chexc_cast_target_capturing_warn, CHEXC,
++    "'%s' cannot be a runtime cast target: it is a capturing type",
++    "its instances hold capabilities and are bound to the handlers that supplied them, which a "
++    "cast result cannot be")
+ ERROR(sema_chexc_subclass_captures_missing,
+     "'%s' must capture '%s': every subclass of a capturing class captures at least what its "
+     "superclass does",
+     "add it to the 'captures' clause, or a type that covers it")
++WARNING(sema_chexc_useless_escape_hatch, CHEXC,
++    "'unsafeAssumeHandled' assumes '%s', which is unchecked and never required a capability",
++    "the call has no effect on checking")
++
+ ERROR(sema_chexc_capturing_needs_ctor,
+     "%s '%s' has a 'captures' clause and must declare an 'init' constructor",
+     "a capturing type has no implicit default constructor: its constructors require the captured "
+diff --git a/include/cangjie/Sema/CapabilityCheck.h b/include/cangjie/Sema/CapabilityCheck.h
+index 5a3b96e4..196ad968 100644
+--- a/include/cangjie/Sema/CapabilityCheck.h
++++ b/include/cangjie/Sema/CapabilityCheck.h
+@@ -118,7 +118,8 @@ void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCap
+  * overrides or implements. Written lists are compared during type check; an inferred one cannot be,
+  * because inference runs after it -- so the override pairs recorded then are consumed here.
+  */
+-void CheckInferredOverrides(TypeManager& typeManager, const InferredCapabilities& inferred, DiagnosticEngine& diag);
++void CheckInferredOverrides(
++    TypeManager& typeManager, const InferredCapabilities& inferred, DiagnosticEngine& diag, bool asWarning);
+ 
+ /**
+  * Run capability argument checking over every callable body and initializer of @p pkg on the
+@@ -128,7 +129,7 @@ void CheckInferredOverrides(TypeManager& typeManager, const InferredCapabilities
+  * declaration and are demanded at its call sites.
+  */
+ void CheckCapabilities(TypeManager& typeManager, const ImportManager& importManager, AST::Package& pkg,
+-    CapabilityMissHandler& missHandler, const InferredCapabilities& inferred = {});
++    CapabilityMissHandler& missHandler, const InferredCapabilities& inferred, DiagnosticEngine& diag);
+ 
+ /**
+  * The capability list of @p decl's 'captures' clause, with capability list aliases
+diff --git a/include/cangjie/Utils/ConstantsUtils.h b/include/cangjie/Utils/ConstantsUtils.h
+index 7ebb08dd..77e8d8a0 100644
+--- a/include/cangjie/Utils/ConstantsUtils.h
++++ b/include/cangjie/Utils/ConstantsUtils.h
+@@ -50,6 +50,8 @@ inline const std::string CHIR_READABLE_FILE_EXTENSION = ".chirtxt";
+ // Built-in type name.
+ inline const std::string CLASS_EXCEPTION = "Exception";
+ inline const std::string CLASS_UNCHECKED_EXCEPTION = "UncheckedException";
++/// Checked exceptions: the escape hatch, a compiler intrinsic with a library-visible signature.
++inline const std::string UNSAFE_ASSUME_HANDLED = "unsafeAssumeHandled";
+ inline const std::string CLASS_ERROR = "Error";
+ inline const std::string CLASS_COMMAND = "Command";
+ inline const std::string CLASS_HANDLER_FRAME = "HandlerFrame";
+diff --git a/src/Frontend/CompilerInstance.cpp b/src/Frontend/CompilerInstance.cpp
+index aee8532b..a0a8c9fb 100644
+--- a/src/Frontend/CompilerInstance.cpp
++++ b/src/Frontend/CompilerInstance.cpp
+@@ -739,8 +739,8 @@ bool CompilerInstance::PerformCapabilityCheck()
+         // parameter inference and capability argument checking, so a declaration's own type is
+         // the single source of its list. Keep these three calls adjacent.
+         Sema::CompleteInferredCapabilityTypes(*typeManager, inferred);
+-        Sema::CheckInferredOverrides(*typeManager, inferred, diag);
+-        Sema::CheckCapabilities(*typeManager, *importManager, *srcPkg, missHandler, inferred);
++        Sema::CheckInferredOverrides(*typeManager, inferred, diag, asWarning);
++        Sema::CheckCapabilities(*typeManager, *importManager, *srcPkg, missHandler, inferred, diag);
+     }
+     return diag.GetErrorCount() == errorCountBefore;
+ }
+diff --git a/src/Parse/ParseType.cpp b/src/Parse/ParseType.cpp
+index 15948ba5..5a474bde 100644
+--- a/src/Parse/ParseType.cpp
++++ b/src/Parse/ParseType.cpp
+@@ -321,6 +321,12 @@ OwnedPtr<AST::ThrowsClause> ParserImpl::ParseThrowsClause(bool isDeclClause)
+         (void)clause->capTypes.emplace_back(ParseType());
+     };
+     auto diagnoseEllipsis = [this, isDeclClause, &clause]() {
++        // Placement: last entry, at most once. A second marker, or one with entries after it, is
++        // diagnosed here; the clause still parses so the declared entries reach the checks.
++        if (clause->hasEllipsis) {
++            ParseDiagnoseRefactor(
++                DiagKindRefactor::parse_ellipsis_not_last, MakeRange(lookahead.Begin(), lookahead.End()));
++        }
+         // On a declaration `...` re-enables capability parameter inference, whose result is
+         // unioned with the listed entries. A functional type's list is always
+         // complete, so the marker is rejected there.
+@@ -377,6 +383,10 @@ OwnedPtr<AST::ThrowsClause> ParserImpl::ParseThrowsClause(bool isDeclClause)
+             if (Seeing(TokenKind::ELLIPSIS)) {
+                 diagnoseEllipsis();
+             } else {
++                if (clause->hasEllipsis) {
++                    ParseDiagnoseRefactor(
++                        DiagKindRefactor::parse_ellipsis_not_last, MakeRange(lookahead.Begin(), lookahead.End()));
++                }
+                 parseEntry();
+             }
+             if (!Skip(TokenKind::COMMA)) {
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 17d486a0..d62a7035 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -119,41 +119,17 @@ AssumedThrows CollectAssumedThrows(const Package& pkg, const ImportManager& impo
+     return assumed;
+ }
+ 
+-/// Effects: an entry is an effect requirement iff it is a 'Command' subtype, and
+-/// an exception requirement iff it is an 'Exception' subtype. The two roots are disjoint, which is
+-/// what lets one capability list carry both kinds (decision D17).
+-bool IsCommandTy(TypeManager& typeManager, const ImportManager& importManager, Ptr<Ty> ty)
+-{
+-    if (!Ty::IsTyCorrect(ty)) {
+-        return false;
+-    }
+-    auto command = importManager.GetImportedDecl(EFFECT_PACKAGE_NAME, CLASS_COMMAND);
+-    if (!command) {
+-        return false; // No effect handlers in this build: nothing is a command.
+-    }
+-    // Compare DECLARATIONS, not types: 'Command' is generic, so a subtype test against the
+-    // uninstantiated 'Command<T>' fails for a concrete 'C <: Command<Int64>'.
+-    if (Ty::GetDeclPtrOfTy(ty) == command) {
+-        return true;
+-    }
+-    for (auto superTy : typeManager.GetAllSuperTys(*ty)) {
+-        if (Ty::GetDeclPtrOfTy(superTy) == command) {
+-            return true;
+-        }
+-    }
+-    return false;
+-}
+-
+ class CapabilityChecker {
+ public:
+     CapabilityChecker(TypeManager& typeManager, const ImportManager& importManager,
+         Sema::CapabilityMissHandler& missHandler, const AssumedThrows& assumed,
+-        const Sema::InferredCapabilities& inferred = {})
++        const Sema::InferredCapabilities& inferred = {}, Ptr<DiagnosticEngine> diag = nullptr)
+         : typeManager(typeManager),
+           importManager(importManager),
+           missHandler(missHandler),
+           assumed(assumed),
+-          inferred(inferred)
++          inferred(inferred),
++          diag(diag)
+     {
+     }
+ 
+@@ -300,6 +276,29 @@ private:
+         }
+     }
+ 
++    /// The escape hatch: 'std.core.unsafeAssumeHandled<E, R>' is a compiler intrinsic with a
++    /// library-visible signature. Inside it -- and nowhere else -- a capability for its own 'E' is
++    /// fabricated, which is what lets it invoke a callback that requires one. No source operation
++    /// fabricates capabilities; this is the one declaration that gets one for free.
++    static bool IsEscapeHatch(const FuncDecl& fd)
++    {
++        return fd.identifier == UNSAFE_ASSUME_HANDLED && fd.fullPackageName == CORE_PACKAGE_NAME;
++    }
++
++    SupplyScope FabricatedCapabilities(const FuncDecl& fd) const
++    {
++        SupplyScope caps;
++        if (!IsEscapeHatch(fd) || !fd.funcBody || !fd.funcBody->generic) {
++            return caps;
++        }
++        for (auto& param : fd.funcBody->generic->typeParameters) {
++            if (param && Ty::IsTyCorrect(param->GetTy())) {
++                (void)caps.emplace_back(param->GetTy());
++            }
++        }
++        return caps;
++    }
++
+     void CheckCallable(FuncDecl& fd)
+     {
+         if (!fd.funcBody) {
+@@ -307,6 +306,11 @@ private:
+         }
+         CJC_ASSERT(supplies.empty());
+         rootSupply = nullptr;
++        auto fabricated = FabricatedCapabilities(fd);
++        bool hasFabricated = !fabricated.empty();
++        if (hasFabricated) {
++            supplies.emplace_back(std::move(fabricated));
++        }
+         // The enclosing class's captured capabilities are in scope throughout a member that has
+         // a receiver to carry them. A static member, a static initializer and a
+         // finalizer have none, and a checked throw is forbidden there. Derived
+@@ -320,6 +324,9 @@ private:
+         // beginning of the body".
+         WalkScoped(fd.funcBody.get());
+         PopCaptures(captures);
++        if (hasFabricated) {
++            supplies.pop_back();
++        }
+         CJC_ASSERT(supplies.empty());
+     }
+ 
+@@ -427,6 +434,17 @@ private:
+             case ASTKind::SPAWN_EXPR:
+                 HandleSpawn(StaticCast<SpawnExpr&>(*node));
+                 return VisitAction::SKIP_CHILDREN;
++            case ASTKind::RESUME_EXPR: {
++                // Effects: 'resume r throwing e' injects 'e' at the suspended 'perform' site, so it
++                // is a requirement site classified by the static type of 'e', exactly as 'throw e'
++                // is. It resolves in the handler body's enclosing scopes -- which is what the
++                // supply stack holds here, a 'handle' body being outside its own try's scope.
++                auto& re = StaticCast<ResumeExpr&>(*node);
++                if (re.throwingExpr && Ty::IsTyCorrect(re.throwingExpr->GetTy())) {
++                    Demand(re.throwingExpr->GetTy(), re, "this 'resume ... throwing' expression");
++                }
++                return VisitAction::WALK_CHILDREN;
++            }
+             case ASTKind::THROW_EXPR: {
+                 auto& te = StaticCast<ThrowExpr&>(*node);
+                 if (te.expr && Ty::IsTyCorrect(te.expr->GetTy())) {
+@@ -577,6 +595,25 @@ private:
+         rootSupply = std::move(savedRoot);
+     }
+ 
++    /// The escape hatch is a no-op when its type argument is unchecked: an unchecked exception
++    /// never required a capability, so nothing is being assumed away. Worth saying, since the call
++    /// reads as if it were.
++    void WarnUselessEscapeHatch(const CallExpr& ce) const
++    {
++        if (!ce.resolvedFunction || !IsEscapeHatch(*ce.resolvedFunction)) {
++            return;
++        }
++        auto ref = DynamicCast<RefExpr*>(ce.baseFunc.get());
++        if (!ref || ref->typeArguments.empty()) {
++            return;
++        }
++        auto assumedTy = ref->typeArguments.front()->GetTy();
++        if (diag && Ty::IsTyCorrect(assumedTy) &&
++            TypeCheckUtil::IsUncheckedExceptionTy(typeManager, importManager, assumedTy)) {
++            diag->DiagnoseRefactor(DiagKindRefactor::sema_chexc_useless_escape_hatch, ce, Ty::ToString(assumedTy));
++        }
++    }
++
+     void HandleCall(CallExpr& ce)
+     {
+         // Both resolved-function calls and function-value calls: the callee expression's type
+@@ -584,6 +621,7 @@ private:
+         if (!ce.baseFunc) {
+             return;
+         }
++        WarnUselessEscapeHatch(ce);
+         auto funcTy = DynamicCast<FuncTy*>(ce.baseFunc->GetTy());
+         if (!funcTy) {
+             return;
+@@ -740,7 +778,7 @@ private:
+             auto exception = importManager.GetCoreDecl<ClassDecl>(CLASS_EXCEPTION);
+             bool underException = exception && Ty::IsTyCorrect(exception->GetTy()) &&
+                 typeManager.IsSubtype(exceptionTy, exception->GetTy());
+-            if (!underException && !IsCommandTy(typeManager, importManager, exceptionTy)) {
++            if (!underException && !TypeCheckUtil::IsCommandTy(typeManager, importManager, exceptionTy)) {
+                 return;
+             }
+         }
+@@ -754,7 +792,8 @@ private:
+         if (rootSupply && rootSupply(exceptionTy)) {
+             return;
+         }
+-        missHandler.HandleMiss({exceptionTy, &site, requiredBy, IsCommandTy(typeManager, importManager, exceptionTy)});
++        missHandler.HandleMiss(
++            {exceptionTy, &site, requiredBy, TypeCheckUtil::IsCommandTy(typeManager, importManager, exceptionTy)});
+     }
+ 
+     TypeManager& typeManager;
+@@ -768,6 +807,9 @@ private:
+     const Sema::InferredCapabilities& inferred;
+     // Set while collecting one declaration's residual demands: its own inferred list is not a supply.
+     Ptr<const Decl> collectingFor{nullptr};
++    /// Only the reporting pass carries one: the collecting pass of inference walks every body a
++    /// second time, and a warning emitted there would be a duplicate.
++    Ptr<DiagnosticEngine> diag{nullptr};
+     // File of the declaration being checked; the fallback for a call site that lost its own.
+ };
+ /// Collects residual demands instead of diagnosing them (miss-handler seam).
+@@ -1162,7 +1204,8 @@ void ReportCapabilityMissHandler::HandleMiss(const CapabilityDemand& demand)
+     builder.AddMainHintArguments(demand.requiredBy);
+ }
+ 
+-void CheckInferredOverrides(TypeManager& typeManager, const InferredCapabilities& inferred, DiagnosticEngine& diag)
++void CheckInferredOverrides(
++    TypeManager& typeManager, const InferredCapabilities& inferred, DiagnosticEngine& diag, bool asWarning)
+ {
+     // A declaration's list depends on its own body only, never on its overriders -- so an override
+     // that INFERS more than the declaration it overrides is an error, exactly as a written one is.
+@@ -1181,8 +1224,12 @@ void CheckInferredOverrides(TypeManager& typeManager, const InferredCapabilities
+                 if (!Ty::IsTyCorrect(capTy) || typeManager.IsCapTysSubsumed({capTy}, parentTy->capTys)) {
+                     continue;
+                 }
+-                auto builder = diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_override_missing_capability,
+-                    MakeRangeForDeclIdentifier(*decl), Ty::ToString(capTy), decl->identifier.Val());
++                // The checking level applies here as everywhere: at 'warn' the violation is
++                // reported and the package still builds.
++                auto kind = asWarning ? DiagKindRefactor::sema_chexc_override_missing_capability_warn
++                                      : DiagKindRefactor::sema_chexc_override_missing_capability;
++                auto builder = diag.DiagnoseRefactor(
++                    kind, MakeRangeForDeclIdentifier(*decl), Ty::ToString(capTy), decl->identifier.Val());
+                 builder.AddMainHintArguments(Ty::ToString(capTy));
+                 builder.AddNote(MakeRangeForDeclIdentifier(*parent),
+                     parentTy->capTys.empty()
+@@ -1234,9 +1281,9 @@ InferredCapabilities InferCapabilities(
+ }
+ 
+ void CheckCapabilities(TypeManager& typeManager, const ImportManager& importManager, AST::Package& pkg,
+-    CapabilityMissHandler& missHandler, const InferredCapabilities& inferred)
++    CapabilityMissHandler& missHandler, const InferredCapabilities& inferred, DiagnosticEngine& diag)
+ {
+     auto assumed = CollectAssumedThrows(pkg, importManager);
+-    CapabilityChecker(typeManager, importManager, missHandler, assumed, inferred).CheckPackage(pkg);
++    CapabilityChecker(typeManager, importManager, missHandler, assumed, inferred, &diag).CheckPackage(pkg);
+ }
+ } // namespace Cangjie::Sema
+diff --git a/src/Sema/MultiTypeSubstUtils.cpp b/src/Sema/MultiTypeSubstUtils.cpp
+index 8e4e3d36..e713ddf2 100644
+--- a/src/Sema/MultiTypeSubstUtils.cpp
++++ b/src/Sema/MultiTypeSubstUtils.cpp
+@@ -55,15 +55,38 @@ namespace {
+ /// through one is still used by the type, and dropping its mapping here would leave the raw
+ /// instantiation placeholder in the list, where nothing can discharge it. Deciding *which*
+ /// substitutions are needed is not deciding type arguments -- those still ignore capability lists.
+-std::set<Ptr<GenericsTy>> CollectUsedTyVars(Ptr<Ty> ty, const std::set<Ptr<TyVar>>& candidates)
++void CollectUsedTyVarsInto(Ptr<Ty> ty, const std::set<Ptr<TyVar>>& candidates, std::set<Ptr<GenericsTy>>& used)
+ {
+-    std::set<Ptr<GenericsTy>> used = ty->GetGenericTyArgs(candidates);
+-    for (auto tv : GetAllGenericTys(ty)) {
+-        auto generics = DynamicCast<GenericsTy*>(tv);
+-        if (generics && candidates.count(generics) > 0) {
+-            used.emplace(generics);
++    if (!ty || !ty->HasGeneric()) {
++        return;
++    }
++    if (ty->IsGeneric()) {
++        auto generics = RawStaticCast<GenericsTy*>(ty.get());
++        if (candidates.count(generics) > 0) {
++            (void)used.emplace(generics);
++        }
++        return;
++    }
++    for (auto arg : ty->typeArgs) {
++        CollectUsedTyVarsInto(arg, candidates, used);
++    }
++    // The one addition to 'Ty::GetGenericTyArgs': a functional type's capability list sits outside
++    // 'typeArgs', so a type parameter reachable only through one is invisible there -- its mapping
++    // would be filtered away here and the raw instantiation placeholder would survive into the
++    // checked type. Deciding *which* substitutions are needed is not deciding type arguments,
++    // which still ignore capability lists entirely. Everything else about the traversal matches,
++    // deliberately: widening it changes which mappings survive for ordinary code too.
++    if (auto funcTy = DynamicCast<FuncTy*>(ty)) {
++        for (auto cap : funcTy->capTys) {
++            CollectUsedTyVarsInto(cap, candidates, used);
+         }
+     }
++}
++
++std::set<Ptr<GenericsTy>> CollectUsedTyVars(Ptr<Ty> ty, const std::set<Ptr<TyVar>>& candidates)
++{
++    std::set<Ptr<GenericsTy>> used;
++    CollectUsedTyVarsInto(ty, candidates, used);
+     return used;
+ }
+ } // namespace
+diff --git a/src/Sema/TypeCheckExpr/IsAsExprs.cpp b/src/Sema/TypeCheckExpr/IsAsExprs.cpp
+index ec04dc71..2c0fa530 100644
+--- a/src/Sema/TypeCheckExpr/IsAsExprs.cpp
++++ b/src/Sema/TypeCheckExpr/IsAsExprs.cpp
+@@ -23,13 +23,30 @@ Ptr<Ty> TypeChecker::TypeCheckerImpl::CastTargetTy(Type& target)
+     // containing a function type, in any position; relaxations that make such casts usable are an
+     // extension. A parameter-typed target ('x as Box<T>') is accepted: rejecting it would break
+     // ordinary generic code, and an instantiation with a function type is an unchecked boundary.
+-    // Off with the feature, the written type is the type.
+     auto targetTy = target.GetTy();
+-    if (!ci->invocation.globalOptions.enableChexc || !Ty::IsTyCorrect(targetTy)) {
++    bool checkExceptions = ci->invocation.globalOptions.enableChexc;
++    bool checkEffects = ci->invocation.globalOptions.enableEH;
++    if ((!checkExceptions && !checkEffects) || !Ty::IsTyCorrect(targetTy)) {
+         return targetTy;
+     }
+     if (TypeCheckUtil::ContainsFuncTy(targetTy)) {
+-        diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_cast_target_func, target, Ty::ToString(targetTy));
++        // For the exception kind this is an ordinary checking violation, so it follows the level.
++        // With effect handlers enabled it is an error at every level besides: the value may carry
++        // a 'performs' component, for which no pessimistic reading exists -- there is no top
++        // command type to fall back on.
++        bool asWarning =
++            !checkEffects && ci->invocation.globalOptions.chexcSeverity == GlobalOptions::ChexcSeverity::CS_WARN;
++        diag.DiagnoseRefactor(asWarning ? DiagKindRefactor::sema_chexc_cast_target_func_warn
++                                        : DiagKindRefactor::sema_chexc_cast_target_func,
++            target, Ty::ToString(targetTy));
++    } else if (checkExceptions && TypeCheckUtil::IsCapturingTy(targetTy)) {
++        // A capturing type's instances are 'local!'-only, which no cast result can honestly be:
++        // a reflectively constructed one carries an unknown capability set, and reading it back
++        // into checked typing would give it a set it does not have.
++        bool asWarning = ci->invocation.globalOptions.chexcSeverity == GlobalOptions::ChexcSeverity::CS_WARN;
++        diag.DiagnoseRefactor(asWarning ? DiagKindRefactor::sema_chexc_cast_target_capturing_warn
++                                        : DiagKindRefactor::sema_chexc_cast_target_capturing,
++            target, Ty::ToString(targetTy));
+     }
+     return targetTy;
+ }
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index b5c60521..02bead06 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -441,6 +441,40 @@ std::vector<Ptr<Ty>> GetDeclCapturesCapTys(const Decl& decl)
+     return ret;
+ }
+ 
++bool IsCapturingTy(Ptr<Ty> ty)
++{
++    if (!Ty::IsTyCorrect(ty)) {
++        return false;
++    }
++    auto decl = Ty::GetDeclOfTy<InheritableDecl>(ty);
++    return decl && !GetDeclCapturesCapTys(*decl).empty();
++}
++
++/// Effects: an entry is an effect requirement iff it is a 'Command' subtype, and
++/// an exception requirement iff it is an 'Exception' subtype. The two roots are disjoint, which is
++/// what lets one capability list carry both kinds (decision D17).
++bool IsCommandTy(TypeManager& typeManager, const ImportManager& importManager, Ptr<Ty> ty)
++{
++    if (!Ty::IsTyCorrect(ty)) {
++        return false;
++    }
++    auto command = importManager.GetImportedDecl(EFFECT_PACKAGE_NAME, CLASS_COMMAND);
++    if (!command) {
++        return false; // No effect handlers in this build: nothing is a command.
++    }
++    // Compare DECLARATIONS, not types: 'Command' is generic, so a subtype test against the
++    // uninstantiated 'Command<T>' fails for a concrete 'C <: Command<Int64>'.
++    if (Ty::GetDeclPtrOfTy(ty) == command) {
++        return true;
++    }
++    for (auto superTy : typeManager.GetAllSuperTys(*ty)) {
++        if (Ty::GetDeclPtrOfTy(superTy) == command) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ bool IsUncheckedExceptionTy(TypeManager& typeManager, const ImportManager& importManager, Ptr<Ty> ty)
+ {
+     // Checked exceptions: an exception type is unchecked iff it is a subtype of
+diff --git a/src/Sema/TypeCheckUtil.h b/src/Sema/TypeCheckUtil.h
+index b51642d4..5522e8fb 100644
+--- a/src/Sema/TypeCheckUtil.h
++++ b/src/Sema/TypeCheckUtil.h
+@@ -214,6 +214,19 @@ std::vector<Ptr<AST::Ty>> GetInstantiatedAccessorCapTys(
+  * whose types failed elaboration are skipped.
+  */
+ std::vector<Ptr<AST::Ty>> GetDeclCapturesCapTys(const AST::Decl& decl);
++
++/**
++ * Checked exceptions: true when @p ty is a capturing class or struct -- one whose declaration
++ * carries a `captures` clause with at least one entry after alias expansion. Its instances store
++ * capabilities and are `local!`-only.
++ */
++bool IsCapturingTy(Ptr<AST::Ty> ty);
++/**
++ * Effects: whether @p ty is an effect command type, i.e. a subtype of the effect package's
++ * 'Command' class. The exception and command roots are disjoint, so this is what tells the two
++ * kinds of entry in one capability list apart. False when the effect package is absent.
++ */
++bool IsCommandTy(TypeManager& typeManager, const ImportManager& importManager, Ptr<AST::Ty> ty);
+ /**
+  * Checked exceptions: whether @p ty is an unchecked exception type, i.e. a subtype of the core
+  * 'UncheckedException' class. Tolerant of the class's absence (bootstrapping
+-- 
+2.54.0
+

@@ -1,0 +1,48 @@
+From 07d8fdcb6dd31ec6f5bef538f7d80683f63aa1a4 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 13:56:33 +0300
+Subject: [PATCH 33/43] test: the help golden lists the checked-exceptions
+ option and its warning group
+
+Expected consequence of adding an option (gap-analysis C14): '--enable-chexc' with its two
+severities, and 'chexc' in both the -Woff and -Won group lists. The suite is green again.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ testsuites/LLT/compiler/Driver/options/help/test_showall.cj | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/testsuites/LLT/compiler/Driver/options/help/test_showall.cj b/testsuites/LLT/compiler/Driver/options/help/test_showall.cj
+index 3556a8f150..994b23d727 100644
+--- a/testsuites/LLT/compiler/Driver/options/help/test_showall.cj
++++ b/testsuites/LLT/compiler/Driver/options/help/test_showall.cj
+@@ -54,6 +54,10 @@ Options:
+   --profile-compile-time      Write time spent of all phases to <package>.time.prof in the output directory
+   --profile-compile-memory    Write memory usage of all phases to <package>.mem.prof in the output directory
+   --enable-eh                 Enables experimental support for effect handlers (Experimental)
++  --enable-chexc, --enable-checked-exceptions
++                              Enables experimental support for checked exceptions. Candidate severities: (Experimental)
++    <value>=error               report capability violations as errors (default)
++    <value>=warn                report capability violations as warnings
+   --dump-ast                  Dump human readable AST when compiling for debug
+   --dump-chir                 Dump human readable CHIR when compiling for debug
+   --dump-ir                   Dump human readable IR
+@@ -138,6 +142,7 @@ Options:
+     <value>=semantics           
+     <value>=interpreter         
+     <value>=apilevel-check      
++    <value>=chexc               
+   -Won, --warn-on <value>     Report a specific group of warning
+     <value>=all                 
+     <value>=unused              
+@@ -150,6 +155,7 @@ Options:
+     <value>=semantics           
+     <value>=interpreter         
+     <value>=apilevel-check      
++    <value>=chexc               
+   --error-count-limit <value> Emit specified <number> of errors only. Available options: all, <number> (8 by default)
+   -V, --verbose               Enable verbose
+   -v, --version               Print compiler version information 
+-- 
+2.54.0
+

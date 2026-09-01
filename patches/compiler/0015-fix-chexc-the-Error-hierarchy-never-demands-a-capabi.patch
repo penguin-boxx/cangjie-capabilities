@@ -1,0 +1,63 @@
+From c06d090df9f836606d90982cc4e48e842c8a9a6c Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 16:50:22 +0300
+Subject: [PATCH 15/44] fix(chexc): the Error hierarchy never demands a
+ capability (proposal 1.1)
+
+'Error <: ToString' is a separate root from 'Exception'; the proposal's 1.1
+split (fail-fast for bugs, statically checked exceptions for recoverable
+errors, after Midori's Error Model) means Error throws are never tracked. The
+pass demanded on every 'throw' with a correct type, so std.core's own
+OutOfMemoryError throws warned -- found by the stdlib warn-mode migration,
+28 warnings in std.core alone.
+
+'Demand' now exempts class types under NEITHER tracked root: not Exception
+(throws) and not Command (performs). The Command test is essential, not
+defensive -- commands are also classes outside the Exception root, and the
+first version of this exemption ("class and not under Exception") silenced
+every effect demand; the performs negative tests caught it within one build
+cycle. Type parameters keep demanding: a generic clause entry only
+instantiates where the clause was legal.
+
+Errors cannot be constructed by user code (their constructors are internal to
+std.core), so the test exercises the user-visible path -- rethrowing a caught
+'Error' -- and the compiler-side proof is std.core itself compiling clean in
+warn mode. Recorded as decision D18.
+
+Tests: CheckedExceptions 82/82.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 2108fa16..700818af 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -713,6 +713,22 @@ private:
+         if (TypeCheckUtil::IsUncheckedExceptionTy(typeManager, importManager, exceptionTy)) {
+             return;
+         }
++        // The Error hierarchy is fail-fast, never statically tracked (proposal 1.1's split,
++        // after Midori's Error Model): 'Error <: ToString' is a separate root, so a class type
++        // under NEITHER tracked root -- Exception (throws) nor Command (performs) -- never
++        // demands. Found by the stdlib migration: std.core's own OutOfMemoryError throws warned
++        // without this. The Command test is essential, not defensive: commands are classes
++        // outside the Exception root too, and exempting them here silenced every effect demand
++        // (caught by the performs negative tests). Type parameters keep demanding: a generic
++        // entry only instantiates where its clause was legal.
++        if (exceptionTy->IsClass()) {
++            auto exception = importManager.GetCoreDecl<ClassDecl>(CLASS_EXCEPTION);
++            bool underException = exception && Ty::IsTyCorrect(exception->GetTy()) &&
++                typeManager.IsSubtype(exceptionTy, exception->GetTy());
++            if (!underException && !IsCommandTy(typeManager, importManager, exceptionTy)) {
++                return;
++            }
++        }
+         // Scopes are searched from the innermost enclosing one outwards; within one scope the
+         // first suitable entry in textual order supplies the capability (proposal 3.3).
+         for (auto scope = supplies.rbegin(); scope != supplies.rend(); ++scope) {
+-- 
+2.54.0
+

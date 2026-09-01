@@ -1,0 +1,601 @@
+From 078c0093f4ad18c7c8ba51b32b5ce4f69ee82e36 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 12:28:48 +0300
+Subject: [PATCH 11/44] feat(chexc): assumption imports (proposal 5.2.2)
+
+'@AssumeThrows[E1, E2]' on an import imposes the listed exception types on every
+call into that package; the bare form assumes 'Exception'. Capability list
+aliases apply (6.1), and assumed requirements participate in capability
+parameter inference (6.3) exactly like declared ones.
+
+Pipeline, one stage at a time:
+- Parse: the annotation is accepted on an 'import' and only there, and only
+  under --enable-checked-exceptions; elsewhere it takes the pre-existing
+  "unexpected annotation" path.
+- Collect: its exception types are collected in the file's top-level scope,
+  which is the scope they are named in.
+- PreCheck: resolved by ResolveNames, which otherwise walks only top-level
+  declarations and so never reaches an import.
+- TypeCheck: validated as 'throws' entries; a misplaced annotation is an error
+  rather than silently inert, since an inert annotation reads as a claim being
+  honoured.
+- CapabilityCheck: a per-file package -> types map, unioned into call demands.
+  Union, not append: assumptions only ADD obligations relative to the
+  read-as-empty default.
+
+The claim is recorded per FILE, since imports are file-scoped and the file that
+wrote the import is the scope of the consumer's trust claim, and registered
+under every name the import could denote so 'import p.*', 'import p' and
+'import p.decl' all match a callee in package p. Matching is exact: a
+subpackage is not covered by its parent's assumption.
+
+Also fixes a null-pointer ICE reachable from this feature: an import is not a
+declaration, so AddCurFile never descended into its annotations, leaving the
+type nodes without a file; IsLegalAccess then dereferences curFile unguarded
+(TypeCheckUtil.cpp:1643, behind a CJC_ASSERT that compiles out in release).
+The unguarded deref itself is pre-existing and is recorded in the gaps ledger.
+
+Formatting touches adjacent pre-existing lines: cj.py fmt normalises whole
+files, matching this branch's existing convention.
+
+Tests: compiler/CheckedExceptions/assume, 6 cases (basic, bare, alias with
+inference, negative, misplacement, package scoping) plus a support package
+compiled without the flag. LLT Parser+Sema+CheckedExceptions 3995/4000 (the 5
+failures are the red-by-design conversions/adapt groups); ctest 49/49.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ include/cangjie/AST/ASTKind.inc               |   2 +-
+ include/cangjie/AST/Node.h                    |  10 ++
+ .../Basic/DiagRefactor/DiagnosticSema.def     |   3 +
+ include/cangjie/Parse/Parser.h                |   7 +-
+ src/AST/Clone.cpp                             |   3 +
+ src/AST/Utils.cpp                             |  11 ++
+ src/AST/Walker.cpp                            |   4 +
+ src/Parse/ParseAnnotations.cpp                |  45 +++++++
+ src/Parse/ParseImports.cpp                    |   6 +-
+ src/Parse/ParserImpl.h                        |   1 +
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 112 +++++++++++++++++-
+ src/Sema/Collector.cpp                        |  10 ++
+ src/Sema/PreCheck.cpp                         |  17 +++
+ src/Sema/TypeChecker.cpp                      |  31 +++++
+ src/Sema/TypeCheckerImpl.h                    |   2 +
+ 15 files changed, 255 insertions(+), 9 deletions(-)
+
+diff --git a/include/cangjie/AST/ASTKind.inc b/include/cangjie/AST/ASTKind.inc
+index 87fb1dc6..d422109b 100644
+--- a/include/cangjie/AST/ASTKind.inc
++++ b/include/cangjie/AST/ASTKind.inc
+@@ -5,7 +5,7 @@
+ // See https://cangjie-lang.cn/pages/LICENSE for license information.
+ // ASTKIND(ast kind, ast value for human reading, ast node, ast size for notify checking related code)
+ #ifdef ASTKIND
+-ASTKIND(ANNOTATION, "annotation", Annotation, 512)
++ASTKIND(ANNOTATION, "annotation", Annotation, 520)
+ ASTKIND(MODIFIER, "modifier", Modifier, 264)
+ ASTKIND(DECL, "*decl", Decl, 728) // begin of subtypes of Decl.
+ ASTKIND(MAIN_DECL, "main_decl", MainDecl, 752)
+diff --git a/include/cangjie/AST/Node.h b/include/cangjie/AST/Node.h
+index 7f528c4f..ea195f21 100644
+--- a/include/cangjie/AST/Node.h
++++ b/include/cangjie/AST/Node.h
+@@ -46,6 +46,7 @@ namespace AST {
+ struct Symbol;
+ struct Expr;
+ struct FuncArg;
++struct ThrowsClause;
+ struct Decl;
+ struct FuncDecl;
+ struct StructDecl;
+@@ -558,6 +559,8 @@ enum class AnnotationKind {
+     NUMERIC_OVERFLOW,
+     INTRINSIC,
+     WHEN,
++    /** Checked exceptions (experimental): '@AssumeThrows[E1, E2]' on an import (proposal 5.2.2). */
++    ASSUME_THROWS,
+     FASTNATIVE,
+     ANNOTATION, // Indicate @Annotation.
+     CUSTOM,     // Indicate a Custom Annotation, such as @JsonName.
+@@ -603,6 +606,12 @@ struct Annotation : public Node {
+     std::string definedPackage; /**< Generated by parser, Optional */
+     // For When Annotations.
+     OwnedPtr<Expr> condExpr; /**< Generated by parser, Optional */
++    /**
++     * For '@AssumeThrows' on an import (proposal 5.2.2): the exception types imposed as a
++     * 'throws' list on every call into the imported package. The bare form assumes 'Exception'.
++     * Reuses the clause node shape. Optional, may be null.
++     */
++    OwnedPtr<ThrowsClause> assumeThrows;
+     // For @Annotation.
+     uint16_t target = 0;
+     // For imported j-foreign annotations.
+@@ -877,6 +886,7 @@ struct VArrayType : public Type {
+  * `--experimental --enable-chexc`): `throws E`, `throws (E1, E2)`, `throws ()`; declarations
+  * additionally allow the bare list form `throws E1, E2`.
+  */
++
+ struct ThrowsClause : Node {
+     Position throwsPos;                   /**< Position of the `throws` keyword. Generated by parser */
+     Position leftParenPos;                /**< Position of '('. Optional, zero for the bare form. */
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index 073762ca..eda71a70 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -430,6 +430,9 @@ WARNING(sema_chexc_missing_capability_warn, CHEXC,
+     "Cannot find a capability for '%s' (of type 'CanThrow<%s>') in the current scope",
+     "required by %s")
+ 
++ERROR(sema_chexc_assume_throws_not_on_import, "'@AssumeThrows' is only allowed on an 'import'",
++    "an assumption applies to a whole imported package")
++
+ ERROR(sema_chexc_polymorphic_recursion,
+     "Cannot infer capability parameters for '%s': the recursion re-enters it at the growing "
+     "instantiation '%s'",
+diff --git a/include/cangjie/Parse/Parser.h b/include/cangjie/Parse/Parser.h
+index 4bbcfd90..a125ec65 100644
+--- a/include/cangjie/Parse/Parser.h
++++ b/include/cangjie/Parse/Parser.h
+@@ -59,9 +59,10 @@ const std::unordered_map<std::string, AST::AnnotationKind> NAME_TO_ANNO_KIND = {
+     {"OverflowThrowing", AST::AnnotationKind::NUMERIC_OVERFLOW},
+     {"OverflowWrapping", AST::AnnotationKind::NUMERIC_OVERFLOW},
+     {"OverflowSaturating", AST::AnnotationKind::NUMERIC_OVERFLOW}, {"When", AST::AnnotationKind::WHEN},
+-    {"FastNative", AST::AnnotationKind::FASTNATIVE}, {"Annotation", AST::AnnotationKind::ANNOTATION},
+-    {"ConstSafe", AST::AnnotationKind::CONSTSAFE}, {"Deprecated", AST::AnnotationKind::DEPRECATED},
+-    {"Frozen", AST::AnnotationKind::FROZEN}, {"EnsurePreparedToMock", AST::AnnotationKind::ENSURE_PREPARED_TO_MOCK},
++    {"AssumeThrows", AST::AnnotationKind::ASSUME_THROWS}, {"FastNative", AST::AnnotationKind::FASTNATIVE},
++    {"Annotation", AST::AnnotationKind::ANNOTATION}, {"ConstSafe", AST::AnnotationKind::CONSTSAFE},
++    {"Deprecated", AST::AnnotationKind::DEPRECATED}, {"Frozen", AST::AnnotationKind::FROZEN},
++    {"EnsurePreparedToMock", AST::AnnotationKind::ENSURE_PREPARED_TO_MOCK},
+     {"NonProduct", AST::AnnotationKind::NON_PRODUCT}};
+ 
+ extern const std::unordered_map<AST::AnnotationKind, std::string> ANNO_KIND_TO_NAME;
+diff --git a/src/AST/Clone.cpp b/src/AST/Clone.cpp
+index 6da63d3e..f66a50ff 100644
+--- a/src/AST/Clone.cpp
++++ b/src/AST/Clone.cpp
+@@ -1468,6 +1468,9 @@ OwnedPtr<Annotation> ASTCloner::CloneAnnotation(const Annotation& annotation, co
+     ret->attrCommas = annotation.attrCommas;
+     ret->rsquarePos = annotation.rsquarePos;
+     ret->lsquarePos = annotation.lsquarePos;
++    if (annotation.assumeThrows) {
++        ret->assumeThrows = CloneThrowsClause(*annotation.assumeThrows, visitor);
++    }
+     for (auto& arg : annotation.args) {
+         ret->args.emplace_back(CloneNode(arg.get(), visitor));
+     }
+diff --git a/src/AST/Utils.cpp b/src/AST/Utils.cpp
+index 979c3348..7f08df09 100644
+--- a/src/AST/Utils.cpp
++++ b/src/AST/Utils.cpp
+@@ -48,6 +48,17 @@ void AddCurFile(Node& root, Ptr<File> file)
+                 curFile->curFile = curFile;
+                 for (auto& import : curFile->imports) {
+                     import->curFile = curFile;
++                    // Checked exceptions (proposal 5.2.2): an '@AssumeThrows' annotation carries
++                    // type nodes that sema resolves and checks like 'throws' clause entries, and
++                    // those checks read 'curFile'. The walk below never reaches them: an import
++                    // is not a declaration, so its annotations are not walked with it. Only the
++                    // capability list is visited — the other annotations an import may carry keep
++                    // whatever 'curFile' they had.
++                    for (auto& anno : import->annotations) {
++                        if (anno && anno->assumeThrows) {
++                            Walker(anno->assumeThrows.get(), walkerID, setCurFile).Walk();
++                        }
++                    }
+                 }
+                 return VisitAction::WALK_CHILDREN;
+             }
+diff --git a/src/AST/Walker.cpp b/src/AST/Walker.cpp
+index 2a4d291a..4f5807d6 100644
+--- a/src/AST/Walker.cpp
++++ b/src/AST/Walker.cpp
+@@ -1114,6 +1114,10 @@ VisitAction WalkerT<NodeT>::Walk(Ptr<NodeT> curNode) const
+                         return VisitAction::STOP_NOW;
+                     }
+                 }
++                // Checked exceptions: '@AssumeThrows' carries a capability list (proposal 5.2.2).
++                if (Walk(anno->assumeThrows.get()) == VisitAction::STOP_NOW) {
++                    return VisitAction::STOP_NOW;
++                }
+                 action = VisitAction::WALK_CHILDREN;
+                 break;
+             }
+diff --git a/src/Parse/ParseAnnotations.cpp b/src/Parse/ParseAnnotations.cpp
+index 27721b23..da90de93 100644
+--- a/src/Parse/ParseAnnotations.cpp
++++ b/src/Parse/ParseAnnotations.cpp
+@@ -367,6 +367,10 @@ OwnedPtr<Annotation> ParserImpl::ParseAnnotation()
+             ParseWhenAnnotation(*annotation);
+             break;
+         }
++        case AnnotationKind::ASSUME_THROWS: {
++            ParseAssumeThrowsAnnotation(*annotation);
++            break;
++        }
+         case AnnotationKind::DEPRECATED: {
+             ParseAnnotationArguments(*annotation);
+             CheckDeprecatedAnnotation(*annotation);
+@@ -399,3 +403,44 @@ OwnedPtr<Annotation> ParserImpl::ParseAnnotation()
+ 
+     return annotation;
+ }
++
++void ParserImpl::ParseAssumeThrowsAnnotation(Annotation& anno)
++{
++    // Checked exceptions (proposal 5.2.2): '@AssumeThrows[E1, E2]' on an import imposes the
++    // listed exception types on every call into the imported package; the bare '@AssumeThrows'
++    // assumes 'Exception'. Capability list aliases apply, so the entries are ordinary types.
++    auto clause = MakeOwned<ThrowsClause>();
++    ChainScope cs(*this, clause.get());
++    clause->begin = anno.begin;
++    clause->end = anno.end;
++    if (Seeing(TokenKind::LSQUARE)) {
++        clause->leftParenPos = lookahead.Begin();
++        anno.lsquarePos = lookahead.Begin();
++        Next();
++        while (true) {
++            while (Skip(TokenKind::NL)) {
++            }
++            if (!SeeingAny(GetTypeFirst()) && !SeeingContextualKeyword()) {
++                ParseDiagnoseRefactor(
++                    DiagKindRefactor::parse_expected_exception_type_after_throws, lookahead, ConvertToken(lookahead));
++                anno.EnableAttr(Attribute::IS_BROKEN);
++                break;
++            }
++            (void)clause->capTypes.emplace_back(ParseType());
++            if (!Skip(TokenKind::COMMA)) {
++                break;
++            }
++            clause->commaPosVector.emplace_back(lastToken.Begin());
++        }
++        if (Skip(TokenKind::RSQUARE)) {
++            anno.rsquarePos = lastToken.Begin();
++            clause->rightParenPos = lastToken.Begin();
++            clause->end = lastToken.End();
++        } else {
++            DiagExpectedRightDelimiter("[", clause->leftParenPos);
++            anno.EnableAttr(Attribute::IS_BROKEN);
++        }
++    }
++    // An empty list is the bare form: elaboration substitutes 'Exception'.
++    anno.assumeThrows = std::move(clause);
++}
+diff --git a/src/Parse/ParseImports.cpp b/src/Parse/ParseImports.cpp
+index 32834e4b..ee0568e7 100644
+--- a/src/Parse/ParseImports.cpp
++++ b/src/Parse/ParseImports.cpp
+@@ -105,8 +105,12 @@ void ParserImpl::ParseImportSpec(PtrVector<ImportSpec>& imports, const PtrVector
+     ParseImportContent(importSpec->content);
+     importSpec->end = importSpec->content.end;
+ 
+-    // Check allowed annotation on import.
++    // Check allowed annotation on import. Checked exceptions (proposal 5.2.2): '@AssumeThrows'
++    // belongs on an import and nowhere else, and only when the feature is enabled.
+     std::for_each(annos.begin(), annos.end(), [&, this](const Ptr<Annotation>& anno) {
++        if (anno->kind == AnnotationKind::ASSUME_THROWS && enableChexc) {
++            return;
++        }
+         if (NotIn(anno->kind, {AnnotationKind::WHEN})) {
+             DiagUnexpectedAnnoOn(*anno, importSpec->importPos, anno->identifier, "import");
+         }
+diff --git a/src/Parse/ParserImpl.h b/src/Parse/ParserImpl.h
+index 5bfa177b..d8732cce 100644
+--- a/src/Parse/ParserImpl.h
++++ b/src/Parse/ParserImpl.h
+@@ -814,6 +814,7 @@ private:
+     void ParseAttributeAnnotation(AST::Annotation& anno);
+     void ParseOverflowAnnotation(AST::Annotation& anno);
+     void ParseWhenAnnotation(AST::Annotation& anno);
++    void ParseAssumeThrowsAnnotation(AST::Annotation& anno);
+     void ParseAnnotationArguments(AST::Annotation& anno);
+     void ValidateDeprecatedAnnotationArgument(const Ptr<AST::LitConstExpr> lce, const std::string& name,
+         const AST::LitConstKind& expectedKind, bool& isArgumentFound);
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 1733b1c9..833bec21 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -61,12 +61,72 @@ using SupplyScope = std::vector<Ptr<Ty>>;
+ /// Consulted when the lexical scope stack has no suitable supply; used for the every-constructor
+ /// rule of instance field initializers. Null means no further supplies.
+ using RootSupply = std::function<bool(Ptr<Ty>)>;
++/// Assumption imports (proposal 5.2.2), per file: the exception types imposed on every call into
++/// each named package. Keyed per file because that is where an import — and with it the consumer's
++/// trust claim about the dependency — lives.
++using AssumedThrows = std::unordered_map<std::string, std::vector<Ptr<Ty>>>;
++using AssumedThrowsByFile = std::unordered_map<Ptr<const File>, AssumedThrows>;
++
++/**
++ * Collects the assumption imports of a package (proposal 5.2.2).
++ *
++ * The bare form '@AssumeThrows' assumes 'Exception'. A tuple entry — written directly or reached
++ * through a type alias — is a capability list and is spliced in (proposal 6.1). The claim is
++ * recorded under every package name the import could denote, so it matches the callee's package
++ * whether the import names the package ('import legacy.db.*') or a declaration in it
++ * ('import legacy.db.query').
++ */
++AssumedThrowsByFile CollectAssumedThrows(const Package& pkg, const ImportManager& importManager)
++{
++    AssumedThrowsByFile byFile;
++    for (auto& file : pkg.files) {
++        if (!file) {
++            continue;
++        }
++        for (auto& import : file->imports) {
++            if (!import || import->IsImportMulti()) {
++                continue; // Desugared into single imports, which carry copies of the annotations.
++            }
++            for (auto& anno : import->annotations) {
++                if (!anno || !anno->assumeThrows) {
++                    continue;
++                }
++                std::vector<Ptr<Ty>> caps;
++                if (anno->assumeThrows->capTypes.empty()) {
++                    auto exception = importManager.GetCoreDecl<ClassDecl>(CLASS_EXCEPTION);
++                    if (exception && Ty::IsTyCorrect(exception->GetTy())) {
++                        caps.emplace_back(exception->GetTy());
++                    }
++                } else {
++                    caps = TypeCheckUtil::ExpandCapabilityList(anno->assumeThrows->capTypes);
++                }
++                if (caps.empty()) {
++                    continue;
++                }
++                for (auto& name : import->content.GetPossiblePackageNames()) {
++                    auto& entry = byFile[file.get()][name];
++                    for (auto cap : caps) {
++                        if (Ty::IsTyCorrect(cap) && !Utils::In(cap, entry)) {
++                            entry.emplace_back(cap);
++                        }
++                    }
++                }
++            }
++        }
++    }
++    return byFile;
++}
+ 
+ class CapabilityChecker {
+ public:
+     CapabilityChecker(TypeManager& typeManager, const ImportManager& importManager,
+-        Sema::CapabilityMissHandler& missHandler, const Sema::InferredCapabilities& inferred = {})
+-        : typeManager(typeManager), importManager(importManager), missHandler(missHandler), inferred(inferred)
++        Sema::CapabilityMissHandler& missHandler, const AssumedThrowsByFile& assumed,
++        const Sema::InferredCapabilities& inferred = {})
++        : typeManager(typeManager),
++          importManager(importManager),
++          missHandler(missHandler),
++          assumed(assumed),
++          inferred(inferred)
+     {
+     }
+ 
+@@ -219,6 +279,7 @@ private:
+             return;
+         }
+         CJC_ASSERT(supplies.empty());
++        currentFile = fd.curFile;
+         rootSupply = nullptr;
+         // The enclosing class's captured capabilities are in scope throughout a member that has
+         // a receiver to carry them (proposal 3.9). A static member, a static initializer and a
+@@ -242,6 +303,7 @@ private:
+             return;
+         }
+         CJC_ASSERT(supplies.empty());
++        currentFile = vd.curFile;
+         rootSupply = std::move(root);
+         // Only an INSTANCE field initializer runs with a receiver; a static one has no
+         // capability scope at all (proposal 3.3, 3.9 rule 1). 'root' is non-null exactly for
+@@ -459,6 +521,7 @@ private:
+                 }
+             }
+         }
++        AddAssumedDemands(ce, demands);
+         for (auto cap : demands) {
+             if (Ty::IsTyCorrect(cap)) {
+                 Demand(cap, ce, DescribeCallee(ce));
+@@ -467,6 +530,38 @@ private:
+         DemandConstructedCaptures(ce);
+     }
+ 
++    /**
++     * Assumption imports (proposal 5.2.2): a call into an assumed package carries the assumed
++     * list on top of whatever the callee declares. Assumptions only ADD obligations relative to
++     * the read-as-empty default, so the two are unioned; the entries can already be present when
++     * the dependency is itself checked.
++     */
++    void AddAssumedDemands(const CallExpr& ce, std::vector<Ptr<Ty>>& demands) const
++    {
++        if (assumed.empty() || !ce.resolvedFunction) {
++            return;
++        }
++        // The claim belongs to the file that wrote the import. A node the desugar rebuilt may have
++        // lost its file, in which case the enclosing declaration's file is the same one.
++        Ptr<const File> file = currentFile;
++        if (ce.curFile) {
++            file = ce.curFile;
++        }
++        auto byFile = assumed.find(file);
++        if (byFile == assumed.end()) {
++            return;
++        }
++        auto entry = byFile->second.find(ce.resolvedFunction->fullPackageName);
++        if (entry == byFile->second.end()) {
++            return;
++        }
++        for (auto cap : entry->second) {
++            if (Ty::IsTyCorrect(cap) && !Utils::In(cap, demands)) {
++                demands.emplace_back(cap);
++            }
++        }
++    }
++
+     /// Substitution from the callee's own type parameters to this call site's type arguments:
+     /// the receiver's instantiation (for a member of a generic type) combined with the call's
+     /// explicit or inferred type arguments (for a generic function).
+@@ -560,12 +655,16 @@ private:
+     TypeManager& typeManager;
+     const ImportManager& importManager;
+     Sema::CapabilityMissHandler& missHandler;
++    /// Assumption imports of the package being checked, indexed by the file they appear in.
++    const AssumedThrowsByFile& assumed;
+     std::vector<SupplyScope> supplies;
+     RootSupply rootSupply;
+     // Lists inferred for declarations without an authoritative clause (proposal 6.3).
+     const Sema::InferredCapabilities& inferred;
+     // Set while collecting one declaration's residual demands: its own inferred list is not a supply.
+     Ptr<const Decl> collectingFor{nullptr};
++    // File of the declaration being checked; the fallback for a call site that lost its own.
++    Ptr<const File> currentFile{nullptr};
+ };
+ /// Collects residual demands instead of diagnosing them (proposal 6.3, the miss-handler seam).
+ class CollectingMissHandler : public Sema::CapabilityMissHandler {
+@@ -610,6 +709,8 @@ public:
+ 
+     Sema::InferredCapabilities Infer(Package& pkg)
+     {
++        // Assumed requirements participate in inference like declared ones (proposal 5.2.2).
++        assumed = CollectAssumedThrows(pkg, importManager);
+         CollectEligible(pkg);
+         BuildCallGraph();
+         for (auto& component : StronglyConnectedComponents()) {
+@@ -839,7 +940,7 @@ private:
+     void SolveComponent(const std::vector<size_t>& component)
+     {
+         CollectingMissHandler handler;
+-        CapabilityChecker checker(typeManager, importManager, handler, inferred);
++        CapabilityChecker checker(typeManager, importManager, handler, assumed, inferred);
+         bool changed = true;
+         while (changed) {
+             changed = false;
+@@ -882,6 +983,8 @@ private:
+     std::vector<std::vector<std::pair<Ptr<const CallExpr>, size_t>>> genericCalls;
+     std::unordered_set<size_t> reportedPolymorphic;
+     Sema::InferredCapabilities inferred;
++    /// Assumption imports of the package (proposal 5.2.2), shared with every checker below.
++    AssumedThrowsByFile assumed;
+     std::vector<size_t> tarjanIndex;
+     std::vector<size_t> tarjanLow;
+     std::vector<bool> onStack;
+@@ -938,6 +1041,7 @@ InferredCapabilities InferCapabilities(
+ void CheckCapabilities(TypeManager& typeManager, const ImportManager& importManager, AST::Package& pkg,
+     CapabilityMissHandler& missHandler, const InferredCapabilities& inferred)
+ {
+-    CapabilityChecker(typeManager, importManager, missHandler, inferred).CheckPackage(pkg);
++    auto assumed = CollectAssumedThrows(pkg, importManager);
++    CapabilityChecker(typeManager, importManager, missHandler, assumed, inferred).CheckPackage(pkg);
+ }
+ } // namespace Cangjie::Sema
+diff --git a/src/Sema/Collector.cpp b/src/Sema/Collector.cpp
+index 98ca98de..9084f786 100644
+--- a/src/Sema/Collector.cpp
++++ b/src/Sema/Collector.cpp
+@@ -76,6 +76,16 @@ void Collector::CollectFileNode(ASTContext& ctx, File& file, bool buildTrie)
+     AddSymbol(ctx, nodeInfo, buildTrie);
+     for (auto& import : file.imports) {
+         BuildSymbolTable(ctx, import.get(), buildTrie);
++        // Checked exceptions (proposal 5.2.2): the exception types of an '@AssumeThrows' import
++        // annotation are named in the file's top-level scope, which is the scope in effect here.
++        for (auto& anno : import->annotations) {
++            if (!anno || !anno->assumeThrows) {
++                continue;
++            }
++            for (auto& capType : anno->assumeThrows->capTypes) {
++                BuildSymbolTable(ctx, capType.get(), buildTrie);
++            }
++        }
+     }
+     // Must use three-stage for loop instead of iterator-style for loop because that function "__maininvoke" will be
+     // generated during function declaration symbol collection.
+diff --git a/src/Sema/PreCheck.cpp b/src/Sema/PreCheck.cpp
+index f77e36ac..c1021287 100644
+--- a/src/Sema/PreCheck.cpp
++++ b/src/Sema/PreCheck.cpp
+@@ -938,6 +938,23 @@ void TypeChecker::TypeCheckerImpl::ResolveNames(ASTContext& ctx)
+         CJC_NULLPTR_CHECK(sym);
+         Walker(sym->node, id, resolveSingleType).Walk();
+     }
++    // Checked exceptions (proposal 5.2.2): an '@AssumeThrows' annotation sits on an import, not on
++    // a top-level declaration, so its exception types are not reached by the walk above.
++    if (ctx.curPackage != nullptr) {
++        for (auto& file : ctx.curPackage->files) {
++            CJC_NULLPTR_CHECK(file);
++            for (auto& import : file->imports) {
++                for (auto& anno : import->annotations) {
++                    if (!anno || !anno->assumeThrows) {
++                        continue;
++                    }
++                    for (auto& capType : anno->assumeThrows->capTypes) {
++                        Walker(capType.get(), id, resolveSingleType).Walk();
++                    }
++                }
++            }
++        }
++    }
+     if (ci->invocation.globalOptions.enableMacroInLSP) {
+         for (auto& file : ctx.curPackage->files) {
+             for (auto& it : file->originalMacroCallNodes) {
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index 0b08e216..32207381 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -256,6 +256,36 @@ void TypeChecker::TypeCheckerImpl::ChkCapturesClauseOfDecl(ASTContext& ctx, Inhe
+     }
+ }
+ 
++void TypeChecker::TypeCheckerImpl::ChkAssumeThrowsAnnotations(ASTContext& ctx, Package& pkg)
++{
++    if (!ci->invocation.globalOptions.enableChexc) {
++        return;
++    }
++    // Checked exceptions (proposal 5.2.2): validate the exception types of every assumption import
++    // exactly like the entries of a 'throws' clause. Their types were resolved by 'ResolveNames'.
++    for (auto& file : pkg.files) {
++        CJC_NULLPTR_CHECK(file);
++        for (auto& import : file->imports) {
++            for (auto& anno : import->annotations) {
++                if (anno && anno->assumeThrows) {
++                    ChkThrowsClauseTypes(ctx, *anno->assumeThrows, "@AssumeThrows");
++                }
++            }
++        }
++    }
++    // The annotation only means anything on an import, where the trust relationship lives; it is
++    // silently inert anywhere else, so a misplaced one is rejected rather than ignored.
++    Walker(&pkg, [this](Ptr<Node> node) -> VisitAction {
++        if (node->astKind == ASTKind::IMPORT_SPEC) {
++            return VisitAction::SKIP_CHILDREN;
++        }
++        if (auto anno = DynamicCast<Annotation*>(node); anno && anno->kind == AnnotationKind::ASSUME_THROWS) {
++            diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_assume_throws_not_on_import, *anno);
++        }
++        return VisitAction::WALK_CHILDREN;
++    }).Walk();
++}
++
+ void TypeChecker::TypeCheckerImpl::ChkThrowsClauseOfFuncBody(ASTContext& ctx, FuncBody& fb)
+ {
+     if (!fb.throwsClause) {
+@@ -2131,6 +2161,7 @@ void TypeChecker::TypeCheckerImpl::PostTypeCheck(std::vector<Ptr<ASTContext>>& c
+     // Post checking for legality of semantic.
+     for (auto& ctx : contexts) {
+         CheckOverflow(*ctx->curPackage);
++        ChkAssumeThrowsAnnotations(*ctx, *ctx->curPackage);
+         CheckUnusedImportSpec(*ctx->curPackage);
+         // Check duplicated super interfaces in class, interface when type arguments applied.
+         CheckInstDupSuperInterfacesEntry(*ctx->curPackage);
+diff --git a/src/Sema/TypeCheckerImpl.h b/src/Sema/TypeCheckerImpl.h
+index b2678961..a50a4f8f 100644
+--- a/src/Sema/TypeCheckerImpl.h
++++ b/src/Sema/TypeCheckerImpl.h
+@@ -1311,6 +1311,8 @@ private:
+     void ChkThrowsClauseTypes(ASTContext& ctx, AST::ThrowsClause& clause, const std::string& clauseKeyword = "throws");
+     /** Checked exceptions: diagnose 'throws' clauses on foreign/C functions and CFunc types. */
+     void ChkThrowsClauseOfFuncBody(ASTContext& ctx, AST::FuncBody& fb);
++    /// Checked exceptions (proposal 5.2.2): validate the '@AssumeThrows' annotations of a package.
++    void ChkAssumeThrowsAnnotations(ASTContext& ctx, AST::Package& pkg);
+     /**
+      * Checked exceptions: validate the 'captures' clause of a class or struct declaration
+      * (proposal 3.9) -- elaborate and validate its entries like 'throws' entries and ban
+-- 
+2.54.0
+

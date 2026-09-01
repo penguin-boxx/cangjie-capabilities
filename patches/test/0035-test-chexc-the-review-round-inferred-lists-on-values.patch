@@ -1,0 +1,222 @@
+From 730a40fe2549c805560f0d10dbae4e76e5f7b0d7 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 30 Aug 2026 11:51:53 +0300
+Subject: [PATCH 35/43] =?UTF-8?q?test(chexc):=20the=20review=20round=20?=
+ =?UTF-8?q?=E2=80=94=20inferred=20lists=20on=20values,=20semantic=20form,?=
+ =?UTF-8?q?=20unchecked=20instantiation,=20CanPerform?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+'infer_ref_value_neg.cj' pins the P0 shape at both formation sites (annotated and not);
+'infer_ref_value.cj' is the positive half and also pins the reference edge — a function that only
+references a thrower infers the requirement. 'covered_entry_demand.cj' asserts Base alone is
+reported and Derived nowhere. 'unchecked_instantiated_value.cj' runs the specialized function
+through a clause-free value. The four performs tests follow the 'CanPerform<C>' naming.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../inference/infer_ref_value.cj              | 33 +++++++++++++++++++
+ .../inference/infer_ref_value_neg.cj          | 26 +++++++++++++++
+ .../performs/performs_neg.cj                  |  2 +-
+ .../performs/performs_without_chexc.cj        |  2 +-
+ .../types/captures_command.cj                 |  2 +-
+ .../types/covered_entry_demand.cj             | 19 +++++++++++
+ .../types/generics_higher_order.cj            |  4 +--
+ .../types/unchecked_instantiated_value.cj     | 24 ++++++++++++++
+ 8 files changed, 107 insertions(+), 5 deletions(-)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_value.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_value_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/covered_entry_demand.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/unchecked_instantiated_value.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_value.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_value.cj
+new file mode 100644
+index 0000000000..ef72ca356e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_value.cj
+@@ -0,0 +1,33 @@
++// Checked exceptions (inference and function values): the positive half of
++// 'infer_ref_value_neg.cj'. Forming the value where the capability is in scope is fine, and the
++// reference is an inference edge -- a function that only REFERENCES an inferred thrower acquires
++// the requirement itself, exactly as a caller would.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class LeakExc <: Exception {}
++
++func risky(): Unit {
++    throw LeakExc()
++}
++
++// no clause: the reference contributes LeakExc to THIS declaration's inferred list
++func giveWorker(): () -> Unit {
++    risky
++}
++
++main(): Int64 {
++    try {
++        let w: () -> Unit = risky   // the try supplies the capability at formation
++        w()
++    } catch (e: LeakExc) {
++        try {
++            let g = giveWorker()    // giveWorker's own inferred list is supplied here
++            g()
++        } catch (e2: LeakExc) {
++            return 0
++        }
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_value_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_value_neg.cj
+new file mode 100644
+index 0000000000..29d7966b89
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_value_neg.cj
+@@ -0,0 +1,26 @@
++// Checked exceptions (inference and function values): a reference that turns an inferred
++// declaration into a value pays the declaration's inferred list at the formation site. Without
++// this, the value's functional type -- formed before inference ran -- carries no list, a call
++// through it demands nothing, and a program with no handler anywhere compiles and leaks at run
++// time (found by review, 2026-08-30). Declared clauses are unaffected: a reference's type
++// carries those. The obligation lands at formation rather than at the eventual call, which is
++// stricter than the text's type-riding reading -- same boundary semantics as assumption imports.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: Cannot find a capability for 'Class-LeakExc'
++// ASSERT: scan infer_ref_value_neg.cj:21:25
++// ASSERT: scan error: Cannot find a capability for 'Class-LeakExc'
++
++class LeakExc <: Exception {}
++
++func risky(): Unit {   // no clause: throws LeakExc by inference
++    throw LeakExc()
++}
++
++main(): Int64 {
++    let w: () -> Unit = risky   // formation site: pays LeakExc
++    w()
++    let u = risky               // and with no annotation too
++    u()
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
+index ca961a3bc0..5568893774 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
+@@ -4,7 +4,7 @@
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+ // ASSERT: scan Cannot find a capability for 'Class-GetNumber'
+-// ASSERT: scan Handler<Class-GetNumber>
++// ASSERT: scan CanPerform<Class-GetNumber>
+ 
+ import stdx.effect.*
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_without_chexc.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_without_chexc.cj
+index 077b05ae33..a81fea5168 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_without_chexc.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_without_chexc.cj
+@@ -5,7 +5,7 @@
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt %enableEH %n.cj -o %output 2>&1 | compare %f
+ // ASSERT: scan Cannot find a capability for 'Class-GetNumber'
+-// ASSERT: scan Handler<Class-GetNumber>
++// ASSERT: scan CanPerform<Class-GetNumber>
+ 
+ import stdx.effect.*
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/captures_command.cj b/testsuites/LLT/compiler/CheckedExceptions/types/captures_command.cj
+index 123e04f117..274610dab2 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/captures_command.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/captures_command.cj
+@@ -4,7 +4,7 @@
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+ // ASSERT: scan Cannot find a capability for 'Class-GetNumber'
+-// ASSERT: scan Handler<Class-GetNumber>
++// ASSERT: scan CanPerform<Class-GetNumber>
+ 
+ import stdx.effect.*
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/covered_entry_demand.cj b/testsuites/LLT/compiler/CheckedExceptions/types/covered_entry_demand.cj
+new file mode 100644
+index 0000000000..1e750c43dc
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/covered_entry_demand.cj
+@@ -0,0 +1,19 @@
++// Checked exceptions (semantic form): 'throws Base, Derived' with 'Derived <: Base' IS the list
++// {Base} -- the covered entry introduces no requirement. A call site missing the handler reports
++// Base alone, and a 'catch (e: Base)' discharges the whole call.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: Cannot find a capability for 'Class-BaseE' (of type 'CanThrow<Class-BaseE>') in the current scope
++// ASSERT: scan-not Class-DerE
++
++open class BaseE <: Exception {}
++class DerE <: BaseE {}
++
++func f(): Unit throws BaseE, DerE {}
++
++public func caller(): Unit
++throws () {
++    f()
++}
++
++main(): Int64 { 0 }
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_higher_order.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_higher_order.cj
+index 71f66b42a9..392cdd2bb0 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/generics_higher_order.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_higher_order.cj
+@@ -35,7 +35,7 @@ func handlingBoth<E>(fn: () throws E -> Unit, witness: E): Int64 where E <: Exce
+ }
+ 
+ // a member of a generic class: the mapping comes from the receiver
+-class Handler<E> where E <: Exception {
++class CanPerform<E> where E <: Exception {
+     func run(fn: () throws E -> Unit): Int64 {
+         try {
+             fn()
+@@ -56,7 +56,7 @@ main(): Int64 {
+     if (handlingBoth(thrower, AException()) != 1) {
+         return 1
+     }
+-    if (Handler<AException>().run(thrower) != 1) {
++    if (CanPerform<AException>().run(thrower) != 1) {
+         return 1
+     }
+     return 0
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/unchecked_instantiated_value.cj b/testsuites/LLT/compiler/CheckedExceptions/types/unchecked_instantiated_value.cj
+new file mode 100644
+index 0000000000..b383d6841d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/unchecked_instantiated_value.cj
+@@ -0,0 +1,24 @@
++// Checked exceptions ("Unchecked types in 'throws' lists"): an entry whose type parameter
++// instantiates to an unchecked exception type vanishes -- '() throws E -> R' with 'E' unchecked
++// IS the clause-free '() -> R'. So the specialized function is assignable wherever the
++// clause-free shape is expected, and calling it through that value demands nothing.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class ReqExc <: UncheckedException {}
++
++func safeThrow<E>(e: E): Unit where E <: Exception
++throws E {
++    throw e
++}
++
++main(): Int64 {
++    let g: (ReqExc) -> Unit = safeThrow<ReqExc>
++    try {
++        g(ReqExc())
++    } catch (e: ReqExc) {
++        return 0
++    }
++    return 1
++}
+-- 
+2.54.0
+

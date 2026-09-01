@@ -1,0 +1,490 @@
+From f40148d7abb06f21a16298c2ed4a9882b26b079e Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 22 Aug 2026 00:28:43 +0300
+Subject: [PATCH 22/44] feat(chexc): sections 5-6 conformance -- effects on
+ their own axis, unconditional clauses
+
+The revision that moved effect requirements into the base design also settled several
+rules the prototype had guessed at. Audited section by section, by probing:
+
+- The clause grammar is unconditional. Every clause position is a parse error in the
+  language without clauses, so recognizing the soft keywords there changes no valid
+  program; what the feature flag decides is what a clause *means*. With checking off the
+  clauses parse and impose no obligations.
+
+- Effect requirements follow the effect-handler feature, not the exception-checking level:
+  the capability pass now runs when either is enabled, reports a missing handler as an
+  error at every exception level -- an unhandled 'perform' fails at run time, so it has no
+  migration level -- and reports exception misses only when checking is on. Inference is
+  skipped entirely when checking is off, since effect requirements are never inferred.
+
+- A 'captures' clause may name commands: an instance captures the handler capabilities its
+  methods need exactly as it captures exception ones.
+
+- A type parameter whose own bound is unchecked is rejected in a clause. A type parameter
+  is otherwise admitted -- a requirement that instantiates to an unchecked type is
+  trivially satisfied -- but when the bound is already unchecked, every instantiation is.
+
+- Assumption imports are package-scoped: one annotated import binds every call into that
+  dependency from the whole consuming package, whatever file wrote it. The map is no
+  longer keyed by file.
+
+- '@AssumeThrows[]' is rejected with a message of its own, and the '...' marker is rejected
+  on a 'performs' clause: effect lists are always written, so there is nothing to open.
+
+Effective visibility for inference eligibility was implemented and reverted in the same
+round: it makes an internal class's public override inference-eligible, and an inferred
+override is not re-checked against the declaration it overrides -- the machinery the
+static-member rule already waits on.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../Basic/DiagRefactor/DiagnosticParser.def   |  4 ++
+ include/cangjie/Sema/CapabilityCheck.h        | 21 ++++++-
+ src/Frontend/CompilerInstance.cpp             | 14 +++--
+ src/Parse/ParseAnnotations.cpp                |  7 +++
+ src/Parse/ParseDecl.cpp                       |  5 ++
+ src/Parse/ParserImpl.h                        | 12 ++--
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 63 ++++++++++---------
+ src/Sema/TypeChecker.cpp                      | 50 ++++++++-------
+ src/Sema/TypeCheckerImpl.h                    |  6 +-
+ 9 files changed, 120 insertions(+), 62 deletions(-)
+
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+index 9dbbeaca..c8f84a65 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+@@ -97,6 +97,10 @@ ERROR(parse_empty_capability_clause_combined,
+     "the empty clause pins the list as empty")
+ ERROR(parse_empty_capability_list_not_alone, "'()' is only allowed as the whole capability list",
+     "remove '()', or the entries it is mixed with")
++ERROR(parse_empty_assume_throws_list, "'@AssumeThrows[]' assumes nothing",
++    "drop the brackets to assume 'Exception', or list the exception types to assume")
++ERROR(parse_ellipsis_in_performs_clause, "'...' is not allowed in a 'performs' clause",
++    "effect requirements are never inferred: every 'performs' list is written")
+ ERROR(parse_performs_clause_after_throws, "a 'performs' clause must precede the 'throws' clause")
+ ERROR(parse_expected_exception_type_after_captures, "expected exception type after 'captures', found %s",
+     "expected exception type here")
+diff --git a/include/cangjie/Sema/CapabilityCheck.h b/include/cangjie/Sema/CapabilityCheck.h
+index 18440b3d..9f9fd691 100644
+--- a/include/cangjie/Sema/CapabilityCheck.h
++++ b/include/cangjie/Sema/CapabilityCheck.h
+@@ -59,7 +59,15 @@ public:
+  */
+ class ReportCapabilityMissHandler : public CapabilityMissHandler {
+ public:
+-    ReportCapabilityMissHandler(DiagnosticEngine& diag, bool asWarning) : diag(diag), asWarning(asWarning)
++    /**
++     * @p asWarning downgrades exception misses to warnings (the 'warn' checking level).
++     * @p reportExceptions is false when exception checking is off: the clauses still parse and
++     * still mean what they say, but impose no obligations, while effect requirements are reported
++     * whenever the effect-handler feature is on -- and always as errors, since an unhandled
++     * 'perform' fails at run time and has no migration level.
++     */
++    ReportCapabilityMissHandler(DiagnosticEngine& diag, bool asWarning, bool reportExceptions = true)
++        : diag(diag), asWarning(asWarning), reportExceptions(reportExceptions)
+     {
+     }
+     void HandleMiss(const CapabilityDemand& demand) override;
+@@ -67,8 +75,19 @@ public:
+ private:
+     DiagnosticEngine& diag;
+     bool asWarning;
++    bool reportExceptions;
+ };
+ 
++/**
++ * True when @p decl leaves its module, so its capability list is authoritative and never inferred.
++ * The test is the declaration's own modifier plus interface membership -- an interface member is a
++ * public contract whether or not the modifier is written. The text defines this over *effective*
++ * visibility (the narrowest of the declaration's own modifier and its enclosing declarations'),
++ * which additionally infers, say, a `public` method of an `internal` class; that widening waits on
++ * re-checking an inferred override against the declaration it overrides.
++ */
++bool IsExportedDecl(const AST::Decl& decl);
++
+ /**
+  * Capability lists inferred for declarations without an authoritative clause.
+  * Kept beside the AST rather than written into declaration types: the checking pass stays a
+diff --git a/src/Frontend/CompilerInstance.cpp b/src/Frontend/CompilerInstance.cpp
+index 6b4f91b5..e8cb553d 100644
+--- a/src/Frontend/CompilerInstance.cpp
++++ b/src/Frontend/CompilerInstance.cpp
+@@ -715,20 +715,26 @@ bool CompilerInstance::PerformCapabilityCheck()
+ {
+     // Checked exceptions (experimental): capability argument checking (/3.5) over the
+     // typed AST. Must run before desugar destroys 'TryExpr' structure and before instantiation.
+-    if (!invocation.globalOptions.enableChexc) {
++    // Effect requirements follow the effect-handler feature, on an axis of its own: wherever it is
++    // enabled, a 'perform' without a handler is an error at every exception-checking level, so the
++    // pass runs for effects alone as well.
++    bool checkExceptions = invocation.globalOptions.enableChexc;
++    if (!checkExceptions && !invocation.globalOptions.enableEH) {
+         return true;
+     }
+     Utils::ProfileRecorder recorder("Main Stage", "Capability Check");
+     auto errorCountBefore = diag.GetErrorCount();
+     bool asWarning = invocation.globalOptions.chexcSeverity == GlobalOptions::ChexcSeverity::CS_WARN;
+-    Sema::ReportCapabilityMissHandler missHandler(diag, asWarning);
++    Sema::ReportCapabilityMissHandler missHandler(diag, asWarning, checkExceptions);
+     CJC_NULLPTR_CHECK(typeManager);
+     CJC_NULLPTR_CHECK(importManager);
+     for (auto& srcPkg : GetSourcePackages()) {
+         CJC_NULLPTR_CHECK(srcPkg);
+         // Capability parameter inference runs first and its results act as the declared clauses
+-        // of the declarations it covers (parameters before arguments).
+-        auto inferred = Sema::InferCapabilities(*typeManager, *importManager, *srcPkg, diag);
++        // of the declarations it covers (parameters before arguments). Effect requirements are
++        // never inferred, so with exception checking off there is nothing to infer.
++        auto inferred = checkExceptions ? Sema::InferCapabilities(*typeManager, *importManager, *srcPkg, diag)
++                                        : Sema::InferredCapabilities{};
+         // The clause components of types are completed between capability
+         // parameter inference and capability argument checking, so a declaration's own type is
+         // the single source of its list. Keep these three calls adjacent.
+diff --git a/src/Parse/ParseAnnotations.cpp b/src/Parse/ParseAnnotations.cpp
+index 299f6a22..1e5a50a3 100644
+--- a/src/Parse/ParseAnnotations.cpp
++++ b/src/Parse/ParseAnnotations.cpp
+@@ -420,6 +420,13 @@ void ParserImpl::ParseAssumeThrowsAnnotation(Annotation& anno)
+         while (true) {
+             while (Skip(TokenKind::NL)) {
+             }
++            // The empty list is rejected: an assumption that assumes nothing is either a mistake
++            // or the bare form written the long way, and the bare form already means 'Exception'.
++            if (Seeing(TokenKind::RSQUARE) && clause->capTypes.empty()) {
++                ParseDiagnoseRefactor(DiagKindRefactor::parse_empty_assume_throws_list, anno.lsquarePos);
++                anno.EnableAttr(Attribute::IS_BROKEN);
++                break;
++            }
+             if (!SeeingAny(GetTypeFirst()) && !SeeingContextualKeyword()) {
+                 ParseDiagnoseRefactor(
+                     DiagKindRefactor::parse_expected_exception_type_after_throws, lookahead, ConvertToken(lookahead));
+diff --git a/src/Parse/ParseDecl.cpp b/src/Parse/ParseDecl.cpp
+index d4cfd117..844883f1 100644
+--- a/src/Parse/ParseDecl.cpp
++++ b/src/Parse/ParseDecl.cpp
+@@ -2419,6 +2419,11 @@ void ParserImpl::ParseCapabilityClauses(FuncBody& fb)
+             ParseDiagnoseRefactor(DiagKindRefactor::parse_performs_clause_after_throws, clausePos);
+         }
+         auto clause = ParseThrowsClause(true);
++        if (isPerforms && clause->hasEllipsis) {
++            // Effect requirements are never inferred, so there is nothing for the marker to open.
++            ParseDiagnoseRefactor(DiagKindRefactor::parse_ellipsis_in_performs_clause, clausePos);
++            clause->hasEllipsis = false;
++        }
+         auto& slot = isPerforms ? fb.performsClause : fb.throwsClause;
+         if (!slot) {
+             slot = std::move(clause);
+diff --git a/src/Parse/ParserImpl.h b/src/Parse/ParserImpl.h
+index 0d82f678..34e08b14 100644
+--- a/src/Parse/ParserImpl.h
++++ b/src/Parse/ParserImpl.h
+@@ -192,14 +192,16 @@ private:
+         return Utils::In(GetContextualKeyword(), [this](const TokenKind& kind) { return Seeing(kind); });
+     }
+     /**
+-     * Checked exceptions: 'throws' and 'captures' are recognized by spelling at
+-     * the few positions where a clause may start, and stay ordinary identifiers everywhere
+-     * else — reserving them would break existing code (`std.unittest.mock` exports a public
+-     * `throws` function). Only recognized when the feature is enabled.
++     * Checked exceptions: 'throws', 'performs' and 'captures' are recognized by spelling at the
++     * few positions where a clause may start, and stay ordinary identifiers everywhere else —
++     * reserving them would break existing code (`std.unittest.mock` exports a public `throws`
++     * function). The grammar is unconditional: every clause position is a parse error today, so
++     * recognizing them there changes no valid program, and what depends on the feature flag is
++     * what the clauses mean — obligations and metadata — not whether they parse.
+      */
+     inline bool SeeingChexcClause(const std::string& keyword)
+     {
+-        return enableChexc && Seeing(TokenKind::IDENTIFIER) && lookahead.Value() == keyword;
++        return Seeing(TokenKind::IDENTIFIER) && lookahead.Value() == keyword;
+     }
+     inline bool SeeingPrimaryKeyWordContext(TokenKind tk)
+     {
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index e5ccd558..a4742ecf 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -61,11 +61,11 @@ using SupplyScope = std::vector<Ptr<Ty>>;
+ /// Consulted when the lexical scope stack has no suitable supply; used for the every-constructor
+ /// rule of instance field initializers. Null means no further supplies.
+ using RootSupply = std::function<bool(Ptr<Ty>)>;
+-/// Assumption imports, per file: the exception types imposed on every call into
+-/// each named package. Keyed per file because that is where an import — and with it the consumer's
+-/// trust claim about the dependency — lives.
++/// Assumption imports: the exception types imposed on every call into each named package. The
++/// claim is package-scoped -- one file's annotated import binds the whole consuming package, since
++/// the trust relationship is the package's, not the file's -- so the lists of every annotated
++/// import in the package are unioned per dependency.
+ using AssumedThrows = std::unordered_map<std::string, std::vector<Ptr<Ty>>>;
+-using AssumedThrowsByFile = std::unordered_map<Ptr<const File>, AssumedThrows>;
+ 
+ /**
+  * Collects the assumption imports of a package.
+@@ -76,9 +76,9 @@ using AssumedThrowsByFile = std::unordered_map<Ptr<const File>, AssumedThrows>;
+  * whether the import names the package ('import legacy.db.*') or a declaration in it
+  * ('import legacy.db.query').
+  */
+-AssumedThrowsByFile CollectAssumedThrows(const Package& pkg, const ImportManager& importManager)
++AssumedThrows CollectAssumedThrows(const Package& pkg, const ImportManager& importManager)
+ {
+-    AssumedThrowsByFile byFile;
++    AssumedThrows assumed;
+     for (auto& file : pkg.files) {
+         if (!file) {
+             continue;
+@@ -104,7 +104,7 @@ AssumedThrowsByFile CollectAssumedThrows(const Package& pkg, const ImportManager
+                     continue;
+                 }
+                 for (auto& name : import->content.GetPossiblePackageNames()) {
+-                    auto& entry = byFile[file.get()][name];
++                    auto& entry = assumed[name];
+                     for (auto cap : caps) {
+                         if (Ty::IsTyCorrect(cap) && !Utils::In(cap, entry)) {
+                             entry.emplace_back(cap);
+@@ -114,7 +114,7 @@ AssumedThrowsByFile CollectAssumedThrows(const Package& pkg, const ImportManager
+             }
+         }
+     }
+-    return byFile;
++    return assumed;
+ }
+ 
+ /// Effects: an entry is an effect requirement iff it is a 'Command' subtype, and
+@@ -145,7 +145,7 @@ bool IsCommandTy(TypeManager& typeManager, const ImportManager& importManager, P
+ class CapabilityChecker {
+ public:
+     CapabilityChecker(TypeManager& typeManager, const ImportManager& importManager,
+-        Sema::CapabilityMissHandler& missHandler, const AssumedThrowsByFile& assumed,
++        Sema::CapabilityMissHandler& missHandler, const AssumedThrows& assumed,
+         const Sema::InferredCapabilities& inferred = {})
+         : typeManager(typeManager),
+           importManager(importManager),
+@@ -304,7 +304,6 @@ private:
+             return;
+         }
+         CJC_ASSERT(supplies.empty());
+-        currentFile = fd.curFile;
+         rootSupply = nullptr;
+         // The enclosing class's captured capabilities are in scope throughout a member that has
+         // a receiver to carry them. A static member, a static initializer and a
+@@ -328,7 +327,6 @@ private:
+             return;
+         }
+         CJC_ASSERT(supplies.empty());
+-        currentFile = vd.curFile;
+         rootSupply = std::move(root);
+         // Only an INSTANCE field initializer runs with a receiver; a static one has no
+         // capability scope at all. 'root' is non-null exactly for
+@@ -615,18 +613,8 @@ private:
+         if (assumed.empty() || !ce.resolvedFunction) {
+             return;
+         }
+-        // The claim belongs to the file that wrote the import. A node the desugar rebuilt may have
+-        // lost its file, in which case the enclosing declaration's file is the same one.
+-        Ptr<const File> file = currentFile;
+-        if (ce.curFile) {
+-            file = ce.curFile;
+-        }
+-        auto byFile = assumed.find(file);
+-        if (byFile == assumed.end()) {
+-            return;
+-        }
+-        auto entry = byFile->second.find(ce.resolvedFunction->fullPackageName);
+-        if (entry == byFile->second.end()) {
++        auto entry = assumed.find(ce.resolvedFunction->fullPackageName);
++        if (entry == assumed.end()) {
+             return;
+         }
+         for (auto cap : entry->second) {
+@@ -746,7 +734,7 @@ private:
+     const ImportManager& importManager;
+     Sema::CapabilityMissHandler& missHandler;
+     /// Assumption imports of the package being checked, indexed by the file they appear in.
+-    const AssumedThrowsByFile& assumed;
++    const AssumedThrows& assumed;
+     std::vector<SupplyScope> supplies;
+     RootSupply rootSupply;
+     // Lists inferred for declarations without an authoritative clause.
+@@ -754,7 +742,6 @@ private:
+     // Set while collecting one declaration's residual demands: its own inferred list is not a supply.
+     Ptr<const Decl> collectingFor{nullptr};
+     // File of the declaration being checked; the fallback for a call site that lost its own.
+-    Ptr<const File> currentFile{nullptr};
+ };
+ /// Collects residual demands instead of diagnosing them (miss-handler seam).
+ class CollectingMissHandler : public Sema::CapabilityMissHandler {
+@@ -825,7 +812,11 @@ private:
+         if (!fd.funcBody || !fd.funcBody->body) {
+             return false;
+         }
+-        if (fd.TestAttr(Attribute::PUBLIC) || fd.TestAttr(Attribute::PROTECTED)) {
++        // The rule is the declaration's own modifier, not the effective visibility the text
++        // defines: inferring a 'public' method of an 'internal' class is only safe once an
++        // inferred override is re-checked against the declaration it overrides, which is the same
++        // machinery the static-member rule waits on.
++        if (Sema::IsExportedDecl(fd)) {
+             return false;
+         }
+         // No capability scope encloses a finalizer -- it may run after the supplying handlers are
+@@ -1087,7 +1078,7 @@ private:
+     std::unordered_set<size_t> reportedPolymorphic;
+     Sema::InferredCapabilities inferred;
+     /// Assumption imports of the package, shared with every checker below.
+-    AssumedThrowsByFile assumed;
++    AssumedThrows assumed;
+     std::vector<size_t> tarjanIndex;
+     std::vector<size_t> tarjanLow;
+     std::vector<bool> onStack;
+@@ -1097,13 +1088,25 @@ private:
+ } // namespace
+ 
+ namespace Cangjie::Sema {
++bool IsExportedDecl(const Decl& decl)
++{
++    if (decl.TestAttr(Attribute::PUBLIC) || decl.TestAttr(Attribute::PROTECTED)) {
++        return true;
++    }
++    // Interface members are public contracts whether or not the modifier is written.
++    return decl.outerDecl && decl.outerDecl->astKind == ASTKind::INTERFACE_DECL;
++}
++
+ void ReportCapabilityMissHandler::HandleMiss(const CapabilityDemand& demand)
+ {
+     CJC_NULLPTR_CHECK(demand.demandSite);
++    if (!demand.isEffect && !reportExceptions) {
++        return; // Exception checking is off: the clauses impose no obligations.
++    }
+     auto tyName = Ty::ToString(demand.exceptionTy);
+-    // Effects: an effect capability is named 'Handler<C>', not 'CanThrow<E>'.
+-    auto kind = demand.isEffect ? (asWarning ? DiagKindRefactor::sema_chexc_missing_handler_capability_warn
+-                                             : DiagKindRefactor::sema_chexc_missing_handler_capability)
++    // Effects: an effect capability is named 'Handler<C>', not 'CanThrow<E>', and a missing one is
++    // an error at every exception-checking level -- there is no migration level for a 'perform'.
++    auto kind = demand.isEffect ? DiagKindRefactor::sema_chexc_missing_handler_capability
+                                 : (asWarning ? DiagKindRefactor::sema_chexc_missing_capability_warn
+                                              : DiagKindRefactor::sema_chexc_missing_capability);
+     auto builder = diag.DiagnoseRefactor(kind, *demand.demandSite, tyName, tyName);
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index 71b7c16a..0c07bbb1 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -29,6 +29,7 @@
+ #include "Plugin/PluginCustomAnnoChecker.h"
+ #include "SearchSymbol.h"
+ #include "TypeCheckUtil.h"
++#include "cangjie/Sema/CapabilityCheck.h"
+ 
+ #include "cangjie/AST/Clone.h"
+ #include "cangjie/AST/Create.h"
+@@ -188,10 +189,25 @@ void TypeChecker::TypeCheckerImpl::ReplaceFuncRetTyWithThis(FuncBody& fb, Ptr<Ty
+     }
+ }
+ 
++bool TypeChecker::TypeCheckerImpl::IsUncheckedBoundedGeneric(const Ty& genericTy)
++{
++    auto generics = DynamicCast<const GenericsTy*>(&genericTy);
++    if (!generics) {
++        return false;
++    }
++    return std::any_of(generics->upperBounds.begin(), generics->upperBounds.end(), [this](auto bound) {
++        return Ty::IsTyCorrect(bound) && TypeCheckUtil::IsUncheckedExceptionTy(typeManager, importManager, bound);
++    });
++}
++
+ void TypeChecker::TypeCheckerImpl::ChkThrowsClauseTypes(
+-    ASTContext& ctx, ThrowsClause& clause, const std::string& clauseKeyword)
++    ASTContext& ctx, ThrowsClause& clause, const std::string& clauseKeyword, bool allowCommands)
+ {
+     auto exception = importManager.GetCoreDecl<ClassDecl>(CLASS_EXCEPTION);
++    auto command = importManager.GetImportedDecl(EFFECT_PACKAGE_NAME, CLASS_COMMAND);
++    auto isCommandEntry = [this, &command](Ptr<Ty> capTy) {
++        return command && Ty::IsTyCorrect(command->GetTy()) && !promotion.Promote(*capTy, *command->GetTy()).empty();
++    };
+     for (auto& capType : clause.capTypes) {
+         CJC_NULLPTR_CHECK(capType);
+         CheckReferenceTypeLegality(ctx, *capType);
+@@ -215,15 +231,20 @@ void TypeChecker::TypeCheckerImpl::ChkThrowsClauseTypes(
+             auto entryName = expanded ? Ty::ToString(capTy) : capType->ToString();
+             bool isExceptionSubtype = (capTy->IsClass() || capTy->IsGeneric()) && exception &&
+                 typeManager.IsSubtype(capTy, exception->GetTy());
++            // A 'captures' clause may name commands as well: an instance captures the handler
++            // capabilities its methods need exactly as it captures exception ones.
++            if (!isExceptionSubtype && allowCommands && isCommandEntry(capTy)) {
++                continue;
++            }
+             if (!isExceptionSubtype) {
+                 diag.DiagnoseRefactor(
+                     DiagKindRefactor::sema_chexc_clause_type_not_exception, *capType, entryName, clauseKeyword);
+-            } else if (!capTy->IsGeneric() &&
+-                TypeCheckUtil::IsUncheckedExceptionTy(typeManager, importManager, capTy)) {
++            } else if (capTy->IsGeneric() ? IsUncheckedBoundedGeneric(*capTy)
++                                          : TypeCheckUtil::IsUncheckedExceptionTy(typeManager, importManager, capTy)) {
+                 // A concrete unchecked exception type never needs a capability, so listing it is
+-                // misleading and rejected. Type parameters are
+-                // exempt: a requirement instantiating to an unchecked type is trivially
+-                // satisfied instead.
++                // misleading and rejected. A type parameter is admitted -- a requirement that
++                // instantiates to an unchecked type is trivially satisfied instead -- unless its
++                // own bound is unchecked, which makes every instantiation of it one.
+                 diag.DiagnoseRefactor(
+                     DiagKindRefactor::sema_chexc_unchecked_type_in_clause, *capType, entryName, clauseKeyword);
+             }
+@@ -242,7 +263,7 @@ void TypeChecker::TypeCheckerImpl::ChkCapturesClauseOfDecl(ASTContext& ctx, Inhe
+         CJC_NULLPTR_CHECK(capType);
+         Synthesize({ctx, SynPos::NONE}, capType.get());
+     }
+-    ChkThrowsClauseTypes(ctx, *decl.capturesClause, "captures");
++    ChkThrowsClauseTypes(ctx, *decl.capturesClause, "captures", true);
+     // A capturing class/struct cannot use a primary constructor (author ruling, forward
+     // compatible with Modal CangJie where primary constructors are always '~local'); it
+     // declares explicit 'init' constructors instead.
+@@ -318,19 +339,6 @@ void TypeChecker::TypeCheckerImpl::ChkPerformsClauseTypes(ASTContext& ctx, Throw
+     }
+ }
+ 
+-namespace {
+-/// A declaration is exported when other packages may see its signature: its capability list is then
+-/// authoritative and must not depend on inference.
+-bool IsExportedDecl(const FuncDecl& fd)
+-{
+-    if (fd.TestAttr(Attribute::PUBLIC) || fd.TestAttr(Attribute::PROTECTED)) {
+-        return true;
+-    }
+-    // Interface members are public contracts whether or not the modifier is written.
+-    return fd.outerDecl && fd.outerDecl->astKind == ASTKind::INTERFACE_DECL;
+-}
+-} // namespace
+-
+ void TypeChecker::TypeCheckerImpl::ChkThrowsClauseOfFuncBody(ASTContext& ctx, FuncBody& fb)
+ {
+     // No capability scope encloses a finalizer: it may run long after the handlers that supplied
+@@ -351,7 +359,7 @@ void TypeChecker::TypeCheckerImpl::ChkThrowsClauseOfFuncBody(ASTContext& ctx, Fu
+         return;
+     }
+     // The '...' marker opens the list to inference, which an exported list must never depend on.
+-    if (fb.throwsClause->hasEllipsis && fb.funcDecl && IsExportedDecl(*fb.funcDecl)) {
++    if (fb.throwsClause->hasEllipsis && fb.funcDecl && Sema::IsExportedDecl(*fb.funcDecl)) {
+         diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_ellipsis_on_exported, *fb.throwsClause);
+     }
+     if (isFinalizer) {
+diff --git a/src/Sema/TypeCheckerImpl.h b/src/Sema/TypeCheckerImpl.h
+index a30d29f7..ef929f05 100644
+--- a/src/Sema/TypeCheckerImpl.h
++++ b/src/Sema/TypeCheckerImpl.h
+@@ -1314,7 +1314,11 @@ private:
+      * and no concrete entry may be an unchecked exception type.
+      * @p clauseKeyword names the clause in diagnostics ("throws" or "captures").
+      */
+-    void ChkThrowsClauseTypes(ASTContext& ctx, AST::ThrowsClause& clause, const std::string& clauseKeyword = "throws");
++    void ChkThrowsClauseTypes(ASTContext& ctx, AST::ThrowsClause& clause, const std::string& clauseKeyword = "throws",
++        bool allowCommands = false);
++    /// True when every instantiation of @p genericTy is an unchecked exception type -- one of its
++    /// own bounds already is -- so an entry naming it can never require a capability.
++    bool IsUncheckedBoundedGeneric(const AST::Ty& genericTy);
+     /** Checked exceptions: diagnose 'throws' clauses on foreign/C functions and CFunc types. */
+     void ChkThrowsClauseOfFuncBody(ASTContext& ctx, AST::FuncBody& fb);
+     /// Effects: validate that every 'performs' entry is a 'Command' subtype.
+-- 
+2.54.0
+

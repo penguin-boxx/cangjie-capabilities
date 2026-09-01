@@ -1,0 +1,329 @@
+From 9e58714e0b742c4f602a717c45cebd814ad704fb Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 16:16:15 +0300
+Subject: [PATCH 17/43] test(chexc): review-fix coverage -- order, Handler
+ wording, incremental both directions, cross-package and generic performs
+
+performs_order_neg (red-first: wrong clause order compiled clean),
+incr_performs (red-first: clause-only change invisible to incremental
+rebuilds -- caught a hole one layer deeper than the finding that prompted
+it, see compiler commit), incr_caps2 (throws twin of the callee-changed
+direction), performs_xpkg{,_neg} and performs_generic{,_neg} (coverage gaps
+from the code review, green on arrival), plus the Handler<> wording pin in
+performs_neg.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../CheckedExceptions/performs/libeff.cj      | 12 +++++++++
+ .../performs/performs_generic.cj              | 25 +++++++++++++++++++
+ .../performs/performs_generic_neg.cj          | 25 +++++++++++++++++++
+ .../performs/performs_neg.cj                  |  1 +
+ .../performs/performs_order_neg.cj            | 18 +++++++++++++
+ .../performs/performs_xpkg.cj                 | 22 ++++++++++++++++
+ .../performs/performs_xpkg_neg.cj             | 18 +++++++++++++
+ .../serialization/incr_caps2.cj               | 12 +++++++++
+ .../serialization/incr_caps2.new.cj           | 13 ++++++++++
+ .../serialization/incr_caps2.old.cj           | 13 ++++++++++
+ .../serialization/incr_performs.cj            | 11 ++++++++
+ .../serialization/incr_performs.new.cj        | 15 +++++++++++
+ .../serialization/incr_performs.old.cj        | 15 +++++++++++
+ 13 files changed, 200 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/libeff.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.new.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.old.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.new.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.old.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/libeff.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/libeff.cj
+new file mode 100644
+index 0000000000..ae51752ffa
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/libeff.cj
+@@ -0,0 +1,12 @@
++// Support package for the cross-package effect tests: a checked dependency whose public surface
++// carries a 'performs' clause, so the effect requirement must cross through the .cjo.
++
++package libeff
++
++import stdx.effect.*
++
++public class GetToken <: Command<Int64> {}
++
++public func fetch(): Int64 performs GetToken {
++    return perform GetToken()
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic.cj
+new file mode 100644
+index 0000000000..4dc74bf316
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic.cj
+@@ -0,0 +1,25 @@
++// Effects (§8.2 with §3.7): a generic command in a 'performs' clause is instantiated at the
++// call site, and a handler for exactly that instantiation discharges it.
++
++// EXEC: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++import stdx.effect.*
++
++class GenCmd<T> <: Command<T> {}
++
++func gen<T>(): T performs GenCmd<T> {
++    return perform GenCmd<T>()
++}
++
++main() {
++    let r = try {
++        gen<Int64>()
++    } handle (_: GenCmd<Int64>) {
++        resume with 5
++    }
++    if (r != 5) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic_neg.cj
+new file mode 100644
+index 0000000000..644e7afd7c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic_neg.cj
+@@ -0,0 +1,25 @@
++// Effects (§8.2 with §3.7): the instantiated demand names the instantiated command type — a
++// handler for a different instantiation does not discharge it.
++
++// EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-GenCmd<Int64>'
++
++import stdx.effect.*
++
++class GenCmd<T> <: Command<T> {}
++
++func gen<T>(): T performs GenCmd<T> {
++    return perform GenCmd<T>()
++}
++
++public func bad(): Int64 {
++    return try {
++        gen<Int64>()
++    } handle (_: GenCmd<Rune>) {
++        resume with r'x'
++    }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
+index ce24463d5b..a4cf0f14da 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
+@@ -4,6 +4,7 @@
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+ // ASSERT: scan Cannot find a capability for 'Class-GetNumber'
++// ASSERT: scan Handler<Class-GetNumber>
+ 
+ import stdx.effect.*
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj
+new file mode 100644
+index 0000000000..7b624860cc
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj
+@@ -0,0 +1,18 @@
++// Effects (§9.1 rule 8): the clause order is fixed — 'performs' precedes 'throws'. The reverse
++// order is rejected, not silently accepted.
++
++// EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan must precede
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++class MyExc <: Exception {}
++
++func wrongOrder(): Int64 throws MyExc performs GetNumber {
++    return 0
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg.cj
+new file mode 100644
+index 0000000000..3f5b22767f
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg.cj
+@@ -0,0 +1,22 @@
++// Effects (§8.2 with §3.10.2): a 'performs' requirement crosses the package boundary — the
++// entries live in the functional type's capability list, which the .cjo carries.
++
++// DEPENDENCE: libeff.cj
++// EXEC: %compiler %cmp_opt %enableEH %compile_lib_opt --enable-checked-exceptions libeff.cj -o libeff.%middle
++// EXEC: %compiler %cmp_opt %enableEH --enable-checked-exceptions libeff.%middle %n.cj -o %output
++// EXEC: %run %output
++
++import stdx.effect.*
++import libeff.*
++
++main() {
++    let r = try {
++        fetch()
++    } handle (_: GetToken) {
++        resume with 7
++    }
++    if (r != 7) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg_neg.cj
+new file mode 100644
+index 0000000000..759584cd18
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg_neg.cj
+@@ -0,0 +1,18 @@
++// Effects (§8.2 with §3.10.2): an imported, unhandled effect requirement is a missing
++// capability — and it is not inferred even here, since effect requirements never are.
++
++// DEPENDENCE: libeff.cj
++// EXEC: %compiler %cmp_opt %enableEH %compile_lib_opt --enable-checked-exceptions libeff.cj -o libeff.%middle
++// EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions libeff.%middle %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-GetToken'
++
++import stdx.effect.*
++import libeff.*
++
++func unhandled(): Int64 {
++    return fetch()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.cj
+new file mode 100644
+index 0000000000..436c76d934
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.cj
+@@ -0,0 +1,12 @@
++// Checked exceptions (ledger C2, second direction): a CALLEE's clause change must invalidate its
++// unchanged CALLERS. incr_caps covers the caller-changed direction; this covers callee-changed —
++// the direction where a clause-only change used to classify as a 'body' change and spreading
++// stopped at the declaration itself (DeclHash.sig did not cover the clauses).
++
++// DEPENDENCE: %n.old.cj %n.new.cj
++
++// EXEC: %compiler %incrementalCompile %cmp_opt --enable-checked-exceptions %n.old.cj -o %output
++// EXEC: %rmfile %n.old.cj
++// EXEC: %cpfile %n.new.cj %n.old.cj
++// EXEC-PIPE-1: %compiler %incrementalCompile %cmp_opt --enable-checked-exceptions %n.old.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-IncrExc2'
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.new.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.new.cj
+new file mode 100644
+index 0000000000..d1370feb5f
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.new.cj
+@@ -0,0 +1,13 @@
++class IncrExc2 <: Exception {}
++
++public func risky2(): Int64 throws IncrExc2 {
++    return 0
++}
++
++public func caller2(): Int64 {
++    return risky2() // callee clause is new; this unchanged caller must be re-checked
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.old.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.old.cj
+new file mode 100644
+index 0000000000..d12aa0142e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps2.old.cj
+@@ -0,0 +1,13 @@
++class IncrExc2 <: Exception {}
++
++public func risky2(): Int64 {
++    return 0
++}
++
++public func caller2(): Int64 {
++    return risky2()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.cj
+new file mode 100644
+index 0000000000..98b3f8ed7e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.cj
+@@ -0,0 +1,11 @@
++// Effects (review finding F1): a 'performs' clause change must invalidate the incremental
++// cache like a 'throws' change does. The second build changes ONLY risky's clause; the caller
++// is untouched, so a stale hash would leave the new requirement undemanded at its call site.
++
++// DEPENDENCE: %n.old.cj %n.new.cj
++
++// EXEC: %compiler %incrementalCompile %cmp_opt %enableEH --enable-checked-exceptions %n.old.cj -o %output
++// EXEC: %rmfile %n.old.cj
++// EXEC: %cpfile %n.new.cj %n.old.cj
++// EXEC-PIPE-1: %compiler %incrementalCompile %cmp_opt %enableEH --enable-checked-exceptions %n.old.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-GetNumber'
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.new.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.new.cj
+new file mode 100644
+index 0000000000..b28789708a
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.new.cj
+@@ -0,0 +1,15 @@
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++
++public func risky(): Int64 performs GetNumber {
++    return 0
++}
++
++public func caller(): Int64 {
++    return risky() // must now error: caller supplies no GetNumber handler
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.old.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.old.cj
+new file mode 100644
+index 0000000000..784f40ddff
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_performs.old.cj
+@@ -0,0 +1,15 @@
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++
++public func risky(): Int64 {
++    return 0
++}
++
++public func caller(): Int64 {
++    return risky()
++}
++
++main() {
++    return 0
++}
+-- 
+2.54.0
+

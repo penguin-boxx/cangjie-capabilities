@@ -1,0 +1,557 @@
+From 4e58ca877fbbfbe6f30011a0b740390a5e3895dc Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 13:35:02 +0300
+Subject: [PATCH 15/43] test(chexc): cross-package serialization (10) and
+ performs (4, red-first)
+
+serialization/: every shape a capability list can take across a package
+boundary -- free function, method, property accessor, generic instantiation in
+both directions, a clause nested in a functional type, a capturing class, the
+canonical form of the exported list, and the incremental-compilation cache.
+libx.cj is a CHECKED dependency (compiled with the flag), so the negative cases
+are the load-bearing ones: before the feature they compiled clean.
+
+xpkg_captures_pos.cj is kept as a runtime sanity check but does not discriminate
+on its own -- it passes either way, since the try/catch catches at runtime
+whether or not a compile-time demand was raised. xpkg_captures_neg.cj is the
+test that proves the metadata crossed.
+
+performs/: red-first for proposal 8.2, per the test-first convention -- the
+handler round trip, an undeclared 'perform' (which also pins that effect
+requirements are NEVER inferred, where an exception in the same position would
+be), non-discharge across the two capability kinds in both directions, and
+'performs' entries having to be Command subtypes.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../performs/performs_basic.cj                | 26 ++++++++
+ .../performs/performs_clause_neg.cj           | 17 +++++
+ .../performs/performs_kinds_neg.cj            | 34 ++++++++++
+ .../performs/performs_neg.cj                  | 19 ++++++
+ .../serialization/incr_caps.cj                | 11 ++++
+ .../serialization/incr_caps.new.cj            | 14 ++++
+ .../serialization/incr_caps.old.cj            | 15 +++++
+ .../CheckedExceptions/serialization/libx.cj   | 65 +++++++++++++++++++
+ .../serialization/xpkg_basic.cj               | 33 ++++++++++
+ .../serialization/xpkg_canonical_neg.cj       | 20 ++++++
+ .../serialization/xpkg_captures_neg.cj        | 19 ++++++
+ .../serialization/xpkg_captures_pos.cj        | 19 ++++++
+ .../serialization/xpkg_functype.cj            | 21 ++++++
+ .../serialization/xpkg_generic_neg.cj         | 17 +++++
+ .../serialization/xpkg_generic_pos.cj         | 20 ++++++
+ .../serialization/xpkg_member_neg.cj          | 22 +++++++
+ .../serialization/xpkg_neg.cj                 | 18 +++++
+ 17 files changed, 390 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_basic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_clause_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_kinds_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.new.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.old.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/libx.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_basic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_canonical_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_pos.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_functype.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_pos.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_member_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_basic.cj
+new file mode 100644
+index 0000000000..68a8042c29
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_basic.cj
+@@ -0,0 +1,26 @@
++// Effects (§8.2): 'perform c' requires a handler capability for the command's type, supplied by a
++// 'handle' clause — the same shape as 'throw'/'catch', with 'performs' declaring the requirement.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-eh --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++
++// the requirement is declared, so the body may perform it
++func needsHandler(): Int64 performs GetNumber {
++    return perform GetNumber()
++}
++
++main() {
++    let r = try {
++        needsHandler()
++    } handle (_: GetNumber, r: Resumption<Int64>) {
++        resume r with 42
++    }
++    if (r != 42) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_clause_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_clause_neg.cj
+new file mode 100644
+index 0000000000..cfbf5c3868
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_clause_neg.cj
+@@ -0,0 +1,17 @@
++// Effects (§8.2): a 'performs' entry must be a 'Command' subtype, mirroring the rule that a
++// 'throws' entry must be an 'Exception' subtype.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-eh --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan is not a subtype of 'Command'
++
++import stdx.effect.*
++
++class NotACommand {}
++
++func bad(): Int64 performs NotACommand {
++    return 0
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_kinds_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_kinds_neg.cj
+new file mode 100644
+index 0000000000..67410d4bc7
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_kinds_neg.cj
+@@ -0,0 +1,34 @@
++// Effects (§8.2 with §9.1): the two capability kinds never discharge one another. A 'catch'
++// supplies exception capabilities only, and a 'handle' supplies effect capabilities only, because
++// discharge is by subtyping and the 'Command' and 'Exception' roots are disjoint.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-eh --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-GetNumber'
++// ASSERT: scan Cannot find a capability for 'Class-MyException'
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++class MyException <: Exception {}
++
++// a catch cannot discharge a perform
++public func caughtNotHandled(): Int64 {
++    return try {
++        perform GetNumber()
++    } catch (e: Exception) {
++        0
++    }
++}
++
++// a handle cannot discharge a throw
++public func handledNotCaught(): Int64 {
++    return try {
++        throw MyException()
++    } handle (_: GetNumber, r: Resumption<Int64>) {
++        resume r with 0
++    }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
+new file mode 100644
+index 0000000000..6841a36456
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
+@@ -0,0 +1,19 @@
++// Effects (§8.2): an undeclared, unhandled 'perform' is a missing capability — and unlike an
++// exception requirement it is never inferred (§9.1 policy table), so this is an error even though
++// the function is not part of the exported surface.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-eh --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-GetNumber'
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++
++// internal and clause-free: an EXCEPTION requirement would be inferred here, an effect one is not
++func undeclared(): Int64 {
++    return perform GetNumber()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.cj
+new file mode 100644
+index 0000000000..2cba5460e3
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.cj
+@@ -0,0 +1,11 @@
++// Checked exceptions (ledger C2): capability lists must survive the INCREMENTAL compilation
++// cache. The first build caches 'risky' with its clause; the second build changes only 'ok', so
++// 'risky' is served from the cache — and its requirement must still be demanded at the call site.
++
++// DEPENDENCE: %n.old.cj %n.new.cj
++
++// EXEC: %compiler %incrementalCompile %cmp_opt --enable-checked-exceptions %n.old.cj -o %output
++// EXEC: %rmfile %n.old.cj
++// EXEC: %cpfile %n.new.cj %n.old.cj
++// EXEC-PIPE-1: %compiler %incrementalCompile %cmp_opt --enable-checked-exceptions %n.old.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-IncrExc'
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.new.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.new.cj
+new file mode 100644
+index 0000000000..cffe57a4b9
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.new.cj
+@@ -0,0 +1,14 @@
++class IncrExc <: Exception {}
++
++public func risky(): Int64 throws IncrExc {
++    throw IncrExc()
++}
++
++// The clause is gone in this version: the call to the CACHED 'risky' must still demand IncrExc.
++public func ok(): Int64 {
++    return risky()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.old.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.old.cj
+new file mode 100644
+index 0000000000..a3ceccc908
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/incr_caps.old.cj
+@@ -0,0 +1,15 @@
++class IncrExc <: Exception {}
++
++// Unchanged between the two versions: on the second (incremental) build its type is served from
++// the cache, so its capability list must have survived the round trip.
++public func risky(): Int64 throws IncrExc {
++    throw IncrExc()
++}
++
++public func ok(): Int64 throws IncrExc {
++    return risky()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/libx.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/libx.cj
+new file mode 100644
+index 0000000000..96e9fbcbe8
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/libx.cj
+@@ -0,0 +1,65 @@
++// Support package for the cross-package tests (proposal 3.10.2): a CHECKED dependency whose
++// public surface carries 'throws' clauses. Compiled with --enable-checked-exceptions, so its
++// capability lists must survive into the .cjo and be demanded at call sites in other packages.
++
++package libx
++
++public class XException <: Exception {}
++public class YException <: Exception {}
++public class GenException<T> <: Exception {}
++
++public func query(sql: String): Int64 throws XException {
++    if (sql.size == 0) {
++        throw XException()
++    }
++    return sql.size
++}
++
++public func clean(): Int64 throws () {
++    return 1
++}
++
++public func generic<T>(x: T): Int64 throws GenException<T> {
++    return 1
++}
++
++public class Connection {
++    public init() {
++    }
++
++    public func execute(sql: String): Int64 throws XException {
++        return sql.size
++    }
++
++    public prop status: Int64 {
++        get() throws YException {
++            0
++        }
++    }
++}
++
++// A public signature carrying a functional type with a clause (proposal 3.4): the clause is part
++// of the parameter's TYPE, so it must survive in the .cjo nested inside that type.
++public func withCallback(cb: () throws XException -> Int64): Int64 throws XException {
++    return cb()
++}
++
++// A capturing class (proposal 3.9): construction demands the captured capabilities, so the
++// 'captures' clause must cross the boundary as well.
++public class Session captures XException {
++    public init() {
++    }
++
++    public func run(): Int64 {
++        throw XException()
++    }
++}
++
++// Proposal 3.10.2 rule 1: the exported list is canonical — subsumed entries dropped. 'SubExc' is
++// covered by 'BaseExc', so importers see 'BaseExc' alone.
++public open class BaseExc <: Exception {}
++public class SubExc <: BaseExc {}
++
++public func subsumed(): Int64 throws SubExc, BaseExc {
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_basic.cj
+new file mode 100644
+index 0000000000..6ae20199d3
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_basic.cj
+@@ -0,0 +1,33 @@
++// Checked exceptions (§3.10.2): a 'throws' clause on a public declaration must cross the package
++// boundary through the .cjo, so a call in another package demands the same capabilities.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions libx.%middle %n.cj -o %output
++// EXEC: %run %output
++
++import libx.*
++
++// The imported requirement is dischargeable by a clause of our own...
++func viaClause(): Int64 throws XException {
++    return query("select 1")
++}
++
++main() {
++    // ... and by a try-catch here.
++    try {
++        let a = query("select 1")
++        let b = viaClause()
++        let c = Connection().execute("select 2")
++        if (a + b + c == 0) {
++            return 1
++        }
++    } catch (e: XException) {
++        return 1
++    }
++    // An authoritative empty clause imports as empty: no capability needed.
++    if (clean() == 0) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_canonical_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_canonical_neg.cj
+new file mode 100644
+index 0000000000..d3a6d4e198
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_canonical_neg.cj
+@@ -0,0 +1,20 @@
++// Checked exceptions (§3.10.2 rule 1): the capability list written to the .cjo is in canonical
++// normal form — entries subsumed by another entry are dropped, so an importer of
++// 'throws SubExc, BaseExc' sees 'BaseExc' alone and gets ONE diagnostic, not two. Dropping the
++// subsumed entry loses no obligation: any supply discharging 'BaseExc' discharges 'SubExc' too.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions libx.%middle %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-BaseExc'
++// ASSERT: scan 1 error generated
++
++import libx.*
++
++public func bad(): Int64 {
++    return subsumed() // one missing capability: the canonical list holds only BaseExc
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_neg.cj
+new file mode 100644
+index 0000000000..c5fbaacebb
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_neg.cj
+@@ -0,0 +1,19 @@
++// Checked exceptions (§3.9 rule 4 with §3.10.2): constructing an imported capturing class demands
++// its captured capabilities at the construction site, so the 'captures' clause must cross the
++// package boundary too.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions libx.%middle %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-XException'
++
++import libx.*
++
++public func build(): Int64 {
++    let s = Session() // error: constructing a capturing class demands XException
++    return s.run()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_pos.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_pos.cj
+new file mode 100644
+index 0000000000..62e820a0ee
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_pos.cj
+@@ -0,0 +1,19 @@
++// Checked exceptions (§3.9 with §3.10.2): the imported captures requirement is discharged at the
++// construction site, and the instance's methods then need no capability of their own.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions libx.%middle %n.cj -o %output
++// EXEC: %run %output
++
++import libx.*
++
++main() {
++    try {
++        let s = Session() // discharged here
++        s.run()
++        return 1
++    } catch (e: XException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_functype.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_functype.cj
+new file mode 100644
+index 0000000000..76e5ec1ea9
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_functype.cj
+@@ -0,0 +1,21 @@
++// Checked exceptions (§3.4 with §3.10.2): a clause on a FUNCTIONAL TYPE is part of the type, so
++// it must survive nested inside an imported signature — the lambda passed here is covered by the
++// parameter type's capability list and may throw without a try of its own.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions libx.%middle %n.cj -o %output
++// EXEC: %run %output
++
++import libx.*
++
++main() {
++    try {
++        // The literal's capability list comes from the expected type (proposal 3.5), which the
++        // .cjo must have carried across: the body may throw XException with no local handler.
++        withCallback({ => throw XException() })
++        return 1
++    } catch (e: XException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_neg.cj
+new file mode 100644
+index 0000000000..b9a46d35ec
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_neg.cj
+@@ -0,0 +1,17 @@
++// Checked exceptions (§3.10.2 with §3.7): an imported generic declaration's capability list is
++// instantiated at the call site, so the demand names the instantiated type.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions libx.%middle %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-GenException<Int64>'
++
++import libx.*
++
++public func bad(): Int64 {
++    return generic<Int64>(1) // demands GenException<Int64>
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_pos.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_pos.cj
+new file mode 100644
+index 0000000000..adf5728a96
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_pos.cj
+@@ -0,0 +1,20 @@
++// Checked exceptions (§3.10.2 with §3.7): the instantiated imported requirement is discharged by
++// a handler for exactly that instantiation.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions libx.%middle %n.cj -o %output
++// EXEC: %run %output
++
++import libx.*
++
++main() {
++    try {
++        if (generic<Int64>(1) == 0) {
++            return 1
++        }
++    } catch (e: GenException<Int64>) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_member_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_member_neg.cj
+new file mode 100644
+index 0000000000..1b7378d84e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_member_neg.cj
+@@ -0,0 +1,22 @@
++// Checked exceptions (§3.10.2): clauses on imported METHODS and PROPERTY ACCESSORS cross the
++// boundary too, not just free functions.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions libx.%middle %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-XException'
++// ASSERT: scan Cannot find a capability for 'Class-YException'
++
++import libx.*
++
++public func viaMethod(c: Connection): Int64 {
++    return c.execute("select 1") // error: XException not supplied
++}
++
++public func viaProp(c: Connection): Int64 {
++    return c.status // error: YException not supplied
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_neg.cj
+new file mode 100644
+index 0000000000..15fb771471
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_neg.cj
+@@ -0,0 +1,18 @@
++// Checked exceptions (§3.10.2): an imported requirement that is not discharged is a missing
++// capability, exactly as it would be within the declaring package. Without cjo metadata the
++// import silently arrives capability-free and this compiles, which is the bug being guarded.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions libx.%middle %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-XException'
++
++import libx.*
++
++public func unhandled(): Int64 {
++    return query("select 1") // error: public, so no inference; nothing supplies XException
++}
++
++main() {
++    return 0
++}
+-- 
+2.54.0
+

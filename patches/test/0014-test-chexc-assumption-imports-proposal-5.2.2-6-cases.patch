@@ -1,0 +1,253 @@
+From e07418e8bc9fcac77a3baa02737ae1800b49e8be Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 12:29:13 +0300
+Subject: [PATCH 14/43] test(chexc): assumption imports (proposal 5.2.2), 6
+ cases
+
+Rewrites the three red placeholder cases onto the suite's established
+multi-package pattern (DEPENDENCE + %compile_lib_opt + %middle, then link the
+staticlib into the consumer), matching API/std/reflect/isSubtypeOf_test_cjnative.
+The previous form used an import shape whose validity I could not confirm and a
+non-standard two-package invocation.
+
+Cases:
+- assume_basic          functions, methods and constructors all covered
+- assume_bare           '@AssumeThrows' with no list assumes 'Exception'
+- assume_alias_and_inference   a capability list alias (6.1) in the annotation,
+                        and an assumed requirement inferred (6.3) into a
+                        clause-free internal declaration's list
+- assume_neg            an unhandled assumed requirement is a missing capability
+- assume_misplaced_neg  the annotation is rejected off an 'import'
+- assume_other_package  the assumption does not reach calls into other packages
+
+legacy_db.cj is the unchecked dependency, compiled without the flag so it
+declares no clauses -- which is the situation the feature exists for.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../assume/assume_alias_and_inference.cj      | 34 +++++++++++++++++++
+ .../CheckedExceptions/assume/assume_bare.cj   | 13 ++++---
+ .../CheckedExceptions/assume/assume_basic.cj  | 18 +++++-----
+ .../assume/assume_misplaced_neg.cj            | 16 +++++++++
+ .../CheckedExceptions/assume/assume_neg.cj    | 14 ++++----
+ .../assume/assume_other_package.cj            | 29 ++++++++++++++++
+ .../assume/{legacy_db.pkg.cj => legacy_db.cj} |  4 +--
+ 7 files changed, 103 insertions(+), 25 deletions(-)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_alias_and_inference.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_misplaced_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_other_package.cj
+ rename testsuites/LLT/compiler/CheckedExceptions/assume/{legacy_db.pkg.cj => legacy_db.cj} (73%)
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_alias_and_inference.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_alias_and_inference.cj
+new file mode 100644
+index 0000000000..2d2bac5cdf
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_alias_and_inference.cj
+@@ -0,0 +1,34 @@
++// Checked exceptions (§5.2.2): a capability list alias may be used in the annotation (§6.1), and
++// an assumed requirement participates in capability parameter inference (§6.3) like a declared one
++// — `wrapper` is internal and clause-free, so its list is inferred to hold both assumed types.
++
++// DEPENDENCE: legacy_db.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt legacy_db.cj -o legacy_db.%middle
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions legacy_db.%middle %n.cj -o %output
++// EXEC: %run %output
++
++@AssumeThrows[DbExceptions]
++import legacy_db.*
++
++class SqlException <: Exception {}
++class ConnectionException <: Exception {}
++
++type DbExceptions = (SqlException, ConnectionException)
++
++// no clause: the assumed requirements are inferred into this declaration's list
++func wrapper(sql: String): Int64 {
++    query(sql)
++}
++
++main() {
++    try {
++        if (wrapper("select 1") == 0) {
++            return 1
++        }
++    } catch (e: SqlException) {
++        return 1
++    } catch (e: ConnectionException) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj
+index 726f564ab7..c6a743a69e 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj
+@@ -1,17 +1,16 @@
+-// Checked exceptions (§5.2.2): the bare form `@AssumeThrows` assumes `Exception`,
+-// and a capability list alias may be used in the annotation (§6.1).
++// Checked exceptions (§5.2.2): the bare form `@AssumeThrows` assumes `Exception`.
+ 
+-// DEPENDENCE: legacy_db.pkg.cj
+-// EXEC: %compiler legacy_db.pkg.cj %compile_lib_opt -o legacy_db.%lib_extension
+-// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %f legacy_db.%lib_extension -o %output
++// DEPENDENCE: legacy_db.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt legacy_db.cj -o legacy_db.%middle
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions legacy_db.%middle %n.cj -o %output
+ // EXEC: %run %output
+ 
+ @AssumeThrows
+-import legacy_db
++import legacy_db.*
+ 
+ main() {
+     try {
+-        let n = legacy_db.query("select 1") // demands CanThrow<Exception>
++        let n = query("select 1") // demands CanThrow<Exception>
+         if (n == 0) {
+             return 1
+         }
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj
+index f4fe8489e1..7af720e1f4 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj
+@@ -1,26 +1,26 @@
+-// Checked exceptions (§5.2.2): an assumption import imposes a throws list on every
+-// call into an unchecked dependency — functions, methods and constructors alike.
+-// Handled here by a try-catch, so the program compiles and runs.
++// Checked exceptions (§5.2.2): an assumption import imposes a throws list on every call into an
++// unchecked dependency — functions, methods and constructors alike. Handled here by a try-catch,
++// so the program compiles and runs.
+ 
+-// DEPENDENCE: legacy_db.pkg.cj
+-// EXEC: %compiler legacy_db.pkg.cj %compile_lib_opt -o legacy_db.%lib_extension
+-// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %f legacy_db.%lib_extension -o %output
++// DEPENDENCE: legacy_db.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt legacy_db.cj -o legacy_db.%middle
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions legacy_db.%middle %n.cj -o %output
+ // EXEC: %run %output
+ 
+ @AssumeThrows[SqlException]
+-import legacy_db
++import legacy_db.*
+ 
+ class SqlException <: Exception {}
+ 
+ // the assumed requirement propagates like a declared one
+ func countRows(sql: String): Int64 throws SqlException {
+-    legacy_db.query(sql)
++    query(sql)
+ }
+ 
+ main() {
+     try {
+         let n = countRows("select 1")
+-        let c = legacy_db.Connection() // constructors are covered too
++        let c = Connection() // constructors are covered too
+         let m = c.execute("select 2")
+         if (n + m == 0) {
+             return 1
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_misplaced_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_misplaced_neg.cj
+new file mode 100644
+index 0000000000..1d811bfd6e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_misplaced_neg.cj
+@@ -0,0 +1,16 @@
++// Checked exceptions (§5.2.2): the annotation only means anything on an import, where the trust
++// relationship lives. Anywhere else it would be silently inert, so it is rejected.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan '@AssumeThrows' is only allowed on an 'import'
++
++class SqlException <: Exception {}
++
++@AssumeThrows[SqlException]
++public func f(): Int64 {
++    0
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj
+index a384223ffb..1124d45767 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj
+@@ -1,18 +1,18 @@
+-// Checked exceptions (§5.2.2): an unhandled assumed requirement is a missing
+-// capability, exactly like a declared one.
++// Checked exceptions (§5.2.2): an unhandled assumed requirement is a missing capability, exactly
++// like a declared one.
+ 
+-// DEPENDENCE: legacy_db.pkg.cj
+-// EXEC: %compiler legacy_db.pkg.cj %compile_lib_opt -o legacy_db.%lib_extension
+-// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %f legacy_db.%lib_extension -o %output 2>&1 | compare %f
++// DEPENDENCE: legacy_db.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt legacy_db.cj -o legacy_db.%middle
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions legacy_db.%middle %n.cj -o %output 2>&1 | compare %f
+ // ASSERT: scan Cannot find a capability for 'Class-SqlException'
+ 
+ @AssumeThrows[SqlException]
+-import legacy_db
++import legacy_db.*
+ 
+ class SqlException <: Exception {}
+ 
+ public func unhandled(sql: String): Int64 {
+-    legacy_db.query(sql) // error: no SqlException capability, and public means no inference
++    query(sql) // error: no SqlException capability, and public means no inference
+ }
+ 
+ main() {
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_other_package.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_other_package.cj
+new file mode 100644
+index 0000000000..66644d6055
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_other_package.cj
+@@ -0,0 +1,29 @@
++// Checked exceptions (§5.2.2): the assumption is scoped to the package its import names. Calls
++// into any other package — here the standard library and the current package — are unaffected.
++
++// DEPENDENCE: legacy_db.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt legacy_db.cj -o legacy_db.%middle
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions legacy_db.%middle %n.cj -o %output
++// EXEC: %run %output
++
++@AssumeThrows[SqlException]
++import legacy_db.*
++
++class SqlException <: Exception {}
++
++func local(s: String): Int64 {
++    s.size
++}
++
++// No clause is needed: nothing here calls into the assumed package.
++public func untouched(): Int64 {
++    let s = "abc"
++    return local(s) + s.size
++}
++
++main() {
++    if (untouched() == 0) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.pkg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.cj
+similarity index 73%
+rename from testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.pkg.cj
+rename to testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.cj
+index 701212500e..caa2125fc7 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.pkg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.cj
+@@ -1,5 +1,5 @@
+-// Support package for the assumption-import tests: an "unchecked" dependency,
+-// compiled without --enable-checked-exceptions, that declares no throws clauses.
++// Support package for the assumption-import tests: an "unchecked" dependency, compiled without
++// --enable-checked-exceptions, that declares no throws clauses.
+ 
+ package legacy_db
+ 
+-- 
+2.54.0
+

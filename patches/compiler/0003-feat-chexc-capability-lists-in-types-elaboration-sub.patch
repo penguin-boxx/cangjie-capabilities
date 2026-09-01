@@ -1,0 +1,918 @@
+From 49adf8d73a47167b0e0ee27ef7c057210db34bf9 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 14 Aug 2026 19:15:21 +0300
+Subject: [PATCH 03/44] =?UTF-8?q?feat(chexc):=20capability=20lists=20in=20?=
+ =?UTF-8?q?types=20=E2=80=94=20elaboration,=20subtyping,=20overload,=20ove?=
+ =?UTF-8?q?rride=20(M2)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- FuncTy::capTys: in interning identity (distinct types per author ruling),
+  NOT in typeArgs — erased for CHIR/codegen by construction. Additive
+  GetFunctionTy(…, capTys = {}); instantiation/substitution carry entries
+  (generic throws E instantiates correctly).
+- Elaboration in PreCheck for decls and functional types; entries must be
+  subtypes of core Exception; THROWS_CLAUSE now validated (noneTyKinds).
+- FFI ban: clauses rejected on foreign funcs, @C funcs, CFunc types.
+- Subtyping §3.4: IsCapTysSubsumed (∀c2 ∃c1: c2 <: c1) in IsFuncSubtype /
+  IsFuncTySubType; join = union with redundancy pruning, meet = entries
+  covered by every operand (per proposal join/meet spec).
+- §3.6: UnifyFuncTy never unifies capability lists.
+- §3.7: signature comparison modulo caps via EraseCapTys in
+  IsFuncParameterTypesIdentical (decl dup check, shadowing, candidates).
+- §3.8: override throws-list pointwise subsumption in inheritance checker
+  (generic-mapped, ctors exempt, note at overridden decl).
+- §3.5 minimal: literals inherit expected type's capTys (checking is M3).
+
+Gate: CheckedExceptions 21/21; ctest 49/49; Parser/Sema LLT 3934/3934;
+clang-format clean.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ include/cangjie/AST/Types.h                   | 20 +++-
+ .../Basic/DiagRefactor/DiagnosticSema.def     |  8 ++
+ include/cangjie/Sema/TypeManager.h            | 15 ++-
+ src/AST/ASTTypeValidator.cpp                  | 15 +--
+ src/AST/Types.cpp                             | 21 +++-
+ .../StructInheritanceChecker.cpp              | 24 +++++
+ .../StructInheritanceChecker.h                |  6 ++
+ src/Sema/JoinAndMeet.cpp                      | 57 +++++++++--
+ src/Sema/JoinAndMeet.h                        |  5 +-
+ src/Sema/LocalTypeArgumentSynthesis.cpp       |  4 +
+ src/Sema/PreCheck.cpp                         | 17 +++-
+ src/Sema/TypeCheckCall.cpp                    |  7 +-
+ src/Sema/TypeCheckDecl.cpp                    |  3 +-
+ src/Sema/TypeCheckExpr/LambdaExpr.cpp         |  4 +-
+ src/Sema/TypeCheckForLSP.cpp                  |  2 +-
+ src/Sema/TypeCheckType.cpp                    | 13 +++
+ src/Sema/TypeCheckUtil.cpp                    | 17 ++++
+ src/Sema/TypeCheckUtil.h                      |  5 +
+ src/Sema/TypeChecker.cpp                      | 45 ++++++++-
+ src/Sema/TypeCheckerImpl.h                    |  7 ++
+ src/Sema/TypeManager.cpp                      | 97 ++++++++++++++++---
+ 21 files changed, 345 insertions(+), 47 deletions(-)
+
+diff --git a/include/cangjie/AST/Types.h b/include/cangjie/AST/Types.h
+index 0540ab0b..47f45f0c 100644
+--- a/include/cangjie/AST/Types.h
++++ b/include/cangjie/AST/Types.h
+@@ -697,6 +697,15 @@ struct FuncTy : Ty {
+      * type will ever be up-cast to it. Which means implicit boxing for variance should be allowed.
+      */
+     const bool noCast{false};
++    /**
++     * Checked exceptions (experimental, behind '--experimental --enable-chexc'): exception capability
++     * types of the `throws` clause. Part of the interned type identity (Hash/operator==), so
++     * functional types differing only in capability lists are distinct types (compared by set
++     * subsumption in subtyping). NOT part of 'typeArgs': fully erased for CHIR/codegen.
++     * W: Sema.
++     * R: Sema.
++     */
++    const std::vector<Ptr<Ty>> capTys{};
+     /** Constructor.
+      * U: Sema, CHIR, Modules.
+      */
+@@ -706,19 +715,22 @@ struct FuncTy : Ty {
+         const bool hasVariableLenArg{false};
+         const bool noCast{false};
+     };
+-    FuncTy(std::vector<Ptr<Ty>> paramVector, Ptr<Ty> rType, const Config cfg = {false, false, false, false})
++    FuncTy(std::vector<Ptr<Ty>> paramVector, Ptr<Ty> rType, const Config cfg = {false, false, false, false},
++        std::vector<Ptr<Ty>> capVector = {})
+         : Ty(TypeKind::TYPE_FUNC),
+           paramTys(std::move(paramVector)),
+           retTy(rType),
+           isC(cfg.isC),
+           isClosureTy(cfg.isClosureTy),
+           hasVariableLenArg(cfg.hasVariableLenArg),
+-          noCast(cfg.noCast)
++          noCast(cfg.noCast),
++          capTys(std::move(capVector))
+     {
+         typeArgs = paramTys;
+         // Currently, only CFunc has variable length parameters.
+-        invalid = !Ty::AreTysCorrect(typeArgs) || !Ty::IsTyCorrect(rType) || (!isC && hasVariableLenArg);
+-        generic = Ty::ExistGeneric(typeArgs) || (rType && rType->HasGeneric());
++        invalid = !Ty::AreTysCorrect(typeArgs) || !Ty::IsTyCorrect(rType) || (!isC && hasVariableLenArg) ||
++            !Ty::AreTysCorrect(capTys);
++        generic = Ty::ExistGeneric(typeArgs) || (rType && rType->HasGeneric()) || Ty::ExistGeneric(capTys);
+         typeArgs.emplace_back(retTy);
+     }
+     /** Return the unique name of a ty.
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index 78fd7869..787f72ef 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -411,4 +411,12 @@ WARNING(sema_hide_must_at_end, APILEVEL_CHECK, "annotation '%s' must be placed b
+ 
+ WARNING(sema_unused_import, UNUSED, "unused import '%s'", "unused import")
+ 
++// Checked exceptions (experimental, behind '--experimental --enable-chexc').
++ERROR(sema_chexc_clause_type_not_exception, "type '%s' in 'throws' clause is not a subtype of class 'Exception'",
++    "this type must be a subtype of class 'Exception'")
++ERROR(sema_chexc_clause_on_cfunc, "a 'throws' clause is not allowed on %s", "'throws' clause is not allowed here")
++ERROR(sema_chexc_override_missing_capability,
++    "exception type '%s' in 'throws' clause of '%s' is not covered by the overridden or implemented declaration",
++    "no exception type in the original declaration's 'throws' clause is a supertype of '%s'")
++
+ ERROR(sema_diag_end, "")
+diff --git a/include/cangjie/Sema/TypeManager.h b/include/cangjie/Sema/TypeManager.h
+index 93bdcc81..202dc9c7 100644
+--- a/include/cangjie/Sema/TypeManager.h
++++ b/include/cangjie/Sema/TypeManager.h
+@@ -74,7 +74,7 @@ public:
+     Ptr<AST::StructTy> GetStructTy(AST::StructDecl& sd, const std::vector<Ptr<AST::Ty>>& typeArgs);
+     Ptr<AST::TupleTy> GetTupleTy(const std::vector<Ptr<AST::Ty>>& typeArgs, bool isClosureTy = false);
+     Ptr<AST::FuncTy> GetFunctionTy(const std::vector<Ptr<AST::Ty>>& paramTys, Ptr<AST::Ty> retTy,
+-        AST::FuncTy::Config cfg = {false, false, false, false});
++        AST::FuncTy::Config cfg = {false, false, false, false}, const std::vector<Ptr<AST::Ty>>& capTys = {});
+ 
+     Ptr<AST::ArrayTy> GetArrayTy(Ptr<AST::Ty> elemTy, unsigned int dims);
+     Ptr<AST::VArrayTy> GetVArrayTy(AST::Ty& elemTy, int64_t size);
+@@ -181,6 +181,19 @@ public:
+      */
+     bool IsFuncParameterTypesIdentical(const std::vector<Ptr<AST::Ty>>& paramTys1,
+         const std::vector<Ptr<AST::Ty>>& paramTys2, const TypeSubst& typeMapping = {});
++    /**
++     * Checked exceptions (experimental): set subsumption of exception capability lists.
++     * @p subCapTys is subsumed by @p superCapTys iff for every c2 in @p subCapTys there exists
++     * a c1 in @p superCapTys with c2 <: c1 (contravariant 'CanThrow': a handler for a base
++     * exception type also handles the more specific one).
++     */
++    bool IsCapTysSubsumed(const std::vector<Ptr<AST::Ty>>& subCapTys, const std::vector<Ptr<AST::Ty>>& superCapTys);
++    /**
++     * Checked exceptions (experimental): recursively rebuild @p ty with every functional type's
++     * capability list removed. Used where overloading compares signatures modulo capability
++     * lists (proposal 3.7).
++     */
++    Ptr<AST::Ty> EraseCapTys(Ptr<AST::Ty> ty);
+     TypeCompatibility CheckTypeCompatibility(
+         Ptr<AST::Ty> lvalue, Ptr<AST::Ty> rvalue, bool implicitBoxed = true, bool isGeneric = false);
+     bool CheckGenericDeclInstantiation(Ptr<const AST::Decl> d, const std::vector<Ptr<AST::Ty>>& typeArgs);
+diff --git a/src/AST/ASTTypeValidator.cpp b/src/AST/ASTTypeValidator.cpp
+index 0373333b..1955c983 100644
+--- a/src/AST/ASTTypeValidator.cpp
++++ b/src/AST/ASTTypeValidator.cpp
+@@ -126,13 +126,11 @@ private:
+     std::unordered_map<Ptr<const Node>, bool> checkStatus;
+ 
+     // Node kinds who's type and children can be ignored.
+-    inline const static std::unordered_set<ASTKind> ignoreKinds{ASTKind::GENERIC_PARAM_DECL,
+-        ASTKind::GENERIC_CONSTRAINT, ASTKind::PRIMARY_CTOR_DECL, ASTKind::TYPE_ALIAS_DECL, ASTKind::BUILTIN_DECL,
+-        ASTKind::MODIFIER, ASTKind::ANNOTATION, ASTKind::PACKAGE_SPEC, ASTKind::IMPORT_SPEC, ASTKind::WILDCARD_PATTERN,
+-        ASTKind::GENERIC, ASTKind::MACRO_EXPAND_DECL, ASTKind::MACRO_EXPAND_EXPR, ASTKind::MACRO_EXPAND_PARAM,
+-        // Checked exceptions (experimental): the `throws` clause is semantically inert until its
+-        // capability types are elaborated (like GENERIC_CONSTRAINT, its types carry no sema ty yet).
+-        ASTKind::THROWS_CLAUSE};
++    inline const static std::unordered_set<ASTKind> ignoreKinds {
++        ASTKind::GENERIC_PARAM_DECL, ASTKind::GENERIC_CONSTRAINT,
++        ASTKind::PRIMARY_CTOR_DECL, ASTKind::TYPE_ALIAS_DECL, ASTKind::BUILTIN_DECL, ASTKind::MODIFIER,
++        ASTKind::ANNOTATION, ASTKind::PACKAGE_SPEC, ASTKind::IMPORT_SPEC, ASTKind::WILDCARD_PATTERN, ASTKind::GENERIC,
++        ASTKind::MACRO_EXPAND_DECL, ASTKind::MACRO_EXPAND_EXPR, ASTKind::MACRO_EXPAND_PARAM};
+ 
+     // Node kinds who's sema type can be ignored.
+     inline const static std::unordered_set<ASTKind> noneTyKinds{
+@@ -148,6 +146,9 @@ private:
+         ASTKind::RETURN_EXPR,
+         ASTKind::LET_PATTERN_DESTRUCTOR,
+         ASTKind::FUNC_PARAM_LIST,
++        // Checked exceptions (experimental): the clause node itself carries no sema ty, while its
++        // capability types are elaborated during PreCheck and validated like any other type node.
++        ASTKind::THROWS_CLAUSE,
+     };
+ };
+ 
+diff --git a/src/AST/Types.cpp b/src/AST/Types.cpp
+index 6069679b..d5d74d07 100644
+--- a/src/AST/Types.cpp
++++ b/src/AST/Types.cpp
+@@ -107,6 +107,9 @@ size_t FuncTy::Hash() const
+     for (auto paramTy : paramTys) {
+         ret = hash_combine<Ptr<Ty>>(ret, paramTy);
+     }
++    for (auto capTy : capTys) {
++        ret = hash_combine<Ptr<Ty>>(ret, capTy);
++    }
+     ret = hash_combine<bool>(ret, isClosureTy);
+     ret = hash_combine<bool>(ret, isC);
+     ret = hash_combine<bool>(ret, hasVariableLenArg);
+@@ -765,7 +768,19 @@ std::string FuncTy::String() const
+             str += ToString(paramTy) + ", ";
+         }
+     }
+-    str = str + ") -> " + ToString(retTy);
++    str += ")";
++    if (!capTys.empty()) {
++        str += " throws (";
++        for (auto& capTy : capTys) {
++            if (&capTy == &capTys.back()) {
++                str += ToString(capTy);
++            } else {
++                str += ToString(capTy) + ", ";
++            }
++        }
++        str += ")";
++    }
++    str = str + " -> " + ToString(retTy);
+     return isC ? "CFunc<" + str + ">" : str;
+ }
+ 
+@@ -1107,7 +1122,9 @@ bool FuncTy::operator==(const Ty& other) const
+     auto q = dynamic_cast<const FuncTy*>(&other);
+     return q && isC == q->isC && noCast == q->noCast && hasVariableLenArg == q->hasVariableLenArg &&
+         isClosureTy == q->isClosureTy && retTy == q->retTy && paramTys.size() == q->paramTys.size() &&
+-        memcmp(paramTys.data(), q->paramTys.data(), paramTys.size() * sizeof(intptr_t)) == 0;
++        memcmp(paramTys.data(), q->paramTys.data(), paramTys.size() * sizeof(intptr_t)) == 0 &&
++        capTys.size() == q->capTys.size() &&
++        memcmp(capTys.data(), q->capTys.data(), capTys.size() * sizeof(intptr_t)) == 0;
+ }
+ 
+ bool UnionTy::operator==(const Ty& other) const
+diff --git a/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp b/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
+index 58b42331..dd726e78 100644
+--- a/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
++++ b/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
+@@ -1355,6 +1355,29 @@ bool StructInheritanceChecker::CheckReturnOverrideByGeneric(const FuncTy& parent
+     return false;
+ }
+ 
++void StructInheritanceChecker::CheckThrowsClauseCompatible(const AST::FuncDecl& parentFunc,
++    const AST::FuncDecl& childFunc, const FuncTy& parentTy, const FuncTy& childTy) const
++{
++    // Checked exceptions (proposal 3.8): the override's (redefinition's) capability list must be
++    // pointwise subsumed by the original's -- every exception type in the override's 'throws' list
++    // must be a subtype of some exception type in the original's list. Constructors are exempt
++    // (they are new declarations, never overridden).
++    if (parentFunc.TestAttr(Attribute::CONSTRUCTOR) || childFunc.TestAttr(Attribute::CONSTRUCTOR)) {
++        return;
++    }
++    for (auto capTy : childTy.capTys) {
++        if (typeManager.IsCapTysSubsumed({capTy}, parentTy.capTys)) {
++            continue;
++        }
++        auto builder = diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_override_missing_capability,
++            MakeRangeForDeclIdentifier(childFunc), Ty::ToString(capTy), childFunc.identifier.Val());
++        builder.AddMainHintArguments(Ty::ToString(capTy));
++        builder.AddNote(MakeRangeForDeclIdentifier(parentFunc),
++            parentTy.capTys.empty() ? "the overridden or implemented declaration has no 'throws' clause"
++                                    : "the overridden or implemented declaration is declared here");
++    }
++}
++
+ bool StructInheritanceChecker::CheckImplementationRelation(
+     const MemberSignature& parent, const MemberSignature& child) const
+ {
+@@ -1389,6 +1412,7 @@ bool StructInheritanceChecker::CheckImplementationRelation(
+             const Decl& diagNode = childFunc->outerDecl == checkingDecls.front() ? *childFunc : *checkingDecls.front();
+             CheckAccessVisibility(*parentFunc, *childFunc, diagNode);
+             CheckGenericTypeArgInfo(parent, child);
++            CheckThrowsClauseCompatible(*parentFunc, *childFunc, *parentFuncTy, *childFuncTy);
+         } else if (inheritedByExtension || !CheckReturnOverrideByGeneric(*parentFuncTy, *childFuncTy)) {
+             // A type that does not meet the type variance relationship cannot be used as the basis for subtypes when
+             // override occurs.
+diff --git a/src/Sema/InheritanceChecker/StructInheritanceChecker.h b/src/Sema/InheritanceChecker/StructInheritanceChecker.h
+index d44ee3c7..4f742772 100644
+--- a/src/Sema/InheritanceChecker/StructInheritanceChecker.h
++++ b/src/Sema/InheritanceChecker/StructInheritanceChecker.h
+@@ -76,6 +76,12 @@ private:
+     void CheckGenericTypeArgInfo(const MemberSignature& parent, const MemberSignature& child) const;
+     void CheckInheritanceForInterface(const MemberSignature& interface, const MemberSignature& child) const;
+     bool CheckImplementationRelation(const MemberSignature& parent, const MemberSignature& child) const;
++    /**
++     * Checked exceptions (proposal 3.8): the override's 'throws' list must be pointwise subsumed
++     * by the original's. Constructors are exempt.
++     */
++    void CheckThrowsClauseCompatible(const AST::FuncDecl& parentFunc, const AST::FuncDecl& childFunc,
++        const FuncTy& parentTy, const FuncTy& childTy) const;
+     void CheckMutModifierCompatible(const MemberSignature& parent, const Decl& child) const;
+     void CheckAccessVisibility(const Decl& parent, const Decl& child, const Decl& diagNode) const;
+     bool IsExtendedDefaultImpl(const MemberSignature& parent, const Decl& child) const;
+diff --git a/src/Sema/JoinAndMeet.cpp b/src/Sema/JoinAndMeet.cpp
+index 765aceb8..63ebe767 100644
+--- a/src/Sema/JoinAndMeet.cpp
++++ b/src/Sema/JoinAndMeet.cpp
+@@ -121,12 +121,13 @@ Ptr<AST::Ty> JoinAndMeet::BatchJoin(const std::set<Ptr<Ty>>& tys)
+ {
+     auto isSubtype = [this](Ptr<Ty> ty1, Ptr<Ty> ty2) { return tyMgr.IsSubtype(ty1, ty2); };
+     auto isSupertype = [this](Ptr<Ty> ty1, Ptr<Ty> ty2) { return tyMgr.IsSubtype(ty2, ty1); };
+-    auto doBatchJoin = [this](const std::set<Ptr<AST::Ty>>& tys) {return BatchJoin(tys);};
+-    auto doBatchMeet = [this](const std::set<Ptr<AST::Ty>>& tys) {return BatchMeet(tys);};
++    auto doBatchJoin = [this](const std::set<Ptr<AST::Ty>>& tys) { return BatchJoin(tys); };
++    auto doBatchMeet = [this](const std::set<Ptr<AST::Ty>>& tys) { return BatchMeet(tys); };
+     DualMode joinMode = {.bound = tyMgr.GetAnyTy(),
+         .coFunc = doBatchJoin,
+         .contraFunc = doBatchMeet,
+-        .coSubtyFunc = isSubtype};
++        .coSubtyFunc = isSubtype,
++        .isJoin = true};
+     std::set<Ptr<Ty>> realTys;
+     std::function<void(Ptr<Ty>)> insertRealTy = [this, &realTys, &insertRealTy](Ptr<Ty> ty) {
+         if (auto tyVar = DynamicCast<TyVar*>(ty); (tyVar && Utils::In(tyVar, ignoredTyVars)) || ty->IsNothing()) {
+@@ -205,7 +206,7 @@ Ptr<AST::Ty> JoinAndMeet::JoinOrMeetFuncTy(const DualMode& mode, const std::set<
+     }
+     auto retTy = mode.coFunc(operandRetTys);
+     if (Ty::AreTysCorrect(paramTys) && Ty::IsTyCorrect(retTy)) {
+-        auto resultTy = tyMgr.GetFunctionTy(paramTys, retTy);
++        auto resultTy = tyMgr.GetFunctionTy(paramTys, retTy, {}, JoinOrMeetCapTys(mode, tys));
+         CJC_NULLPTR_CHECK(resultTy);
+         for (auto ty : tys) {
+             if (!mode.coSubtyFunc(ty, resultTy)) {
+@@ -217,6 +218,48 @@ Ptr<AST::Ty> JoinAndMeet::JoinOrMeetFuncTy(const DualMode& mode, const std::set<
+     return mode.bound;
+ }
+ 
++/**
++ * Checked exceptions (proposal 3.4, "Joins and meets"): combine the ground capability lists of
++ * already-typed functional operands. The join of capability lists is their union; the meet keeps
++ * the entries covered by every operand list (of two comparable entries, the more specific one;
++ * incomparable entries contribute nothing). Entries subsumed by other kept entries are redundant
++ * by subtyping and dropped in both cases. Never solves for list variables.
++ */
++std::vector<Ptr<AST::Ty>> JoinAndMeet::JoinOrMeetCapTys(const DualMode& mode, const std::set<Ptr<Ty>>& tys)
++{
++    // Gather candidate entries from all operand lists, keeping a deterministic first-seen order.
++    std::vector<Ptr<Ty>> candidates;
++    for (auto ty : tys) {
++        for (auto capTy : RawStaticCast<FuncTy*>(ty)->capTys) {
++            if (!Utils::In(capTy, candidates)) {
++                candidates.push_back(capTy);
++            }
++        }
++    }
++    if (!mode.isJoin) {
++        // Meet: keep only entries covered by every operand list.
++        Utils::EraseIf(candidates, [this, &tys](Ptr<Ty> capTy) {
++            return !std::all_of(tys.begin(), tys.end(), [this, capTy](Ptr<Ty> ty) {
++                auto& capTys = RawStaticCast<FuncTy*>(ty)->capTys;
++                return std::any_of(capTys.begin(), capTys.end(),
++                    [this, capTy](Ptr<Ty> cover) { return tyMgr.IsSubtype(capTy, cover); });
++            });
++        });
++    }
++    // Drop entries subsumed by another entry (for the join this collapses the union's redundancy).
++    std::vector<Ptr<Ty>> result;
++    for (auto capTy : candidates) {
++        bool covered = std::any_of(
++            result.begin(), result.end(), [this, capTy](Ptr<Ty> kept) { return tyMgr.IsSubtype(capTy, kept); });
++        if (covered) {
++            continue;
++        }
++        Utils::EraseIf(result, [this, capTy](Ptr<Ty> kept) { return tyMgr.IsSubtype(kept, capTy); });
++        result.push_back(capTy);
++    }
++    return result;
++}
++
+ /**
+  * returns:
+  *      - the joined/met TupleTy if all tys are TupleTy and the LUB/GLB exists
+@@ -295,7 +338,8 @@ Ptr<AST::Ty> JoinAndMeet::BatchMeet(const std::set<Ptr<Ty>>& tys)
+     DualMode meetMode = {.bound = TypeManager::GetInvalidTy(),
+         .coFunc = doBatchMeet,
+         .contraFunc = doBatchJoin,
+-        .coSubtyFunc = isSupertype};
++        .coSubtyFunc = isSupertype,
++        .isJoin = false};
+     std::set<Ptr<Ty>> realTys;
+     std::function<void(Ptr<Ty>)> insertRealTy = [this, &realTys, &insertRealTy](Ptr<Ty> ty) {
+         if (auto tyVar = DynamicCast<TyVar*>(ty); tyVar && Utils::In(tyVar, ignoredTyVars)) {
+@@ -368,7 +412,8 @@ Ptr<Ty> JoinAndMeet::ToUserVisibleTy(Ptr<Ty> ty)
+         std::transform(funcTy->paramTys.begin(), funcTy->paramTys.end(), paramTys.begin(),
+             [this](Ptr<Ty> typ) { return ToUserVisibleTy(typ); });
+         if (Ty::AreTysCorrect(paramTys) && Ty::IsTyCorrect(retTy)) {
+-            return tyMgr.GetFunctionTy(paramTys, retTy, {funcTy->isC, funcTy->isClosureTy, funcTy->hasVariableLenArg});
++            return tyMgr.GetFunctionTy(
++                paramTys, retTy, {funcTy->isC, funcTy->isClosureTy, funcTy->hasVariableLenArg}, funcTy->capTys);
+         } else {
+             return TypeManager::GetInvalidTy();
+         }
+diff --git a/src/Sema/JoinAndMeet.h b/src/Sema/JoinAndMeet.h
+index e6710af0..f5647cec 100644
+--- a/src/Sema/JoinAndMeet.h
++++ b/src/Sema/JoinAndMeet.h
+@@ -25,7 +25,8 @@ struct DualMode {
+     Ptr<AST::Ty> bound; // Any for join, Nothing for meet
+     std::function<Ptr<AST::Ty>(const std::set<Ptr<AST::Ty>>&)> coFunc; // join for join, meet for meet
+     std::function<Ptr<AST::Ty>(const std::set<Ptr<AST::Ty>>&)> contraFunc; // meet for join, join for meet
+-    std::function<bool(Ptr<AST::Ty>, Ptr<AST::Ty>)> coSubtyFunc; // is-subtype for join, is-supertype for meet
++    std::function<bool(Ptr<AST::Ty>, Ptr<AST::Ty>)> coSubtyFunc;           // is-subtype for join, is-supertype for meet
++    bool isJoin{true}; // true for join, false for meet (capability lists combine asymmetrically)
+ };
+ 
+ class JoinAndMeet {
+@@ -84,6 +85,8 @@ private:
+     Ptr<AST::Ty> BatchMeet(const std::set<Ptr<AST::Ty>>& tys);
+ 
+     Ptr<AST::Ty> JoinOrMeetFuncTy(const DualMode& mode, const std::set<Ptr<AST::Ty>>& tys);
++    // Checked exceptions: union of capability lists for join, entries covered by all lists for meet.
++    std::vector<Ptr<AST::Ty>> JoinOrMeetCapTys(const DualMode& mode, const std::set<Ptr<AST::Ty>>& tys);
+     Ptr<AST::Ty> JoinOrMeetTupleTy(const DualMode& mode, const std::set<Ptr<AST::Ty>>& tys);
+ 
+     void AddFinalErrMsgs(const AST::Ty& ty, bool isJoin);
+diff --git a/src/Sema/LocalTypeArgumentSynthesis.cpp b/src/Sema/LocalTypeArgumentSynthesis.cpp
+index c5e1e249..3d08c1f8 100644
+--- a/src/Sema/LocalTypeArgumentSynthesis.cpp
++++ b/src/Sema/LocalTypeArgumentSynthesis.cpp
+@@ -463,6 +463,10 @@ bool LocalTypeArgumentSynthesis::UnifyFuncTy(const Tracked<FuncTy>& argTTy, cons
+ {
+     auto& argTy = argTTy.ty;
+     auto& paramTy = paramTTy.ty;
++    // Checked exceptions (proposal 3.6): capability lists ('capTys') are deliberately IGNORED here.
++    // They are never unified and differing list lengths never cause rejection, to avoid row-type
++    // unification; type variables occurring only in capability lists simply stay unsolved.
++    // Reconciliation of differing ground lists happens via join/meet (JoinAndMeet), not unification.
+     if (argTy.paramTys.size() != paramTy.paramTys.size()) {
+         return false;
+     }
+diff --git a/src/Sema/PreCheck.cpp b/src/Sema/PreCheck.cpp
+index b4f9fd57..d9a3abc5 100644
+--- a/src/Sema/PreCheck.cpp
++++ b/src/Sema/PreCheck.cpp
+@@ -603,7 +603,17 @@ Ptr<Ty> TypeChecker::TypeCheckerImpl::GetTyFromASTType(ASTContext& ctx, FuncType
+     if (!funcType.retType->GetTy()) {
+         return TypeManager::GetInvalidTy();
+     }
+-    funcType.SetTy(typeManager.GetFunctionTy(paramTys, funcType.retType->GetTy(), {funcType.isC}));
++    // Checked exceptions: elaborate the 'throws' clause types into the functional type's capability
++    // list. CFunc types never carry capabilities (the clause is rejected during type check).
++    std::vector<Ptr<Ty>> capTys;
++    if (funcType.throwsClause && !funcType.isC) {
++        for (auto& capType : funcType.throwsClause->capTypes) {
++            CJC_NULLPTR_CHECK(capType);
++            capType->SetTy(GetTyFromASTType(ctx, capType.get()));
++            capTys.push_back(capType->GetTy());
++        }
++    }
++    funcType.SetTy(typeManager.GetFunctionTy(paramTys, funcType.retType->GetTy(), {funcType.isC}, capTys));
+     return funcType.GetTy();
+ }
+ 
+@@ -1787,6 +1797,7 @@ void TypeChecker::TypeCheckerImpl::PreSetDeclType(const ASTContext& ctx)
+             continue; // Do not replace valid ty.
+         }
+         auto paramTys = GetFuncBodyParamTys(*fd->funcBody);
++        auto capTys = GetFuncBodyCapTys(*fd->funcBody);
+         Ptr<Ty> retTy = TypeManager::GetQuestTy();
+         if (fd->TestAttr(Attribute::CONSTRUCTOR)) {
+             // Static init has return type of unit. Instance init has return type of current typeDecl.
+@@ -1794,7 +1805,7 @@ void TypeChecker::TypeCheckerImpl::PreSetDeclType(const ASTContext& ctx)
+                 ? TypeManager::GetPrimitiveTy(TypeKind::TYPE_UNIT)
+                 : (fd->outerDecl && fd->outerDecl->IsNominalDecl() ? fd->outerDecl->GetTy()
+                                                                    : TypeManager::GetInvalidTy());
+-            fd->SetTy(typeManager.GetFunctionTy(paramTys, retTy));
++            fd->SetTy(typeManager.GetFunctionTy(paramTys, retTy, {}, capTys));
+             continue;
+         }
+         if (fd->funcBody->retType) {
+@@ -1806,7 +1817,7 @@ void TypeChecker::TypeCheckerImpl::PreSetDeclType(const ASTContext& ctx)
+             fd->funcBody->TestAttr(Attribute::C) || (fd->TestAttr(Attribute::FOREIGN) && IsUnsafeBackend(backendType));
+         bool hasVariableLenArg = fd->hasVariableLenArg ||
+             (!fd->funcBody->paramLists.empty() && fd->funcBody->paramLists[0]->hasVariableLenArg);
+-        fd->SetTy(typeManager.GetFunctionTy(paramTys, retTy, {isCFunc, false, hasVariableLenArg}));
++        fd->SetTy(typeManager.GetFunctionTy(paramTys, retTy, {isCFunc, false, hasVariableLenArg}, capTys));
+         if (fd->TestAttr(Attribute::IS_CHECK_VISITED)) {
+             fd->funcBody->SetTy(fd->GetTy());
+         }
+diff --git a/src/Sema/TypeCheckCall.cpp b/src/Sema/TypeCheckCall.cpp
+index 901319d4..4504ed3f 100644
+--- a/src/Sema/TypeCheckCall.cpp
++++ b/src/Sema/TypeCheckCall.cpp
+@@ -1607,7 +1607,8 @@ TypeChecker::TypeCheckerImpl::FuncTyPair TypeChecker::TypeCheckerImpl::CollectVa
+             if (hasThisRet) {
+                 // Since 'CollectValidFuncTys' is only used for reference node, we do not need to keep 'This' ty here.
+                 auto realThisTy = typeManager.GetInstantiatedTy(thisCd->GetTy(), mapping);
+-                instTy = typeManager.GetFunctionTy(RawStaticCast<FuncTy*>(instTy)->paramTys, realThisTy);
++                auto instFuncTy = RawStaticCast<FuncTy*>(instTy);
++                instTy = typeManager.GetFunctionTy(instFuncTy->paramTys, realThisTy, {}, instFuncTy->capTys);
+             }
+             candidates.emplace_back(std::make_tuple(fd, instTy, mapping));
+         }
+@@ -2758,12 +2759,12 @@ std::optional<Ptr<Ty>> TypeChecker::TypeCheckerImpl::DynamicBindingThisType(
+     auto declOfThisType = GetDeclOfThisType(baseExpr);
+     if (auto cd = DynamicCast<ClassDecl*>(declOfThisType); cd && Ty::IsTyCorrect(cd->GetTy())) {
+         auto instTy = typeManager.ApplySubstPack(typeManager.GetClassThisTy(*cd, cd->GetTy()->typeArgs), typeMapping);
+-        baseExpr.SetTy(typeManager.GetFunctionTy(funcTy->paramTys, instTy));
++        baseExpr.SetTy(typeManager.GetFunctionTy(funcTy->paramTys, instTy, {}, funcTy->capTys));
+         return instTy;
+     } else if (auto ma = DynamicCast<MemberAccess*>(&baseExpr); ma && ma->baseExpr) {
+         // If the baseExpr's type is generic type, set the function call's return type as 'gty'.
+         if (auto gty = DynamicCast<GenericsTy*>(ma->baseExpr->GetTy()); gty) {
+-            baseExpr.SetTy(typeManager.GetFunctionTy(funcTy->paramTys, gty));
++            baseExpr.SetTy(typeManager.GetFunctionTy(funcTy->paramTys, gty, {}, funcTy->capTys));
+             return gty;
+         }
+     }
+diff --git a/src/Sema/TypeCheckDecl.cpp b/src/Sema/TypeCheckDecl.cpp
+index 445cae2e..48a18b85 100644
+--- a/src/Sema/TypeCheckDecl.cpp
++++ b/src/Sema/TypeCheckDecl.cpp
+@@ -83,7 +83,8 @@ void TypeChecker::TypeCheckerImpl::CheckFuncDecl(ASTContext& ctx, FuncDecl& fd)
+         // NOTE: Error's for synthesized quest ty must be reported in 'CheckBodyRetType',
+         // otherwise it means funcBody contains broken nodes.
+         // Update return type to invalid, keep 'fd''s type in funcTy format.
+-        fd.SetTy(typeManager.GetFunctionTy(RawStaticCast<FuncTy*>(fd.GetTy())->paramTys, TypeManager::GetInvalidTy()));
++        auto fdFuncTy = RawStaticCast<FuncTy*>(fd.GetTy());
++        fd.SetTy(typeManager.GetFunctionTy(fdFuncTy->paramTys, TypeManager::GetInvalidTy(), {}, fdFuncTy->capTys));
+     }
+     // NOTE: 'fd''s type should only be updated inside 'CheckFuncBody' not here.
+     if (fd.TestAttr(AST::Attribute::MAIN_ENTRY)) {
+diff --git a/src/Sema/TypeCheckExpr/LambdaExpr.cpp b/src/Sema/TypeCheckExpr/LambdaExpr.cpp
+index 15fa86be..dab143b0 100644
+--- a/src/Sema/TypeCheckExpr/LambdaExpr.cpp
++++ b/src/Sema/TypeCheckExpr/LambdaExpr.cpp
+@@ -409,8 +409,10 @@ bool TypeChecker::TypeCheckerImpl::ChkLamExpr(ASTContext& ctx, Ty& target, Lambd
+         if (ChkLamBody(ctx, *le.funcBody) && paramsMatched) {
+             ds.ReportDiag();
+             // The call to GetFunctionTy is necessary to create (cached) CPointer types if necessary.
++            // Checked exceptions (proposal 3.5): a literal checked against an expected functional type
++            // inherits the expected type's capability list into its own type.
+             le.funcBody->SetTy(typeManager.GetFunctionTy(lamParamTys, StaticCast<FuncTy*>(le.funcBody->GetTy())->retTy,
+-                {tgtTy->isC, tgtTy->isClosureTy, tgtTy->hasVariableLenArg}));
++                {tgtTy->isC, tgtTy->isClosureTy, tgtTy->hasVariableLenArg}, tgtTy->capTys));
+             le.SetTy(le.funcBody->GetTy());
+             return true;
+         } else if (IsLambdaIncompatible(le, !paramsMatched)) {
+diff --git a/src/Sema/TypeCheckForLSP.cpp b/src/Sema/TypeCheckForLSP.cpp
+index 81fc8516..dbca55a7 100644
+--- a/src/Sema/TypeCheckForLSP.cpp
++++ b/src/Sema/TypeCheckForLSP.cpp
+@@ -337,7 +337,7 @@ protected:
+             typeMapping.insert(baseMapping.begin(), baseMapping.end());
+             auto instTy = checker.typeManager.GetInstantiatedTy(decl->GetTy(), typeMapping);
+             if (auto fTy = DynamicCast<FuncTy>(instTy); fTy && Is<ClassThisTy>(fTy->retTy)) {
+-                instTy = checker.typeManager.GetFunctionTy(fTy->paramTys, &baseTy);
++                instTy = checker.typeManager.GetFunctionTy(fTy->paramTys, &baseTy, {}, fTy->capTys);
+             }
+             tys.emplace(instTy);
+         }
+diff --git a/src/Sema/TypeCheckType.cpp b/src/Sema/TypeCheckType.cpp
+index 97a7d770..0791b7ca 100644
+--- a/src/Sema/TypeCheckType.cpp
++++ b/src/Sema/TypeCheckType.cpp
+@@ -262,6 +262,10 @@ void TypeChecker::TypeCheckerImpl::CheckCFuncType(ASTContext& ctx, const RefType
+     if (!arg) {
+         return;
+     }
++    // Checked exceptions: CFunc types must not carry a 'throws' clause (proposal FFI ruling).
++    if (arg->throwsClause && !arg->isC) {
++        diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_clause_on_cfunc, *arg->throwsClause, "a 'CFunc' type");
++    }
+     for (auto& it : arg->paramTypes) {
+         CheckCFuncParamType(*it);
+     }
+@@ -331,6 +335,15 @@ void TypeChecker::TypeCheckerImpl::CheckFuncType(ASTContext& ctx, FuncType& ft)
+     }
+     CJC_NULLPTR_CHECK(ft.retType);
+     CheckReferenceTypeLegality(ctx, *ft.retType);
++    // Checked exceptions: validate the 'throws' clause of a functional type; CFunc types must not
++    // carry one (proposal FFI ruling).
++    if (ft.throwsClause) {
++        if (ft.isC) {
++            diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_clause_on_cfunc, *ft.throwsClause, "a 'CFunc' type");
++        } else {
++            ChkThrowsClauseTypes(ctx, *ft.throwsClause);
++        }
++    }
+     if (!ft.isC) {
+         return;
+     }
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index e6851389..f44e68dd 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -263,6 +263,23 @@ std::vector<Ptr<Ty>> GetFuncBodyParamTys(const FuncBody& fb)
+     return ret;
+ }
+ 
++std::vector<Ptr<Ty>> GetFuncBodyCapTys(const FuncBody& fb)
++{
++    // Checked exceptions: the declaration's 'throws' clause types (elaborated during PreCheck's
++    // name resolution) become the capability list of the declaration's functional type.
++    // Foreign/C functions never carry capabilities; the clause on them is diagnosed separately.
++    bool isCLike = fb.TestAttr(Attribute::C) || (fb.funcDecl && fb.funcDecl->TestAttr(Attribute::FOREIGN));
++    if (!fb.throwsClause || isCLike) {
++        return {};
++    }
++    std::vector<Ptr<Ty>> ret;
++    for (auto& capType : fb.throwsClause->capTypes) {
++        CJC_NULLPTR_CHECK(capType);
++        ret.emplace_back(Ty::IsInitialTy(capType->GetTy()) ? TypeManager::GetInvalidTy() : capType->GetTy());
++    }
++    return ret;
++}
++
+ // Generate type mapping for src is an override or implement of target.
+ MultiTypeSubst GenerateTypeMappingBetweenFuncs(TypeManager& typeManager, const FuncDecl& src, const FuncDecl& target)
+ {
+diff --git a/src/Sema/TypeCheckUtil.h b/src/Sema/TypeCheckUtil.h
+index e50200df..603248eb 100644
+--- a/src/Sema/TypeCheckUtil.h
++++ b/src/Sema/TypeCheckUtil.h
+@@ -179,6 +179,11 @@ bool HaveCyclicSubstitution(TypeManager& tyMgr, const TypeSubst& typeMapping);
+  */
+ std::vector<Ptr<AST::Ty>> GetParamTys(const AST::FuncDecl& fd);
+ std::vector<Ptr<AST::Ty>> GetFuncBodyParamTys(const AST::FuncBody& fb);
++/**
++ * Checked exceptions: get the exception capability tys of @p fb 's elaborated 'throws' clause.
++ * Empty when there is no clause or the function is foreign/C.
++ */
++std::vector<Ptr<AST::Ty>> GetFuncBodyCapTys(const AST::FuncBody& fb);
+ /**
+  * Check whether src is an override or implementation of target.
+  */
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index fcfbe95d..299ce66d 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -188,8 +188,42 @@ void TypeChecker::TypeCheckerImpl::ReplaceFuncRetTyWithThis(FuncBody& fb, Ptr<Ty
+     }
+ }
+ 
++void TypeChecker::TypeCheckerImpl::ChkThrowsClauseTypes(ASTContext& ctx, ThrowsClause& clause)
++{
++    auto exception = importManager.GetCoreDecl<ClassDecl>(CLASS_EXCEPTION);
++    for (auto& capType : clause.capTypes) {
++        CJC_NULLPTR_CHECK(capType);
++        CheckReferenceTypeLegality(ctx, *capType);
++        auto capTy = capType->GetTy();
++        if (!Ty::IsTyCorrect(capTy)) {
++            continue;
++        }
++        bool isExceptionSubtype =
++            (capTy->IsClass() || capTy->IsGeneric()) && exception && typeManager.IsSubtype(capTy, exception->GetTy());
++        if (!isExceptionSubtype) {
++            diag.DiagnoseRefactor(
++                DiagKindRefactor::sema_chexc_clause_type_not_exception, *capType, capType->ToString());
++        }
++    }
++}
++
++void TypeChecker::TypeCheckerImpl::ChkThrowsClauseOfFuncBody(ASTContext& ctx, FuncBody& fb)
++{
++    if (!fb.throwsClause) {
++        return;
++    }
++    if (fb.funcDecl && fb.funcDecl->TestAttr(Attribute::FOREIGN)) {
++        diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_clause_on_cfunc, *fb.throwsClause, "a foreign function");
++    } else if (fb.TestAttr(Attribute::C)) {
++        diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_clause_on_cfunc, *fb.throwsClause, "a 'CFunc' function");
++    } else {
++        ChkThrowsClauseTypes(ctx, *fb.throwsClause);
++    }
++}
++
+ bool TypeChecker::TypeCheckerImpl::CheckFuncBody(ASTContext& ctx, FuncBody& fb)
+ {
++    ChkThrowsClauseOfFuncBody(ctx, fb);
+     if (fb.retType) {
+         Synthesize({ctx, SynPos::NONE}, fb.retType.get());
+     } else {
+@@ -235,6 +269,7 @@ bool TypeChecker::TypeCheckerImpl::CheckNormalFuncBody(ASTContext& ctx, FuncBody
+     }
+     CheckFuncParamList(ctx, *fb.paramLists[0]);
+     paramTys = GetFuncBodyParamTys(fb);
++    auto capTys = GetFuncBodyCapTys(fb);
+ 
+     bool isCFFIBackend = IsUnsafeBackend(backendType);
+     bool isCFunc =
+@@ -246,12 +281,12 @@ bool TypeChecker::TypeCheckerImpl::CheckNormalFuncBody(ASTContext& ctx, FuncBody
+             fb.EnableAttr(Attribute::IS_CHECK_VISITED); // Avoid re-enter funcDecl check, when function is invalid.
+             Synthesize({ctx, SynPos::NONE}, fb.body.get()); // Synthesize for other decl/expr in function body.
+         }
+-        fb.SetTy(typeManager.GetFunctionTy(paramTys, fb.retType->GetTy(), {isCFunc, false, hasVariableLenArg}));
++        fb.SetTy(typeManager.GetFunctionTy(paramTys, fb.retType->GetTy(), {isCFunc, false, hasVariableLenArg}, capTys));
+         return false;
+     }
+ 
+     // Set funcTy before Synthesize body, avoid recursively call typecheck loop.
+-    auto funcTy = typeManager.GetFunctionTy(paramTys, fb.retType->GetTy(), {isCFunc, false, hasVariableLenArg});
++    auto funcTy = typeManager.GetFunctionTy(paramTys, fb.retType->GetTy(), {isCFunc, false, hasVariableLenArg}, capTys);
+     if (fb.funcDecl) {
+         fb.funcDecl->SetTy(funcTy);
+     }
+@@ -259,7 +294,7 @@ bool TypeChecker::TypeCheckerImpl::CheckNormalFuncBody(ASTContext& ctx, FuncBody
+ 
+     if (!CheckBodyRetType(ctx, fb)) {
+         // Update 'fb.GetTy()' witch updated 'fb.retType->GetTy()'.
+-        fb.SetTy(typeManager.GetFunctionTy(paramTys, fb.retType->GetTy(), {isCFunc, false, hasVariableLenArg}));
++        fb.SetTy(typeManager.GetFunctionTy(paramTys, fb.retType->GetTy(), {isCFunc, false, hasVariableLenArg}, capTys));
+         return false;
+     }
+ 
+@@ -267,7 +302,7 @@ bool TypeChecker::TypeCheckerImpl::CheckNormalFuncBody(ASTContext& ctx, FuncBody
+         UnsafeCheck(fb);
+     }
+ 
+-    funcTy = typeManager.GetFunctionTy(paramTys, fb.retType->GetTy(), {isCFunc, false, hasVariableLenArg});
++    funcTy = typeManager.GetFunctionTy(paramTys, fb.retType->GetTy(), {isCFunc, false, hasVariableLenArg}, capTys);
+     // Update funcDecl's type after body is checked.
+     if (fb.funcDecl) {
+         fb.funcDecl->SetTy(funcTy);
+@@ -461,7 +496,7 @@ void TypeChecker::TypeCheckerImpl::CheckCtorFuncBody(ASTContext& ctx, FuncBody&
+     }
+     CheckFuncParamList(ctx, *fb.paramLists[0].get());
+     auto paramTys = GetFuncBodyParamTys(fb);
+-    fb.SetTy(typeManager.GetFunctionTy(paramTys, ctorTy));
++    fb.SetTy(typeManager.GetFunctionTy(paramTys, ctorTy, {}, GetFuncBodyCapTys(fb)));
+     fb.funcDecl->SetTy(fb.GetTy());
+     fb.retType->SetTy(ctorTy);
+     Synthesize({ctx, SynPos::UNUSED}, fb.body.get());
+diff --git a/src/Sema/TypeCheckerImpl.h b/src/Sema/TypeCheckerImpl.h
+index ce462573..c2fa1ba3 100644
+--- a/src/Sema/TypeCheckerImpl.h
++++ b/src/Sema/TypeCheckerImpl.h
+@@ -1302,6 +1302,13 @@ private:
+     void CheckEntryFunc(AST::FuncDecl& fd);
+     bool CheckNormalFuncBody(ASTContext& ctx, AST::FuncBody& fb, std::vector<Ptr<AST::Ty>>& paramTys);
+     bool CheckFuncBody(ASTContext& ctx, AST::FuncBody& fb);
++    /**
++     * Checked exceptions: validate an elaborated 'throws' clause -- every entry must be a subtype
++     * of core 'Exception' (type parameters allowed when suitably bounded).
++     */
++    void ChkThrowsClauseTypes(ASTContext& ctx, AST::ThrowsClause& clause);
++    /** Checked exceptions: diagnose 'throws' clauses on foreign/C functions and CFunc types. */
++    void ChkThrowsClauseOfFuncBody(ASTContext& ctx, AST::FuncBody& fb);
+     void AddRetTypeNode(AST::FuncBody& fb) const;
+     bool CheckBodyRetType(ASTContext& ctx, AST::FuncBody& fb);
+     void CheckFuncParamList(ASTContext& ctx, AST::FuncParamList& fpl);
+diff --git a/src/Sema/TypeManager.cpp b/src/Sema/TypeManager.cpp
+index f40611b0..b3e7d772 100644
+--- a/src/Sema/TypeManager.cpp
++++ b/src/Sema/TypeManager.cpp
+@@ -151,9 +151,10 @@ Ptr<TupleTy> TypeManager::GetTupleTy(const std::vector<Ptr<Ty>>& typeArgs, bool
+     return GetTypeTy<TupleTy>(typeArgs, isClosureTy);
+ }
+ 
+-Ptr<FuncTy> TypeManager::GetFunctionTy(const std::vector<Ptr<Ty>>& paramTys, Ptr<Ty> retTy, FuncTy::Config cfg)
++Ptr<FuncTy> TypeManager::GetFunctionTy(
++    const std::vector<Ptr<Ty>>& paramTys, Ptr<Ty> retTy, FuncTy::Config cfg, const std::vector<Ptr<Ty>>& capTys)
+ {
+-    return GetTypeTy<FuncTy>(paramTys, retTy, cfg);
++    return GetTypeTy<FuncTy>(paramTys, retTy, cfg, capTys);
+ }
+ 
+ Ptr<Ty> TypeManager::GetIntersectionTy(const std::set<Ptr<Ty>>& tys)
+@@ -320,8 +321,12 @@ Ptr<Ty> TypeManager::TyInstantiator::Instantiate(Ty& ty)
+                 paramTys.push_back(Instantiate(it));
+             }
+             auto retType = Instantiate(funcTy.retTy);
++            std::vector<Ptr<Ty>> capTys;
++            for (auto& it : funcTy.capTys) {
++                capTys.push_back(Instantiate(it));
++            }
+             Ptr<Ty> ret = tyMgr.GetFunctionTy(
+-                paramTys, retType, {funcTy.IsCFunc(), funcTy.isClosureTy, funcTy.hasVariableLenArg});
++                paramTys, retType, {funcTy.IsCFunc(), funcTy.isClosureTy, funcTy.hasVariableLenArg}, capTys);
+             return ret;
+         }
+         case TypeKind::TYPE_TUPLE: {
+@@ -888,11 +893,59 @@ bool TypeManager::IsFuncSubtype(const Ty& leaf, const Ty& root)
+     auto& rootFuncType = static_cast<const FuncTy&>(root);
+     if (IsFuncParametersSubtype(leafFuncType, rootFuncType)) {
+         bool noCast = leafFuncType.noCast || rootFuncType.noCast;
+-        return IsSubtype(leafFuncType.retTy, rootFuncType.retTy, noCast);
++        // Checked exceptions (proposal 3.4): the subtype's capability list must be subsumed by the
++        // supertype's, so any call site providing the supertype's capabilities can invoke the subtype.
++        return IsSubtype(leafFuncType.retTy, rootFuncType.retTy, noCast) &&
++            IsCapTysSubsumed(leafFuncType.capTys, rootFuncType.capTys);
+     }
+     return false;
+ }
+ 
++bool TypeManager::IsCapTysSubsumed(const std::vector<Ptr<Ty>>& subCapTys, const std::vector<Ptr<Ty>>& superCapTys)
++{
++    return std::all_of(subCapTys.begin(), subCapTys.end(), [this, &superCapTys](Ptr<Ty> subCap) {
++        return std::any_of(superCapTys.begin(), superCapTys.end(),
++            [this, subCap](Ptr<Ty> superCap) { return IsSubtype(subCap, superCap); });
++    });
++}
++
++Ptr<Ty> TypeManager::EraseCapTys(Ptr<Ty> ty)
++{
++    if (!Ty::IsTyCorrect(ty) || ty->kind <= TypeKind::TYPE_BOOLEAN) {
++        return ty;
++    }
++    if (auto funcTy = DynamicCast<FuncTy*>(ty)) {
++        std::vector<Ptr<Ty>> paramTys;
++        bool changed = !funcTy->capTys.empty();
++        for (auto paramTy : funcTy->paramTys) {
++            auto erased = EraseCapTys(paramTy);
++            changed = changed || erased != paramTy;
++            paramTys.push_back(erased);
++        }
++        auto retTy = EraseCapTys(funcTy->retTy);
++        changed = changed || retTy != funcTy->retTy;
++        if (!changed) {
++            return ty;
++        }
++        return GetFunctionTy(
++            paramTys, retTy, {funcTy->isC, funcTy->isClosureTy, funcTy->hasVariableLenArg, funcTy->noCast});
++    }
++    if (ty->typeArgs.empty()) {
++        return ty;
++    }
++    std::vector<Ptr<Ty>> typeArgs;
++    bool changed = false;
++    for (auto arg : ty->typeArgs) {
++        auto erased = EraseCapTys(arg);
++        changed = changed || erased != arg;
++        typeArgs.push_back(erased);
++    }
++    if (!changed) {
++        return ty;
++    }
++    return SubstituteTypeArgs(ty, typeArgs);
++}
++
+ bool TypeManager::IsFuncParametersSubtype(const FuncTy& leaf, const FuncTy& root)
+ {
+     bool noCast = leaf.noCast || root.noCast;
+@@ -1120,8 +1173,12 @@ bool TypeManager::IsFuncParameterTypesIdentical(const FuncTy& t1, const FuncTy&
+     if (Ty::IsTyCorrect(&t1) && Ty::IsTyCorrect(&t2) && t1.paramTys.size() == t2.paramTys.size()) {
+         result = true;
+         for (size_t i = 0; i < t2.paramTys.size(); i++) {
+-            result =
+-                result && CheckTypeCompatibility(t1.paramTys[i], t2.paramTys[i], false) == TypeCompatibility::IDENTICAL;
++            // Checked exceptions (proposal 3.7): overloading and overriding compare signatures with
++            // all capability lists removed, so parameter functional types differing only in their
++            // 'throws' lists are the same type here.
++            result = result &&
++                CheckTypeCompatibility(EraseCapTys(t1.paramTys[i]), EraseCapTys(t2.paramTys[i]), false) ==
++                    TypeCompatibility::IDENTICAL;
+         }
+     }
+     return result;
+@@ -1135,7 +1192,10 @@ bool TypeManager::IsFuncParameterTypesIdentical(
+         result = true;
+         for (size_t i = 0; i < paramTys2.size(); i++) {
+             auto paramTy1 = GetInstantiatedTy(paramTys1[i], typeMapping);
+-            result = result && CheckTypeCompatibility(paramTy1, paramTys2[i], false) == TypeCompatibility::IDENTICAL;
++            // Checked exceptions (proposal 3.7): compare modulo capability lists.
++            result = result &&
++                CheckTypeCompatibility(EraseCapTys(paramTy1), EraseCapTys(paramTys2[i]), false) ==
++                    TypeCompatibility::IDENTICAL;
+         }
+     }
+     return result;
+@@ -1972,7 +2032,9 @@ bool TypeManager::IsFuncDeclSubType(const AST::FuncDecl& decl, const AST::FuncDe
+ 
+ bool TypeManager::IsFuncTySubType(const AST::FuncTy& type1, const AST::FuncTy& type2)
+ {
+-    return IsFuncParameterTypesIdentical(type1.paramTys, type2.paramTys) && IsSubtype(type1.retTy, type2.retTy);
++    // Checked exceptions (proposal 3.4): capability lists compare by set subsumption.
++    return IsFuncParameterTypesIdentical(type1.paramTys, type2.paramTys) && IsSubtype(type1.retTy, type2.retTy) &&
++        IsCapTysSubsumed(type1.capTys, type2.capTys);
+ }
+ #endif
+ 
+@@ -2382,7 +2444,12 @@ Ptr<Ty> TypeManager::ReplaceThisTy(Ptr<Ty> now)
+                 paramTys.push_back(ReplaceThisTy(p));
+             }
+             auto retTy = ReplaceThisTy(funcTy.retTy);
+-            return GetFunctionTy(paramTys, retTy, {funcTy.IsCFunc(), funcTy.isClosureTy, funcTy.hasVariableLenArg});
++            std::vector<Ptr<Ty>> capTys;
++            for (auto& c : funcTy.capTys) {
++                capTys.push_back(ReplaceThisTy(c));
++            }
++            return GetFunctionTy(
++                paramTys, retTy, {funcTy.IsCFunc(), funcTy.isClosureTy, funcTy.hasVariableLenArg}, capTys);
+         }
+         case TypeKind::TYPE_TUPLE:
+             return GetTupleTy(newArgs, static_cast<TupleTy&>(*now).isClosureTy);
+@@ -2431,7 +2498,8 @@ Ptr<Ty> TypeManager::SubstituteTypeArgs(Ptr<Ty> baseTy, std::vector<Ptr<Ty>>& ty
+             auto returnTy = typeArgs.back();
+             typeArgs.pop_back();
+             auto funcTy = StaticCast<FuncTy>(baseTy);
+-            return GetFunctionTy(typeArgs, returnTy, {funcTy->isC, false, funcTy->hasVariableLenArg});
++            // NOTE: 'typeArgs' only covers params and return type; capability types are carried over unchanged.
++            return GetFunctionTy(typeArgs, returnTy, {funcTy->isC, false, funcTy->hasVariableLenArg}, funcTy->capTys);
+         }
+         case TypeKind::TYPE: {
+             return baseTy;
+@@ -2535,7 +2603,7 @@ Ptr<Ty> TypeManager::ObtainsAliasType(Ptr<const Node> node)
+                 params.emplace_back(ObtainsAliasType(param.get()));
+             }
+             auto retTy = ObtainsAliasType(ft->retType.get());
+-            ret = GetFunctionTy(params, retTy, {ft->isC, false, fTy->hasVariableLenArg});
++            ret = GetFunctionTy(params, retTy, {ft->isC, false, fTy->hasVariableLenArg}, fTy->capTys);
+             break;
+         }
+         case ASTKind::TUPLE_TYPE: {
+@@ -2636,7 +2704,12 @@ Ptr<AST::Ty> TypeManager::SubstituteTypeAliasInTy(AST::Ty& ty, bool needSubstitu
+             auto returnTy = typeArgs.back();
+             typeArgs.pop_back();
+             auto& funcTy = static_cast<FuncTy&>(ty);
+-            return GetFunctionTy(typeArgs, returnTy, {funcTy.isC, false, funcTy.hasVariableLenArg});
++            std::vector<Ptr<Ty>> capTys;
++            for (auto capTy : funcTy.capTys) {
++                CJC_ASSERT(capTy);
++                capTys.push_back(SubstituteTypeAliasInTy(*capTy, needSubstituteGeneric, typeMapping));
++            }
++            return GetFunctionTy(typeArgs, returnTy, {funcTy.isC, false, funcTy.hasVariableLenArg}, capTys);
+         }
+         case TypeKind::TYPE: {
+             return GetUnaliasedTypeFromTypeAlias(
+-- 
+2.54.0
+

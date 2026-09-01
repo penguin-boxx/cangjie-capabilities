@@ -1,0 +1,66 @@
+From 8203c79bf73763529044bde24ecb7ec9f2ad5b5a Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 09:08:22 +0300
+Subject: [PATCH 4/6] feat(chexc): std.core 'unsafeAssumeHandled', the escape
+ hatch
+
+The one declaration that gets a capability for free: it invokes a callback requiring 'E'
+while requiring nothing itself, so a caller can assume a requirement is handled where the
+checking cannot see that it is. The compiler recognizes it by name and package and
+fabricates the capability inside its body; the signature is what makes the assumption
+explicit and greppable at the call site.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ stdlib/libs/std/core/CMakeLists.txt           |  1 +
+ stdlib/libs/std/core/unsafe_assume_handled.cj | 26 +++++++++++++++++++
+ 2 files changed, 27 insertions(+)
+ create mode 100644 stdlib/libs/std/core/unsafe_assume_handled.cj
+
+diff --git a/stdlib/libs/std/core/CMakeLists.txt b/stdlib/libs/std/core/CMakeLists.txt
+index a6c6894..c1c94fd 100644
+--- a/stdlib/libs/std/core/CMakeLists.txt
++++ b/stdlib/libs/std/core/CMakeLists.txt
+@@ -32,6 +32,7 @@ set(CANGJIE_CORE_SRCS
+     arithmetic_exception.cj
+     illegal_argument_exception.cj
+     unchecked_exception.cj
++    unsafe_assume_handled.cj
+     illegal_format_exception.cj
+     illegal_state_exception.cj
+     index_out_of_bounds_exception.cj
+diff --git a/stdlib/libs/std/core/unsafe_assume_handled.cj b/stdlib/libs/std/core/unsafe_assume_handled.cj
+new file mode 100644
+index 0000000..af7c0d3
+--- /dev/null
++++ b/stdlib/libs/std/core/unsafe_assume_handled.cj
+@@ -0,0 +1,26 @@
++/*
++ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
++ * This source file is part of the Cangjie project, licensed under Apache-2.0
++ * with Runtime Library Exception.
++ *
++ * See https://cangjie-lang.cn/pages/LICENSE for license information.
++ */
++
++package std.core
++
++/**
++ * Runs `f`, supplying a fabricated capability for `E` — the escape hatch of checked exceptions,
++ * for migration and boundary code that *knows* an exception cannot occur, or deliberately accepts
++ * a crash.
++ *
++ * It is a type-level assumption with zero runtime content: if an `E` actually escapes `f`, it
++ * propagates exactly as an unchecked exception would. `E` is written explicitly, since capability
++ * lists take no part in type-argument inference; instantiating it with an unchecked type is a
++ * no-op and is warned about.
++ *
++ * The compiler supplies the fabricated capability inside this declaration; no source operation
++ * fabricates capabilities.
++ */
++public func unsafeAssumeHandled<E, R>(f: () throws E -> R): R where E <: Exception {
++    f()
++}
+-- 
+2.54.0
+

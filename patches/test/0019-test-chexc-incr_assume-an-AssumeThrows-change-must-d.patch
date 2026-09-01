@@ -1,0 +1,99 @@
+From 85018920dc0367c07c43cd237f49130ac1dd1682 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 18:29:41 +0300
+Subject: [PATCH 19/43] =?UTF-8?q?test(chexc):=20incr=5Fassume=20=E2=80=94?=
+ =?UTF-8?q?=20an=20@AssumeThrows=20change=20must=20dirty=20the=20cache=20(?=
+ =?UTF-8?q?E3)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The two versions differ on line 1 alone: an earlier draft added comments to the
+.new file, shifting declaration positions so the file was re-checked for
+unrelated reasons and the test passed against the unfixed compiler. A test that
+cannot be shown to discriminate is not evidence.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../CheckedExceptions/assume/incr_assume.cj   | 13 ++++++++++++
+ .../assume/incr_assume.new.cj                 | 20 +++++++++++++++++++
+ .../assume/incr_assume.old.cj                 | 20 +++++++++++++++++++
+ 3 files changed, 53 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.new.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.old.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.cj
+new file mode 100644
+index 0000000000..608adaa149
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.cj
+@@ -0,0 +1,13 @@
++// Checked exceptions (ledger E3): an '@AssumeThrows' change must invalidate the incremental
++// cache. The two versions differ ONLY in the assumed exception type; every declaration is
++// byte-identical, so a hash that ignores import annotations leaves the stale obligations in
++// place and the second build wrongly succeeds.
++
++// DEPENDENCE: %n.old.cj %n.new.cj legacy_db.cj
++
++// EXEC: %compiler %cmp_opt %compile_lib_opt legacy_db.cj -o legacy_db.%middle
++// EXEC: %compiler %incrementalCompile %cmp_opt --enable-checked-exceptions legacy_db.%middle %n.old.cj -o %output
++// EXEC: %rmfile %n.old.cj
++// EXEC: %cpfile %n.new.cj %n.old.cj
++// EXEC-PIPE-1: %compiler %incrementalCompile %cmp_opt --enable-checked-exceptions legacy_db.%middle %n.old.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-OtherExc'
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.new.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.new.cj
+new file mode 100644
+index 0000000000..7cc603f3d4
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.new.cj
+@@ -0,0 +1,20 @@
++@AssumeThrows[OtherExc]
++import legacy_db.*
++
++class SqlExc <: Exception {}
++class OtherExc <: Exception {}
++
++// public: no inference, so the assumed requirement must be discharged here.
++// This file and the .new one differ in the annotation token and NOTHING else:
++// same lines, same declarations, so only the assumption can invalidate the cache.
++public func run(): Int64 {
++    try {
++        return query("x")
++    } catch (e: SqlExc) {
++        return 0
++    }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.old.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.old.cj
+new file mode 100644
+index 0000000000..31e2225959
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/incr_assume.old.cj
+@@ -0,0 +1,20 @@
++@AssumeThrows[SqlExc]
++import legacy_db.*
++
++class SqlExc <: Exception {}
++class OtherExc <: Exception {}
++
++// public: no inference, so the assumed requirement must be discharged here.
++// This file and the .new one differ in the annotation token and NOTHING else:
++// same lines, same declarations, so only the assumption can invalidate the cache.
++public func run(): Int64 {
++    try {
++        return query("x")
++    } catch (e: SqlExc) {
++        return 0
++    }
++}
++
++main() {
++    return 0
++}
+-- 
+2.54.0
+

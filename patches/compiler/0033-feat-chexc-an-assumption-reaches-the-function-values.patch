@@ -1,0 +1,121 @@
+From 4b319b1277d7bd506af3d88f206c39358b21787f Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 13:08:57 +0300
+Subject: [PATCH 33/44] feat(chexc): an assumption reaches the function values
+ a dependency hands out
+
+An assumption import used to apply to resolved calls only, so a legacy package could hand back a
+function -- as a call result, a function-typed field or property, or a method taken as a value --
+and calling it later required nothing at all. The assumed list now reaches every functional value
+leaving the package in a covariant position. A parameter position is left alone: there the
+dependency calls our function, and what that one requires is already ours to declare.
+
+The text puts the list on the type, so that the obligation falls where the value is finally
+called. Rewriting the expression's type does not achieve that -- the variable or field it flows
+into keeps the type checking gave it -- so the obligation is demanded where the value crosses the
+boundary instead: sound, and stricter by the case of a value taken and never called.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp | 70 +++++++++++++++++++-
+ 1 file changed, 68 insertions(+), 2 deletions(-)
+
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index c3a0330e..40f31e37 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -461,9 +461,29 @@ private:
+                 }
+                 return VisitAction::WALK_CHILDREN;
+             }
+-            case ASTKind::CALL_EXPR:
+-                HandleCall(StaticCast<CallExpr&>(*node));
++            case ASTKind::CALL_EXPR: {
++                auto& ce = StaticCast<CallExpr&>(*node);
++                HandleCall(ce);
++                // The callee expression is not a value taken out of the package -- the call itself
++                // already carries the assumed list.
++                if (ce.baseFunc) {
++                    (void)calleeExprs.emplace(ce.baseFunc.get());
++                }
++                return VisitAction::WALK_CHILDREN;
++            }
++            case ASTKind::MEMBER_ACCESS: {
++                // A function-typed field or property of an assumed package, or one of its methods
++                // taken as a value.
++                auto& ma = StaticCast<MemberAccess&>(*node);
++                ImposeAssumedOnValue(ma, ma.target);
+                 return VisitAction::WALK_CHILDREN;
++            }
++            case ASTKind::REF_EXPR: {
++                // The same for an unqualified reference to one of its declarations.
++                auto& re = StaticCast<RefExpr&>(*node);
++                ImposeAssumedOnValue(re, re.ref.target);
++                return VisitAction::WALK_CHILDREN;
++            }
+             default:
+                 return VisitAction::WALK_CHILDREN;
+         }
+@@ -689,6 +709,50 @@ private:
+         }
+     }
+ 
++    /**
++     * Assumption imports: the assumed list reaches every functional value the dependency hands
++     * out in a COVARIANT position -- a call's result, a function-typed field or property, a method
++     * taken as a value -- and not only the calls that resolve into the package. A parameter
++     * position is left alone: there the dependency calls OUR function, and what that one requires
++     * is already ours to declare.
++     *
++     * The text puts the list on the TYPE, so that the obligation is paid wherever the value is
++     * finally called. Rewriting the type of the expression is not enough to achieve that -- the
++     * variable, field or parameter it flows into keeps the type checking gave it -- so the
++     * obligation is demanded here, where the value crosses the boundary. That is sound and
++     * stricter: a value taken and never called still pays (see I.3 in the gap analysis).
++     */
++    bool YieldsFunctionValue(Ptr<Ty> ty) const
++    {
++        auto funcTy = DynamicCast<FuncTy*>(ty);
++        return funcTy != nullptr;
++    }
++
++    /// The assumed list of the package @p decl belongs to, empty when it is not an assumed one.
++    const std::vector<Ptr<Ty>>& AssumedCapsOf(const Decl& decl) const
++    {
++        static const std::vector<Ptr<Ty>> none;
++        auto entry = assumed.find(decl.fullPackageName);
++        return entry == assumed.end() ? none : entry->second;
++    }
++
++    void ImposeAssumedOnValue(Expr& expr, Ptr<const Decl> target)
++    {
++        // A callee is not a value taken out of the package: the call itself already carries the
++        // assumed list, and demanding twice would report the same obligation twice.
++        if (assumed.empty() || !target || calleeExprs.count(&expr) > 0) {
++            return;
++        }
++        if (!Ty::IsTyCorrect(expr.GetTy()) || !YieldsFunctionValue(expr.GetTy())) {
++            return;
++        }
++        for (auto cap : AssumedCapsOf(*target)) {
++            if (Ty::IsTyCorrect(cap)) {
++                Demand(cap, expr, "this function value from a package with assumed requirements");
++            }
++        }
++    }
++
+     /// Substitution from the callee's own type parameters to this call site's type arguments:
+     /// the receiver's instantiation (for a member of a generic type) combined with the call's
+     /// explicit or inferred type arguments (for a generic function).
+@@ -804,6 +868,8 @@ private:
+     std::vector<SupplyScope> supplies;
+     RootSupply rootSupply;
+     // Lists inferred for declarations without an authoritative clause.
++    /// Callee expressions, which the call path already accounts for; see 'ImposeAssumedOnValue'.
++    std::set<Ptr<const Node>> calleeExprs;
+     const Sema::InferredCapabilities& inferred;
+     // Set while collecting one declaration's residual demands: its own inferred list is not a supply.
+     Ptr<const Decl> collectingFor{nullptr};
+-- 
+2.54.0
+

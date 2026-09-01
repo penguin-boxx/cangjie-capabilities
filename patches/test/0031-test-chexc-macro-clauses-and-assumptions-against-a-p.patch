@@ -1,0 +1,172 @@
+From c0260a992577e30447349e4c9b4e954e4885a2e9 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 12:58:42 +0300
+Subject: [PATCH 31/43] test(chexc): macro clauses, and assumptions against a
+ package's recorded level
+
+'macros/' pins both halves of the macro rule: a 'throws' clause on a macro compiles and the
+macro expands, a 'performs' clause is rejected. 'assume/' pins both halves of the metadata rule:
+an assumption over a dependency verified at 'error' is an error, the same assumption over one
+built at 'warn' compiles and runs.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../assume/assume_on_checked_neg.cj           | 18 +++++++++++++++
+ .../assume/assume_on_warn_dep.cj              | 23 +++++++++++++++++++
+ .../CheckedExceptions/assume/checked_dep.cj   | 11 +++++++++
+ .../macros/macro_performs_neg.cj              | 15 ++++++++++++
+ .../CheckedExceptions/macros/macro_throws.cj  | 21 +++++++++++++++++
+ .../macros/macro_throws_define.cj             | 18 +++++++++++++++
+ 6 files changed, 106 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_checked_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_warn_dep.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/checked_dep.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/macros/macro_performs_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/macros/macro_throws.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/macros/macro_throws_define.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_checked_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_checked_neg.cj
+new file mode 100644
+index 0000000000..2eb6321266
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_checked_neg.cj
+@@ -0,0 +1,18 @@
++// Checked exceptions (assumption imports): an assumption stands in for the lists a dependency does
++// not have. A package whose lists were checked has them, and the two would contradict each other --
++// the assumption would override what the compiler verified. The package metadata records the level
++// each package was compiled at, which is what makes this detectable across the package boundary.
++// Only 'error' counts: a dependency built at 'warn' is mid-migration and an assumption over it is
++// still meaningful -- 'assume_on_warn_dep.cj' pins that half.
++
++// DEPENDENCE: checked_dep.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions checked_dep.cj -o checked_dep.%middle
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions checked_dep.%middle %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: '@AssumeThrows' names package 'checked_dep', whose capability lists are verified
++
++@AssumeThrows[DepException]
++import checked_dep.*
++
++main(): Int64 {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_warn_dep.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_warn_dep.cj
+new file mode 100644
+index 0000000000..81f9a896e1
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_warn_dep.cj
+@@ -0,0 +1,23 @@
++// Checked exceptions (assumption imports): the mirror of 'assume_on_checked_neg.cj'. A dependency
++// compiled at 'warn' has lists that are knowingly incomplete -- violations were reported and the
++// package was built anyway -- so an assumption over it is still the tool for the job and is
++// accepted. Only a dependency verified at 'error' makes the two contradictory.
++
++// DEPENDENCE: checked_dep.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions=warn checked_dep.cj -o checked_dep.%middle
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions checked_dep.%middle %n.cj -o %output
++// EXEC: %run %output
++
++@AssumeThrows[DepException]
++import checked_dep.*
++
++// The assumption imposes 'DepException' on every call into the package -- it is pessimistic, not a
++// discharge -- and the 'try' is what handles it.
++main(): Int64 {
++    try {
++        risky()
++    } catch (e: DepException) {
++        return 0
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/checked_dep.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/checked_dep.cj
+new file mode 100644
+index 0000000000..9168234f0c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/checked_dep.cj
+@@ -0,0 +1,11 @@
++// A dependency compiled WITH checking on: its capability lists are verified, so an assumption over
++// it is contradictory (see 'assume_on_checked_neg.cj').
++
++package checked_dep
++
++public class DepException <: Exception {}
++
++public func risky(): Unit
++throws DepException {
++    throw DepException()
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/macros/macro_performs_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/macros/macro_performs_neg.cj
+new file mode 100644
+index 0000000000..9af9cc00da
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/macros/macro_performs_neg.cj
+@@ -0,0 +1,15 @@
++// Checked exceptions / effects: a macro body runs inside the compiler, where no handler for a user
++// effect can be installed, so a 'performs' clause on a macro is rejected. Conservative reading --
++// the text says a macro may declare what it throws and is silent on effects (question Q13).
++
++// EXEC-PIPE-1: %compiler %cmp_macro --diagnostic-format=noColor --experimental --enable-checked-exceptions %n.cj 2>&1 | compare %f
++// ASSERT: scan error: a macro cannot carry a 'performs' clause
++
++macro package chexc_macro_performs
++
++import std.ast.*
++
++public macro Bad(input: Tokens): Tokens
++performs Command<Unit> {
++    return input
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/macros/macro_throws.cj b/testsuites/LLT/compiler/CheckedExceptions/macros/macro_throws.cj
+new file mode 100644
+index 0000000000..218229ef3b
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/macros/macro_throws.cj
+@@ -0,0 +1,21 @@
++// Checked exceptions (clauses on declarations): a macro is a callable and carries a 'throws'
++// clause of its own -- every macro in stdx raises an exception while expanding and documents it.
++// The clause is discharged inside the macro body; the code that invokes the macro never runs that
++// body, so the expansion site demands nothing.
++
++// DEPENDENCE: macro_throws_define.cj
++// EXEC: %compiler %cmp_macro --experimental --enable-checked-exceptions macro_throws_define.cj
++// EXEC: %run_macro %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++import chexc_macro_test.*
++
++@Checked
++func doubled(): Int64 { 21 }
++
++main(): Int64 {
++    if (doubled() != 21) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/macros/macro_throws_define.cj b/testsuites/LLT/compiler/CheckedExceptions/macros/macro_throws_define.cj
+new file mode 100644
+index 0000000000..fb95de955b
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/macros/macro_throws_define.cj
+@@ -0,0 +1,18 @@
++// The macro package for 'macro_throws.cj': a macro declares what it may throw while it expands.
++// A macro package exports macros only, so the exception is std.ast's own -- which is what the
++// macros in stdx raise as well.
++
++macro package chexc_macro_test
++
++import std.ast.*
++
++// The clause supplies the capability inside the body, which is where expansion-time failures are
++// raised. A macro's requirement is discharged by its own clause; the code that invokes the macro
++// never runs this body, so nothing is demanded at the expansion site.
++public macro Checked(input: Tokens): Tokens
++throws ASTException {
++    if (input.size == 0) {
++        throw ASTException("Checked expects a declaration")
++    }
++    return input
++}
+-- 
+2.54.0
+

@@ -1,0 +1,70 @@
+From bf71deb00e7551db2b836a7f6abd9cb6500ad103 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 00:09:32 +0300
+Subject: [PATCH 1/6] feat(chexc): add std.core UncheckedException (proposal
+ 6.4)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Base class of exceptions that are not statically tracked: throwing a subtype
+never requires an exception capability, and such types may not appear in a
+'throws' clause. Additive — unaffected when the compiler flag is off.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ stdlib/libs/std/core/CMakeLists.txt         |  1 +
+ stdlib/libs/std/core/unchecked_exception.cj | 29 +++++++++++++++++++++
+ 2 files changed, 30 insertions(+)
+ create mode 100644 stdlib/libs/std/core/unchecked_exception.cj
+
+diff --git a/stdlib/libs/std/core/CMakeLists.txt b/stdlib/libs/std/core/CMakeLists.txt
+index 8019029..a6c6894 100644
+--- a/stdlib/libs/std/core/CMakeLists.txt
++++ b/stdlib/libs/std/core/CMakeLists.txt
+@@ -31,6 +31,7 @@ set(CANGJIE_CORE_SRCS
+     range.cj
+     arithmetic_exception.cj
+     illegal_argument_exception.cj
++    unchecked_exception.cj
+     illegal_format_exception.cj
+     illegal_state_exception.cj
+     index_out_of_bounds_exception.cj
+diff --git a/stdlib/libs/std/core/unchecked_exception.cj b/stdlib/libs/std/core/unchecked_exception.cj
+new file mode 100644
+index 0000000..f379f98
+--- /dev/null
++++ b/stdlib/libs/std/core/unchecked_exception.cj
+@@ -0,0 +1,29 @@
++/*
++ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
++ * This source file is part of the Cangjie project, licensed under Apache-2.0
++ * with Runtime Library Exception.
++ *
++ * See https://cangjie-lang.cn/pages/LICENSE for license information.
++ */
++
++package std.core
++
++/**
++ * Base class of exceptions that are not statically tracked by checked exceptions.
++ *
++ * Throwing an exception of this class or any of its subclasses never requires an exception
++ * capability, and such types may not appear in a `throws` clause. Use it for errors that are
++ * not realistically recoverable at the throw site — broken contracts and invariants — or that
++ * a program chooses to handle in one place at the top level.
++ */
++public open class UncheckedException <: Exception {
++    public init() {
++        super()
++    }
++    public init(message: String) {
++        super(message)
++    }
++    protected open override func getClassName(): String {
++        return "UncheckedException"
++    }
++}
+-- 
+2.54.0
+

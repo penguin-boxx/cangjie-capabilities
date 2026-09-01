@@ -1,0 +1,229 @@
+From a076e81b0700005bd99b38db0562b535c431062f Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 30 Aug 2026 17:16:34 +0300
+Subject: [PATCH 39/43] test(chexc): joins and meets, and the erasure of
+ clauses at the symbol level
+
+'join_meet.cj' is the text's own pair of examples -- the join unions the lists, the meet of two
+unrelated ones leaves a requirement-free parameter -- and 'covered_meet.cj' pins the comparable
+case, where the meet keeps the narrower entry. The meet had no test at all until now.
+
+'abi/erasure_symbols.cj' compiles the same package twice, with every clause and with none, and
+requires the two symbol tables to be identical; 'erasure_clause_twin.cj' runs the same shapes.
+Erasure was argued from the architecture and never pinned, which the review noted.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../abi/erasure_clause_twin.cj                | 42 +++++++++++++++++++
+ .../CheckedExceptions/abi/erasure_symbols.cj  | 16 +++++++
+ .../abi/erasure_symbols_lib.cj                | 21 ++++++++++
+ .../abi/erasure_symbols_plain.cj              | 18 ++++++++
+ .../CheckedExceptions/types/covered_meet.cj   | 34 +++++++++++++++
+ .../CheckedExceptions/types/join_meet.cj      | 29 +++++++++++++
+ 6 files changed, 160 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/abi/erasure_clause_twin.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols_lib.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols_plain.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/covered_meet.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/join_meet.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_clause_twin.cj b/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_clause_twin.cj
+new file mode 100644
+index 0000000000..4bfe3a2cb3
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_clause_twin.cj
+@@ -0,0 +1,42 @@
++// Checked exceptions ("ABI and reflection"): capability parameters are stripped after type
++// checking -- no runtime parameters, no calling-convention change, no storage, and a capturing
++// type has the layout of one without the clause. Erasure was argued from the architecture
++// ('capTys' are deliberately outside 'typeArgs', so CHIR and codegen never see them) but never
++// pinned by a test, which the 2026-08-30 review noted.
++//
++// This is the runnable half: a clause-bearing program and its clause-free twin must behave
++// identically, including through a function value and a capturing type. The symbol-level half --
++// comparing mangled names between the twins -- is 'erasure_symbols.cj'.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class EException <: Exception {}
++
++class Capturing
++captures EException {
++    init() {}
++    func run(): Int64 { 42 }
++}
++
++func withClause(x: Int64): Int64
++throws EException {
++    return x + 1
++}
++
++func withoutClause(x: Int64): Int64 {
++    return x + 1
++}
++
++main(): Int64 {
++    try {
++        let a: (Int64) -> Int64 = withoutClause
++        let c = Capturing()
++        if (withClause(41) != 42 || a(41) != 42 || c.run() != 42) {
++            return 1
++        }
++    } catch (e: EException) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols.cj b/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols.cj
+new file mode 100644
+index 0000000000..8a15e4fa38
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols.cj
+@@ -0,0 +1,16 @@
++// Checked exceptions ("ABI and reflection"): capability parameters are stripped after type
++// checking -- a declaration with a clause lowers exactly as one without, function values share
++// the representation of their erased counterpart, and no capability object is ever materialized.
++// Argued from the architecture ('capTys' sit outside 'typeArgs', so CHIR and codegen never see
++// them) but never pinned by a test until the 2026-08-30 review asked for one.
++//
++// The two dependencies are the same package written with and without clauses. Compiled to static
++// libraries, their symbol tables must be byte-identical -- name, type and all.
++
++// DEPENDENCE: erasure_symbols_lib.cj erasure_symbols_plain.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions erasure_symbols_lib.cj -o with_clauses.%middle
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions erasure_symbols_plain.cj -o without_clauses.%middle
++// EXEC-PIPE: nm with_clauses.%middle | awk '{print $2, $3}' | sort > with.txt; nm without_clauses.%middle | awk '{print $2, $3}' | sort > without.txt; diff with.txt without.txt && echo ERASURE_IDENTICAL | compare %f
++// ASSERT: scan ERASURE_IDENTICAL
++
++main(): Int64 { 0 }
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols_lib.cj b/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols_lib.cj
+new file mode 100644
+index 0000000000..a404b6fa5c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols_lib.cj
+@@ -0,0 +1,21 @@
++// The clause-bearing half of the erasure twin pair; 'erasure_symbols_plain.cj' is the same source
++// with every clause removed. Their symbol tables must be identical.
++
++package twin
++
++public class EException <: Exception {}
++
++public class Holder {
++    public init() {}
++    public func run(x: Int64): Int64 { x + 1 }
++}
++
++public func withClause(x: Int64): Int64
++throws EException {
++    return x + 1
++}
++
++public func helper(f: (Int64) throws EException -> Int64, x: Int64): Int64
++throws EException {
++    return f(x)
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols_plain.cj b/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols_plain.cj
+new file mode 100644
+index 0000000000..0088e85af4
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/abi/erasure_symbols_plain.cj
+@@ -0,0 +1,18 @@
++// The clause-free twin of 'erasure_symbols_lib.cj'.
++
++package twin
++
++public class EException <: Exception {}
++
++public class Holder {
++    public init() {}
++    public func run(x: Int64): Int64 { x + 1 }
++}
++
++public func withClause(x: Int64): Int64 {
++    return x + 1
++}
++
++public func helper(f: (Int64) -> Int64, x: Int64): Int64 {
++    return f(x)
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/covered_meet.cj b/testsuites/LLT/compiler/CheckedExceptions/types/covered_meet.cj
+new file mode 100644
+index 0000000000..6521c560d3
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/covered_meet.cj
+@@ -0,0 +1,34 @@
++// Checked exceptions ("Joins and meets"): the meet of two lists keeps what both cover -- of two
++// comparable entries, the more specific one. So a callback accepted by both branches may require
++// the narrower exception, and calling the joined function with such a callback is legal.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++open class BaseE <: Exception {}
++class DerE <: BaseE {}
++
++func takesBase(callback: () throws BaseE -> Unit): Unit {
++    try {
++        callback()
++    } catch (e: BaseE) {
++        ()
++    }
++}
++
++func takesDer(callback: () throws DerE -> Unit): Unit {
++    try {
++        callback()
++    } catch (e: DerE) {
++        ()
++    }
++}
++
++main(): Int64 {
++    let cond = true
++    let k = if (cond) { takesBase } else { takesDer }
++    // the meet of 'throws BaseE' and 'throws DerE' is 'throws DerE': the narrower one, which both
++    // parameter types accept
++    k({ => throw DerE() })
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/join_meet.cj b/testsuites/LLT/compiler/CheckedExceptions/types/join_meet.cj
+new file mode 100644
+index 0000000000..aca41f243d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/join_meet.cj
+@@ -0,0 +1,29 @@
++// Checked exceptions ("Joins and meets"): where the language computes a common supertype of
++// functional types componentwise, the capability component of the JOIN is the union of the lists
++// in semantic form; the MEET -- which the join's parameter positions require by contravariance --
++// keeps the entries both lists cover, so unrelated entries contribute nothing and the common
++// parameter type is requirement-free. Both examples are the text's own.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan found '() throws (Class-AException, Class-BException) -> Unit'
++// ASSERT: scan found '(() -> Unit) -> Unit'
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func g(): Unit throws AException {}
++func h(): Unit throws BException {}
++
++func p(callback: () throws AException -> Unit): Unit {}
++func q(callback: () throws BException -> Unit): Unit {}
++
++main(): Int64 {
++    let cond = true
++    // join: the union of the two lists
++    let f = if (cond) { g } else { h }
++    let showJoin: Int64 = f
++    // meet: unrelated entries have no common subtype, so the parameter is requirement-free
++    let k = if (cond) { p } else { q }
++    let showMeet: Int64 = k
++    return 0
++}
+-- 
+2.54.0
+

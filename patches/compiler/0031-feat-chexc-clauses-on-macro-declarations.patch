@@ -1,0 +1,56 @@
+From 69f8c8eea72abe49a2659c08966a435cb632887e Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 12:58:31 +0300
+Subject: [PATCH 31/44] feat(chexc): clauses on macro declarations
+
+A macro is a callable and may declare what it throws while it expands -- every macro in stdx
+raises an exception during expansion and documents it in a comment, because until now there was
+nowhere to declare it. The clause is discharged inside the macro body; the code that invokes the
+macro never runs that body, so the expansion site demands nothing.
+
+'performs' is refused: a macro body runs inside the compiler, where no handler for a user effect
+can be installed. The text is silent on that (question Q13), so the conservative reading is
+implemented and widening it stays backward compatible.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ include/cangjie/Basic/DiagRefactor/DiagnosticParser.def | 2 ++
+ src/Parse/ParseMacro.cpp                                | 9 +++++++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+index 9d0dc6e0..56b26821 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+@@ -98,6 +98,8 @@ ERROR(parse_empty_assume_throws_list, "'@AssumeThrows[]' assumes nothing",
+     "drop the brackets to assume 'Exception', or list the exception types to assume")
+ ERROR(parse_ellipsis_not_last, "'...' must be the last entry of a 'throws' clause",
+     "it may appear at most once, at the end")
++ERROR(parse_clause_on_macro, "a macro cannot carry a '%s' clause",
++    "a macro body runs inside the compiler, where no handler can be installed for it")
+ ERROR(parse_ellipsis_in_clause, "'...' is not allowed in a '%s' clause",
+     "only an inferable 'throws' list can be opened to inference")
+ ERROR(parse_duplicate_throws_clause, "duplicate 'throws' clause",
+diff --git a/src/Parse/ParseMacro.cpp b/src/Parse/ParseMacro.cpp
+index 7d157bb1..d1c5dcc9 100644
+--- a/src/Parse/ParseMacro.cpp
++++ b/src/Parse/ParseMacro.cpp
+@@ -242,6 +242,15 @@ OwnedPtr<FuncBody> ParserImpl::ParseMacroBody(AST::MacroDecl& macro)
+         ret->retType->EnableAttr(Attribute::IN_MACRO);
+         ret->retType->EnableAttr(Attribute::COMPILER_ADD);
+     }
++    // Checked exceptions (experimental): a macro is a callable like any other and may declare what
++    // it throws while it expands -- every macro in stdx raises a 'MacroException' and documents it.
++    // 'performs' is refused: a macro body runs inside the compiler, where no handler of a user
++    // effect can be installed. Rejecting it is the conservative reading; widening is compatible.
++    ParseCapabilityClauses(*ret);
++    if (ret->performsClause) {
++        ParseDiagnoseRefactor(DiagKindRefactor::parse_clause_on_macro, *ret->performsClause, "performs");
++        ret->performsClause.reset();
++    }
+     if (Seeing(TokenKind::LCURL)) {
+         ret->body = ParseBlock(ScopeKind::MACRO_BODY);
+     } else {
+-- 
+2.54.0
+

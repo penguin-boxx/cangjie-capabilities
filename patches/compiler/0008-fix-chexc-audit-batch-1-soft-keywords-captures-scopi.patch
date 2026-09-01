@@ -1,0 +1,407 @@
+From f03bab140d431722a4b2850c2f0ccd40f183e144 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 03:44:20 +0300
+Subject: [PATCH 08/44] =?UTF-8?q?fix(chexc):=20audit=20batch=201=20?=
+ =?UTF-8?q?=E2=80=94=20soft=20keywords,=20captures=20scoping,=20occurs=20c?=
+ =?UTF-8?q?heck?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+From an adversarial audit of the implementation against the proposal
+(notes/audit-report.md, 11 verified defects; ledger section E).
+
+MF11 (blocking): 'throws' and 'captures' were reserved keywords whenever the
+feature was enabled, so any existing identifier with those names failed to parse
+— 'std.unittest.mock' exports a public 'throws' function used at hundreds of
+call sites, which would have broken the stdlib migration at parse time.
+Proposal 10 requires soft keywords: both are now lexed as ordinary identifiers
+and recognised by spelling only at the seven positions where a clause may start.
+The class-header parser probes the clause before its "expected '{' or '<'"
+recovery, which would otherwise swallow it.
+
+MF5: a capturing class supplied its captured capabilities to static members,
+finalizers and static field initializers — none of which has a receiver to carry
+one, and all of which proposal 3.9 rule 1 forbids checked throws in. Silent
+escape; now gated on the body having a receiver.
+
+MF7: capability parameter inference never saw the enclosing class's 'captures',
+because that supply was owned by the member-walking entry point that inference
+bypasses. Every eligible member of a capturing class collected the captured
+requirement as residual and charged it to its callers — exactly the burden
+'captures' exists to remove. Captures are now derived from the declaration's
+owner, so inference and reporting see identical supplies.
+
+MF10: the polymorphic-recursion check ran during call-graph construction rather
+than per cycle, so it rejected ordinary generic code (a non-recursive 'wrap<T>'
+calling 'sink<Array<T>>') while being structurally unable to fire on its own
+motivating case, since self-calls are not graph edges. It now runs per strongly
+connected component, includes self-calls, and skips calls that leave the cycle.
+
+Gate: CheckedExceptions 50/58 (the 8 failures are the three features not yet
+implemented); ctest 49/49; Parser/Sema LLT 3934/3934; clang-format clean.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Lex/Lexer.cpp                            |   5 -
+ src/Parse/ParseDecl.cpp                      |  21 ++--
+ src/Parse/ParseType.cpp                      |   6 +-
+ src/Parse/ParserImpl.h                       |  10 ++
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp | 114 +++++++++++++------
+ 5 files changed, 105 insertions(+), 51 deletions(-)
+
+diff --git a/src/Lex/Lexer.cpp b/src/Lex/Lexer.cpp
+index 6d539b66..64ba94a2 100644
+--- a/src/Lex/Lexer.cpp
++++ b/src/Lex/Lexer.cpp
+@@ -310,8 +310,6 @@ TokenKind LexerImpl::LookupKeyword(const std::string& literal)
+         map[TOKENS[static_cast<unsigned char>(TokenKind::RESUME)]] = TokenKind::RESUME;
+         map[TOKENS[static_cast<unsigned char>(TokenKind::THROWING)]] = TokenKind::THROWING;
+         map[TOKENS[static_cast<unsigned char>(TokenKind::HANDLE)]] = TokenKind::HANDLE;
+-        map[TOKENS[static_cast<unsigned char>(TokenKind::THROWS)]] = TokenKind::THROWS;
+-        map[TOKENS[static_cast<unsigned char>(TokenKind::CAPTURES)]] = TokenKind::CAPTURES;
+         return map;
+     }();
+     auto it = tokenMap.find(literal);
+@@ -321,9 +319,6 @@ TokenKind LexerImpl::LookupKeyword(const std::string& literal)
+             kind == TokenKind::HANDLE)) {
+         return TokenKind::IDENTIFIER;
+     }
+-    if (!chexcEnabled && (kind == TokenKind::THROWS || kind == TokenKind::CAPTURES)) {
+-        return TokenKind::IDENTIFIER;
+-    }
+     return kind;
+ }
+ 
+diff --git a/src/Parse/ParseDecl.cpp b/src/Parse/ParseDecl.cpp
+index 437bd084..5e2e6ff0 100644
+--- a/src/Parse/ParseDecl.cpp
++++ b/src/Parse/ParseDecl.cpp
+@@ -1286,7 +1286,7 @@ void ParserImpl::ParseInheritedTypes(InheritableDecl& decl)
+ 
+ void ParserImpl::TryParseCapturesClause(InheritableDecl& decl)
+ {
+-    if (!Seeing(TokenKind::CAPTURES)) {
++    if (!SeeingChexcClause("captures")) {
+         return;
+     }
+     if (decl.capturesClause) {
+@@ -1303,14 +1303,19 @@ void ParserImpl::ParseInterfaceDeclOrClassDeclGeneric(InheritableDecl& ret)
+         ret.EnableAttr(Attribute::GENERIC);
+         ret.generic = ParseGeneric();
+     }
+-    if (SeeingAny({TokenKind::IDENTIFIER, TokenKind::COLON}) || SeeingContextualKeyword()) {
+-        ParseDiagnoseRefactor(DiagKindRefactor::parse_expected_lt_brace, lookahead, ConvertToken(lookahead));
+-        ConsumeUntilDecl(TokenKind::LCURL);
+-    }
+     // Checked exceptions (experimental): a class may declare a `captures` clause; its position
+     // relative to the superclass list and the `where` block is arbitrary (proposal 3.9).
+     // Interfaces cannot capture: on them `captures` follows the natural error path below.
+     bool allowCaptures = ret.astKind == ASTKind::CLASS_DECL;
++    // `captures` is an ordinary identifier outside clause position (proposal 10), so the
++    // "expected '{' or '<'" recovery below would otherwise swallow the clause.
++    if (allowCaptures && SeeingChexcClause("captures")) {
++        TryParseCapturesClause(ret);
++    }
++    if (SeeingAny({TokenKind::IDENTIFIER, TokenKind::COLON}) || SeeingContextualKeyword()) {
++        ParseDiagnoseRefactor(DiagKindRefactor::parse_expected_lt_brace, lookahead, ConvertToken(lookahead));
++        ConsumeUntilDecl(TokenKind::LCURL);
++    }
+     if (allowCaptures) {
+         TryParseCapturesClause(ret);
+     }
+@@ -2279,7 +2284,7 @@ void ParserImpl::ParsePropMemberBody(const ScopeKind& scopeKind, FuncBody& fb)
+     }
+     // Checked exceptions (experimental): property accessors may carry a `throws` clause,
+     // e.g. `get() throws GException { ... }` (proposal rule: clauses on all callables).
+-    if (Seeing(TokenKind::THROWS)) {
++    if (SeeingChexcClause("throws")) {
+         fb.throwsClause = ParseThrowsClause(true);
+     }
+     if (!Seeing(TokenKind::LCURL)) {
+@@ -2331,11 +2336,11 @@ OwnedPtr<FuncBody> ParserImpl::ParseFuncBody(ScopeKind scopeKind)
+     }
+     // Checked exceptions (experimental): a `throws` clause and generic constraints may appear
+     // in either order after the return type (proposal §3.2 rule 4).
+-    if (Seeing(TokenKind::THROWS)) {
++    if (SeeingChexcClause("throws")) {
+         ret->throwsClause = ParseThrowsClause(true);
+     }
+     ParseFuncGenericConstraints(*ret);
+-    if (Seeing(TokenKind::THROWS)) {
++    if (SeeingChexcClause("throws")) {
+         if (ret->throwsClause) {
+             ParseDiagnoseRefactor(DiagKindRefactor::parse_duplicate_throws_clause, lookahead.Begin());
+             (void)ParseThrowsClause(true); // Parse and drop the duplicate to recover.
+diff --git a/src/Parse/ParseType.cpp b/src/Parse/ParseType.cpp
+index e7a05faa..7e269e80 100644
+--- a/src/Parse/ParseType.cpp
++++ b/src/Parse/ParseType.cpp
+@@ -213,7 +213,7 @@ OwnedPtr<AST::Type> ParserImpl::ParseTypeWithParen()
+     }
+     // Checked exceptions (experimental): a contextual `throws` after ')' also selects the
+     // function-type path, e.g. `(A) throws (E1, E2) -> R`. The clause must be followed by '->'.
+-    if (Seeing(TokenKind::THROWS)) {
++    if (SeeingChexcClause("throws")) {
+         auto throwsClause = ParseThrowsClause(false);
+         if (!Skip(TokenKind::ARROW)) {
+             ParseDiagnoseRefactor(DiagKindRefactor::parse_expected_arrow_after_throws_clause, lookahead.Begin());
+@@ -273,7 +273,7 @@ OwnedPtr<FuncType> ParserImpl::ParseFuncType(
+ 
+ OwnedPtr<AST::ThrowsClause> ParserImpl::ParseThrowsClause(bool isDeclClause)
+ {
+-    CJC_ASSERT(Seeing(TokenKind::THROWS));
++    CJC_ASSERT(SeeingChexcClause("throws"));
+     auto clause = MakeOwned<ThrowsClause>();
+     ChainScope cs(*this, clause.get());
+     Next(); // Consume `throws`.
+@@ -358,7 +358,7 @@ OwnedPtr<AST::ThrowsClause> ParserImpl::ParseCapturesClause()
+     // Checked exceptions (proposal 3.9): the `captures` clause of a class or struct header.
+     // Reuses the ThrowsClause node shape; the grammar is the bare comma-separated list only:
+     // `captures E1, E2` (no parenthesized or ellipsis forms).
+-    CJC_ASSERT(Seeing(TokenKind::CAPTURES));
++    CJC_ASSERT(SeeingChexcClause("captures"));
+     auto clause = MakeOwned<ThrowsClause>();
+     ChainScope cs(*this, clause.get());
+     Next(); // Consume `captures`.
+diff --git a/src/Parse/ParserImpl.h b/src/Parse/ParserImpl.h
+index e62127c8..5bfa177b 100644
+--- a/src/Parse/ParserImpl.h
++++ b/src/Parse/ParserImpl.h
+@@ -191,6 +191,16 @@ private:
+     {
+         return Utils::In(GetContextualKeyword(), [this](const TokenKind& kind) { return Seeing(kind); });
+     }
++    /**
++     * Checked exceptions (proposal 10): 'throws' and 'captures' are recognized by spelling at
++     * the few positions where a clause may start, and stay ordinary identifiers everywhere
++     * else — reserving them would break existing code (`std.unittest.mock` exports a public
++     * `throws` function). Only recognized when the feature is enabled.
++     */
++    inline bool SeeingChexcClause(const std::string& keyword)
++    {
++        return enableChexc && Seeing(TokenKind::IDENTIFIER) && lookahead.Value() == keyword;
++    }
+     inline bool SeeingPrimaryKeyWordContext(TokenKind tk)
+     {
+         return Utils::In(GetContextualKeyword(), [this, &tk](const TokenKind& kind) { return Seeing({kind, tk}); });
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index a128f14d..cd015ad1 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -161,11 +161,6 @@ private:
+ 
+     void CheckMembers(Decl& decl)
+     {
+-        // A capturing class or struct stores the listed capabilities at construction, so its own
+-        // clause supplies them to every member body (proposal 3.9 rules 3 and 4; until Modal
+-        // CangJie lands, every constructor captures and every body is covered). Rule 5: a
+-        // subclass does not see its superclass's captures — only the class's own clause counts.
+-        classCaptures = TypeCheckUtil::GetDeclCapturesCapTys(decl);
+         // An instance field initializer has no scope of its own: its demands must be satisfiable
+         // in the capability scope of EVERY constructor (proposal 3.3). With no explicit
+         // constructor the implicit one supplies nothing.
+@@ -216,7 +211,6 @@ private:
+                     break;
+             }
+         }
+-        classCaptures.clear();
+     }
+ 
+     void CheckCallable(FuncDecl& fd)
+@@ -226,13 +220,19 @@ private:
+         }
+         CJC_ASSERT(supplies.empty());
+         rootSupply = nullptr;
+-        // The enclosing class's captured capabilities, if any, are in scope throughout the
+-        // member (proposal 3.9); the FUNC_BODY visit then pushes the declaration's own clause
+-        // scope. The walker visits parameter default values before the body, matching "as if it
+-        // appeared at the beginning of the body" (proposal 3.3).
+-        PushClassCaptures();
++        // The enclosing class's captured capabilities are in scope throughout a member that has
++        // a receiver to carry them (proposal 3.9). A static member, a static initializer and a
++        // finalizer have none, and proposal 3.9 rule 1 forbids checked throws there. Derived
++        // from the declaration's owner rather than from checker state, so inference — which
++        // checks declarations one by one — sees the same supplies as the reporting pass.
++        bool hasReceiver = !fd.TestAttr(Attribute::STATIC) && !fd.IsFinalizer();
++        auto captures = hasReceiver ? OwnerCaptures(fd) : SupplyScope{};
++        PushCaptures(captures);
++        // The FUNC_BODY visit then pushes the declaration's own clause scope. The walker visits
++        // parameter default values before the body, matching "as if it appeared at the
++        // beginning of the body" (proposal 3.3).
+         WalkScoped(fd.funcBody.get());
+-        PopClassCaptures();
++        PopCaptures(captures);
+         CJC_ASSERT(supplies.empty());
+     }
+ 
+@@ -243,23 +243,34 @@ private:
+         }
+         CJC_ASSERT(supplies.empty());
+         rootSupply = std::move(root);
+-        PushClassCaptures();
++        // Only an INSTANCE field initializer runs with a receiver; a static one has no
++        // capability scope at all (proposal 3.3, 3.9 rule 1). 'root' is non-null exactly for
++        // instance fields.
++        auto captures = rootSupply ? OwnerCaptures(vd) : SupplyScope{};
++        PushCaptures(captures);
+         WalkScoped(vd.initializer.get());
+-        PopClassCaptures();
++        PopCaptures(captures);
+         rootSupply = nullptr;
+         CJC_ASSERT(supplies.empty());
+     }
+ 
+-    void PushClassCaptures()
++    /// The 'captures' list of the declaration's own class or struct — never an inherited one
++    /// (proposal 3.9 rule 5).
++    SupplyScope OwnerCaptures(const Decl& decl) const
+     {
+-        if (!classCaptures.empty()) {
+-            supplies.emplace_back(classCaptures);
++        return decl.outerDecl ? TypeCheckUtil::GetDeclCapturesCapTys(*decl.outerDecl) : SupplyScope{};
++    }
++
++    void PushCaptures(const SupplyScope& captures)
++    {
++        if (!captures.empty()) {
++            supplies.emplace_back(captures);
+         }
+     }
+ 
+-    void PopClassCaptures()
++    void PopCaptures(const SupplyScope& captures)
+     {
+-        if (!classCaptures.empty()) {
++        if (!captures.empty()) {
+             supplies.pop_back();
+         }
+     }
+@@ -510,8 +521,6 @@ private:
+     Sema::CapabilityMissHandler& missHandler;
+     std::vector<SupplyScope> supplies;
+     RootSupply rootSupply;
+-    // Capabilities captured by the class or struct whose members are being checked (proposal 3.9).
+-    SupplyScope classCaptures;
+     // Lists inferred for declarations without an authoritative clause (proposal 6.3).
+     const Sema::InferredCapabilities& inferred;
+     // Set while collecting one declaration's residual demands: its own inferred list is not a supply.
+@@ -563,6 +572,7 @@ public:
+         CollectEligible(pkg);
+         BuildCallGraph();
+         for (auto& component : StronglyConnectedComponents()) {
++            CheckPolymorphicRecursion(component);
+             SolveComponent(component);
+         }
+         return std::move(inferred);
+@@ -632,14 +642,20 @@ private:
+     void BuildCallGraph()
+     {
+         callees.resize(order.size());
++        genericCalls.resize(order.size());
+         for (size_t i = 0; i < order.size(); ++i) {
+             auto caller = order[i];
+             Walker(caller->funcBody.get(), [this, i](Ptr<Node> node) {
+                 if (auto ce = DynamicCast<CallExpr*>(node.get()); ce && ce->resolvedFunction) {
+                     auto found = index.find(ce->resolvedFunction);
+-                    if (found != index.end() && found->second != i) {
+-                        callees[i].emplace(found->second);
+-                        CheckPolymorphicRecursion(*ce, i, found->second);
++                    if (found != index.end()) {
++                        if (found->second != i) {
++                            callees[i].emplace(found->second);
++                        }
++                        // Self-calls are not graph edges (an SCC of one is still a cycle), but
++                        // they are exactly where polymorphic recursion shows up, so record the
++                        // call for the post-SCC check below.
++                        genericCalls[i].emplace_back(Ptr<const CallExpr>(ce), found->second);
+                     }
+                 }
+                 return VisitAction::WALK_CHILDREN;
+@@ -650,37 +666,62 @@ private:
+     /**
+      * Proposal 6.3.4: a cycle that re-enters a member at a growing generic instantiation has no
+      * finite candidate universe, so inference is rejected and explicit clauses are required.
+-     * Detected by an occurs check on the call's type arguments.
++     *
++     * Only calls that stay inside the cycle can grow a type argument on every turn, so the check
++     * runs per strongly connected component — including a component's self-calls, which are the
++     * canonical case ('f<T>' calling 'f<Box<T>>') and are not graph edges. A call that merely
++     * passes a wrapped type argument to a callee outside the cycle terminates and is fine.
+      */
+-    void CheckPolymorphicRecursion(const CallExpr& ce, size_t caller, size_t callee)
++    void CheckPolymorphicRecursion(const std::vector<size_t>& component)
+     {
+-        auto callerGeneric = order[caller]->GetGeneric();
+-        if (!callerGeneric || reportedPolymorphic.count(caller) > 0) {
+-            return;
++        std::unordered_set<size_t> inCycle(component.begin(), component.end());
++        bool isCycle = component.size() > 1;
++        for (auto i : component) {
++            auto caller = order[i];
++            auto callerGeneric = caller->GetGeneric();
++            if (!callerGeneric) {
++                continue;
++            }
++            for (auto& [ce, callee] : genericCalls[i]) {
++                bool selfCall = callee == i;
++                if (!selfCall && (!isCycle || inCycle.count(callee) == 0)) {
++                    continue; // Leaves the cycle: the instantiation cannot keep growing.
++                }
++                if (ReportGrowingInstantiation(*ce, i, *callerGeneric)) {
++                    break;
++                }
++            }
++        }
++    }
++
++    /// Reports the first type argument that properly contains one of the caller's own type
++    /// parameters, i.e. one that is strictly larger on each turn of the cycle.
++    bool ReportGrowingInstantiation(const CallExpr& ce, size_t caller, const Generic& callerGeneric)
++    {
++        if (reportedPolymorphic.count(caller) > 0) {
++            return false;
+         }
+         auto nre = DynamicCast<NameReferenceExpr*>(ce.baseFunc.get());
+         if (!nre) {
+-            return;
++            return false;
+         }
+         for (auto typeArg : nre->instTys) {
+             if (!Ty::IsTyCorrect(typeArg) || typeArg->IsGeneric()) {
+                 continue;
+             }
+-            for (auto& typeParam : callerGeneric->typeParameters) {
++            for (auto& typeParam : callerGeneric.typeParameters) {
+                 if (!typeParam || !Ty::IsTyCorrect(typeParam->GetTy())) {
+                     continue;
+                 }
+-                // A type argument that properly contains the caller's own type parameter grows
+-                // on every turn of the cycle.
+                 if (typeArg != typeParam->GetTy() && ContainsTy(typeArg, typeParam->GetTy())) {
+-                    (void)callee;
+                     diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_polymorphic_recursion, ce,
+                         order[caller]->identifier.Val(), Ty::ToString(typeArg));
+                     reportedPolymorphic.emplace(caller);
+-                    return;
++                    return true;
+                 }
+             }
+         }
++        return false;
+     }
+ 
+     static bool ContainsTy(Ptr<Ty> haystack, Ptr<Ty> needle)
+@@ -786,6 +827,9 @@ private:
+     std::vector<Ptr<FuncDecl>> order;
+     std::unordered_map<Ptr<const Decl>, size_t> index;
+     std::vector<std::set<size_t>> callees;
++    /// Calls from an eligible declaration to an eligible one, kept for the polymorphic-recursion
++    /// check, which is meaningful only once the cycles are known.
++    std::vector<std::vector<std::pair<Ptr<const CallExpr>, size_t>>> genericCalls;
+     std::unordered_set<size_t> reportedPolymorphic;
+     Sema::InferredCapabilities inferred;
+     std::vector<size_t> tarjanIndex;
+-- 
+2.54.0
+

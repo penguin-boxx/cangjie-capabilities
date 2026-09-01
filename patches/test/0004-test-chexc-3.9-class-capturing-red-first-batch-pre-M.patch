@@ -1,0 +1,272 @@
+From 8c17127145298740c3acf7a6bf78ca7d1f37df4f Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 14 Aug 2026 21:44:57 +0300
+Subject: [PATCH 04/43] =?UTF-8?q?test(chexc):=20=C2=A73.9=20class=20captur?=
+ =?UTF-8?q?ing=20red-first=20batch=20(pre-Modal=20semantics)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+3 positives (red until §3.9): captures clause with ctor demand + method/prop
+scope coverage; the §2.1.3 interface-conformance adapter story; struct captures
+with copy. 3 negatives: construction without capability; primary-ctor ban
+(author ruling, forward-compatible with Modal); subclass isolation (rule 5).
+Pre-Modal semantics per author ruling: all ctors capture, all bodies covered,
+no escape checks.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../captures/captures_basic.cj                | 44 ++++++++++++++++++
+ .../captures/captures_ctor_neg.cj             | 23 ++++++++++
+ .../captures/captures_interface.cj            | 45 +++++++++++++++++++
+ .../captures/captures_primary_ctor_neg.cj     | 18 ++++++++
+ .../captures/captures_struct.cj               | 34 ++++++++++++++
+ .../captures/captures_subclass_neg.cj         | 37 +++++++++++++++
+ 6 files changed, 201 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/captures/captures_basic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/captures/captures_interface.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/captures/captures_primary_ctor_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/captures/captures_struct.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_basic.cj
+new file mode 100644
+index 0000000000..fc1ea79b05
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_basic.cj
+@@ -0,0 +1,44 @@
++// Checked exceptions (§3.9, pre-Modal semantics per author ruling): a `captures`
++// clause on a class makes EVERY constructor demand the captured capabilities at
++// its call site, and puts them in scope in EVERY method/prop body.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class FileException <: Exception {}
++
++class FileWriter
++captures FileException {
++    var count: Int64 = 0
++
++    init() {
++    }
++
++    func append(s: String): Unit {
++        count = count + s.size
++        if (count > 100) {
++            throw FileException() // captured capability is in scope
++        }
++    }
++
++    prop total: Int64 {
++        get() {
++            if (count < 0) {
++                throw FileException() // in scope in accessors too
++            }
++            count
++        }
++    }
++}
++
++main() {
++    try {
++        let w = FileWriter() // ctor demands the capability from this try
++        w.append("hello")
++        if (w.total != 5) {
++            return 1
++        }
++    } catch (e: FileException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj
+new file mode 100644
+index 0000000000..f367b68970
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj
+@@ -0,0 +1,23 @@
++// Checked exceptions (§3.9): constructing a capturing class demands the captured
++// capabilities at the construction site — no suitable capability, no instance.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'FileException'
++
++class FileException <: Exception {}
++
++class FileWriter
++captures FileException {
++    init() {
++    }
++
++    func append(s: String): Unit {
++        throw FileException()
++    }
++}
++
++main() {
++    let w = FileWriter() // error: no FileException capability in scope
++    w.append("x")
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_interface.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_interface.cj
+new file mode 100644
+index 0000000000..772c1820af
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_interface.cj
+@@ -0,0 +1,45 @@
++// Checked exceptions (§3.9 / §2.1.3): capability capturing makes an implementation
++// with implementation-specific exceptions conform to a clause-free interface —
++// the adapter pattern, without receiver modes (pre-Modal).
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class FileException <: Exception {}
++
++interface Appendable {
++    func append(s: String): Unit // no throws clause in the interface
++}
++
++class StringAppender <: Appendable {
++    public func append(s: String): Unit {
++    }
++}
++
++class FileWriterAdapter <: Appendable
++captures FileException {
++    init() {
++    }
++
++    // overrides the clause-free interface method: needs no capabilities from
++    // call sites because it uses the captured one
++    public func append(s: String): Unit {
++        if (s.size > 100) {
++            throw FileException()
++        }
++    }
++}
++
++func use(a: Appendable) {
++    a.append("hello") // interface users see no exceptions
++}
++
++main() {
++    use(StringAppender())
++    try {
++        let a = FileWriterAdapter()
++        use(a)
++    } catch (e: FileException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_primary_ctor_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_primary_ctor_neg.cj
+new file mode 100644
+index 0000000000..37abb7fd38
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_primary_ctor_neg.cj
+@@ -0,0 +1,18 @@
++// Checked exceptions (§3.9, author ruling): a capturing class may not declare a
++// primary constructor (forward-compatible with Modal, where primaries are ~local);
++// it declares explicit init constructors.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class FileException <: Exception {}
++
++class FileWriter
++captures FileException {
++    FileWriter(let path: String) { // error: primary ctor on a capturing class
++    }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_struct.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_struct.cj
+new file mode 100644
+index 0000000000..cbf7c8393d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_struct.cj
+@@ -0,0 +1,34 @@
++// Checked exceptions (§3.9): `captures` is allowed on structs; copying duplicates
++// the capability (freely duplicable evidence).
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class ParseException <: Exception {}
++
++struct Cursor
++captures ParseException {
++    var pos: Int64 = 0
++
++    init() {
++    }
++
++    mut func advanceOrThrow(limit: Int64): Unit {
++        pos = pos + 1
++        if (pos > limit) {
++            throw ParseException()
++        }
++    }
++}
++
++main() {
++    try {
++        var c = Cursor()
++        var d = c // copy carries the capability too
++        c.advanceOrThrow(10)
++        d.advanceOrThrow(0) // throws
++        return 1
++    } catch (e: ParseException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
+new file mode 100644
+index 0000000000..24f00fcf91
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
+@@ -0,0 +1,37 @@
++// Checked exceptions (§3.9 rule 5): a subclass does not see the superclass's
++// captured capabilities — the synthesized field is private; it must declare its
++// own `captures` clause if its methods need them.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'FileException'
++
++class FileException <: Exception {}
++
++open class Base
++captures FileException {
++    init() {
++    }
++
++    public open func write(s: String): Unit {
++        throw FileException() // ok: Base's captured capability
++    }
++}
++
++class Derived <: Base {
++    init() {
++        super()
++    }
++
++    public override func write(s: String): Unit {
++        throw FileException() // error: super's capture is invisible here
++    }
++}
++
++main() {
++    try {
++        let d = Derived()
++        d.write("x")
++    } catch (e: FileException) {
++    }
++    return 0
++}
+-- 
+2.54.0
+

@@ -1,0 +1,362 @@
+From 08de5c93a135d7cc32bb475a6ceffdfdf0d85ad1 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 16:29:49 +0300
+Subject: [PATCH 2/6] feat(chexc): re-parent the 26 obvious unchecked exception
+ classes (proposal 6.4)
+
+Applies the non-UNCERTAIN half of notes/stdlib-exception-inventory.md: every class the
+classification principle decides unambiguously (contract / state / index / arithmetic /
+unwrap -> unchecked) now derives from std.core.UncheckedException, so throwing one no
+longer demands a capability and listing one in a 'throws' clause is rejected.
+
+Roots only -- subclasses (OverflowException, FSException-style chains) inherit the status.
+PrettyException keeps its PrettyPrintable conjunct. The 23 UNCERTAIN classes are untouched
+and keep producing warnings under warn-mode checking, pending author rulings.
+
+Verified: std builds clean; CheckedExceptions suite + API/std/{core,unittest/mock,
+overflow,collection} 400/400 (one SIGSEGV in test_tree_map_coverage under the parallel
+run passes in isolation -- load flake, same class as the earlier MacroTest
+oversubscription); a minimal runtime probe confirms catch-at-subclass, catch-at-Exception
+and direct throw/catch all behave through the new hierarchy.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../std/collection/concurrent_modification_exception.cj     | 2 +-
+ stdlib/libs/std/core/arithmetic_exception.cj                | 2 +-
+ stdlib/libs/std/core/illegal_argument_exception.cj          | 2 +-
+ stdlib/libs/std/core/illegal_memory_exception.cj            | 2 +-
+ stdlib/libs/std/core/illegal_state_exception.cj             | 2 +-
+ stdlib/libs/std/core/index_out_of_bounds_exception.cj       | 2 +-
+ stdlib/libs/std/core/negative_array_size_exception.cj       | 2 +-
+ stdlib/libs/std/core/none_value_exception.cj                | 2 +-
+ stdlib/libs/std/core/unsupported_exception.cj               | 2 +-
+ stdlib/libs/std/math/numeric/decimal.cj                     | 2 +-
+ stdlib/libs/std/overflow/throwing_op.cj                     | 4 ++--
+ stdlib/libs/std/sync/ireentrant_mutex.cj                    | 2 +-
+ stdlib/libs/std/unittest/assert_exception.cj                | 4 ++--
+ stdlib/libs/std/unittest/common/option_validators.cj        | 2 +-
+ stdlib/libs/std/unittest/framework.cj                       | 2 +-
+ stdlib/libs/std/unittest/mock/exceptions.cj                 | 2 +-
+ stdlib/libs/std/unittest/mock/internal/exceptions.cj        | 6 +++---
+ stdlib/libs/std/unittest/mock/mockmacro/syntax_errors.cj    | 2 +-
+ stdlib/libs/std/unittest/testmacro/exception.cj             | 2 +-
+ stdlib/libs/std/unittest/unittest_exception.cj              | 6 +++---
+ 20 files changed, 26 insertions(+), 26 deletions(-)
+
+diff --git a/stdlib/libs/std/collection/concurrent_modification_exception.cj b/stdlib/libs/std/collection/concurrent_modification_exception.cj
+index af53715..092fead 100644
+--- a/stdlib/libs/std/collection/concurrent_modification_exception.cj
++++ b/stdlib/libs/std/collection/concurrent_modification_exception.cj
+@@ -8,7 +8,7 @@
+ 
+ package std.collection
+ 
+-public class ConcurrentModificationException <: Exception {
++public class ConcurrentModificationException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/core/arithmetic_exception.cj b/stdlib/libs/std/core/arithmetic_exception.cj
+index a09f31a..bc49f6d 100644
+--- a/stdlib/libs/std/core/arithmetic_exception.cj
++++ b/stdlib/libs/std/core/arithmetic_exception.cj
+@@ -8,7 +8,7 @@
+ 
+ package std.core
+ 
+-public open class ArithmeticException <: Exception {
++public open class ArithmeticException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/core/illegal_argument_exception.cj b/stdlib/libs/std/core/illegal_argument_exception.cj
+index a31e4ed..0fda29a 100644
+--- a/stdlib/libs/std/core/illegal_argument_exception.cj
++++ b/stdlib/libs/std/core/illegal_argument_exception.cj
+@@ -8,7 +8,7 @@
+ 
+ package std.core
+ 
+-public open class IllegalArgumentException <: Exception {
++public open class IllegalArgumentException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/core/illegal_memory_exception.cj b/stdlib/libs/std/core/illegal_memory_exception.cj
+index cdffa6e..1c8da54 100644
+--- a/stdlib/libs/std/core/illegal_memory_exception.cj
++++ b/stdlib/libs/std/core/illegal_memory_exception.cj
+@@ -8,7 +8,7 @@
+ 
+ package std.core
+ 
+-public class IllegalMemoryException <: Exception {
++public class IllegalMemoryException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/core/illegal_state_exception.cj b/stdlib/libs/std/core/illegal_state_exception.cj
+index 3982d64..8197700 100644
+--- a/stdlib/libs/std/core/illegal_state_exception.cj
++++ b/stdlib/libs/std/core/illegal_state_exception.cj
+@@ -8,7 +8,7 @@
+ 
+ package std.core
+ 
+-public class IllegalStateException <: Exception {
++public class IllegalStateException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/core/index_out_of_bounds_exception.cj b/stdlib/libs/std/core/index_out_of_bounds_exception.cj
+index 9674cac..9e4a216 100644
+--- a/stdlib/libs/std/core/index_out_of_bounds_exception.cj
++++ b/stdlib/libs/std/core/index_out_of_bounds_exception.cj
+@@ -8,7 +8,7 @@
+ 
+ package std.core
+ 
+-public class IndexOutOfBoundsException <: Exception {
++public class IndexOutOfBoundsException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/core/negative_array_size_exception.cj b/stdlib/libs/std/core/negative_array_size_exception.cj
+index 450be05..2dedc14 100644
+--- a/stdlib/libs/std/core/negative_array_size_exception.cj
++++ b/stdlib/libs/std/core/negative_array_size_exception.cj
+@@ -8,7 +8,7 @@
+ 
+ package std.core
+ 
+-public class NegativeArraySizeException <: Exception {
++public class NegativeArraySizeException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/core/none_value_exception.cj b/stdlib/libs/std/core/none_value_exception.cj
+index bd9134c..1e05b9b 100644
+--- a/stdlib/libs/std/core/none_value_exception.cj
++++ b/stdlib/libs/std/core/none_value_exception.cj
+@@ -8,7 +8,7 @@
+ 
+ package std.core
+ 
+-public class NoneValueException <: Exception {
++public class NoneValueException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/core/unsupported_exception.cj b/stdlib/libs/std/core/unsupported_exception.cj
+index 77b11d4..a21df7c 100644
+--- a/stdlib/libs/std/core/unsupported_exception.cj
++++ b/stdlib/libs/std/core/unsupported_exception.cj
+@@ -8,7 +8,7 @@
+ 
+ package std.core
+ 
+-public class UnsupportedException <: Exception {
++public class UnsupportedException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/math/numeric/decimal.cj b/stdlib/libs/std/math/numeric/decimal.cj
+index a7f22d9..6e6c4b1 100644
+--- a/stdlib/libs/std/math/numeric/decimal.cj
++++ b/stdlib/libs/std/math/numeric/decimal.cj
+@@ -2188,7 +2188,7 @@ func ailgnBigValue(val: BigInt, diffScale: Int64): BigInt {
+     return val * tenPowerN(diffScale)
+ }
+ 
+-class PrecisionMismatchException <: Exception {
++class PrecisionMismatchException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/overflow/throwing_op.cj b/stdlib/libs/std/overflow/throwing_op.cj
+index b7f2b3d..83babc6 100644
+--- a/stdlib/libs/std/overflow/throwing_op.cj
++++ b/stdlib/libs/std/overflow/throwing_op.cj
+@@ -833,7 +833,7 @@ extend UIntNative <: ThrowingOp<UIntNative> {
+     }
+ }
+ 
+-public class OvershiftException <: Exception {
++public class OvershiftException <: UncheckedException {
+     public init() {
+         super()
+     }
+@@ -847,7 +847,7 @@ public class OvershiftException <: Exception {
+     }
+ }
+ 
+-public class UndershiftException <: Exception {
++public class UndershiftException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/sync/ireentrant_mutex.cj b/stdlib/libs/std/sync/ireentrant_mutex.cj
+index b58c6aa..4ecad93 100644
+--- a/stdlib/libs/std/sync/ireentrant_mutex.cj
++++ b/stdlib/libs/std/sync/ireentrant_mutex.cj
+@@ -25,7 +25,7 @@ public interface IReentrantMutex {
+     func unlock(): Unit
+ }
+ 
+-public class IllegalSynchronizationStateException <: Exception {
++public class IllegalSynchronizationStateException <: UncheckedException {
+     public init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/unittest/assert_exception.cj b/stdlib/libs/std/unittest/assert_exception.cj
+index f73eeaa..9f99c8c 100644
+--- a/stdlib/libs/std/unittest/assert_exception.cj
++++ b/stdlib/libs/std/unittest/assert_exception.cj
+@@ -16,7 +16,7 @@ package std.unittest
+  * The AssertException.
+  *
+  */
+-public class AssertException <: Exception {
++public class AssertException <: UncheckedException {
+     let cause: ?CheckResult
+ 
+     public init() {
+@@ -43,7 +43,7 @@ public class AssertException <: Exception {
+  * The AssertIntermediateException.
+  *
+  */
+-public class AssertIntermediateException <: Exception {
++public class AssertIntermediateException <: UncheckedException {
+     let diagram: PowerAssertDiagram
+ 
+     public let expression: String
+diff --git a/stdlib/libs/std/unittest/common/option_validators.cj b/stdlib/libs/std/unittest/common/option_validators.cj
+index cf198c3..ebb36bc 100644
+--- a/stdlib/libs/std/unittest/common/option_validators.cj
++++ b/stdlib/libs/std/unittest/common/option_validators.cj
+@@ -10,7 +10,7 @@ package std.unittest.common
+ import std.collection.*
+ import std.sync.ReentrantMutex
+ 
+-public class UnittestOptionValidationException <: Exception {
++public class UnittestOptionValidationException <: UncheckedException {
+     init() {
+         super()
+     }
+diff --git a/stdlib/libs/std/unittest/framework.cj b/stdlib/libs/std/unittest/framework.cj
+index 8fc46e8..f6e3120 100644
+--- a/stdlib/libs/std/unittest/framework.cj
++++ b/stdlib/libs/std/unittest/framework.cj
+@@ -308,7 +308,7 @@ class RunStepContext <: RunContext {
+     }
+ }
+ 
+-class BenchmarkStoppedError <: Exception {
++class BenchmarkStoppedError <: UncheckedException {
+     BenchmarkStoppedError() {
+         super("Any failure in benchmark stops it.")
+     }
+diff --git a/stdlib/libs/std/unittest/mock/exceptions.cj b/stdlib/libs/std/unittest/mock/exceptions.cj
+index ce48cd4..6fff848 100644
+--- a/stdlib/libs/std/unittest/mock/exceptions.cj
++++ b/stdlib/libs/std/unittest/mock/exceptions.cj
+@@ -9,7 +9,7 @@ package std.unittest.mock
+ 
+ import std.unittest.common.*
+ 
+-public abstract class PrettyException <: Exception & PrettyPrintable {
++public abstract class PrettyException <: UncheckedException & PrettyPrintable {
+     PrettyException(
+         private let text: PrettyText
+     ) {
+diff --git a/stdlib/libs/std/unittest/mock/internal/exceptions.cj b/stdlib/libs/std/unittest/mock/internal/exceptions.cj
+index f680d2e..c96edc8 100644
+--- a/stdlib/libs/std/unittest/mock/internal/exceptions.cj
++++ b/stdlib/libs/std/unittest/mock/internal/exceptions.cj
+@@ -11,7 +11,7 @@ protected package std.unittest.mock.internal
+  * Used mock calls in the runtime-error mocking mode (compiled with --mock=runtime-error),
+  * or inside a generic function which isn't marked with @Frozen annotation
+  */
+-public class IllegalMockCallException <: Exception {
++public class IllegalMockCallException <: UncheckedException {
+     public init() {
+         super("Mock functions shouldn't be called in the runtime-error mocking mode " +
+             "or inside non-frozen generic functions")
+@@ -21,7 +21,7 @@ public class IllegalMockCallException <: Exception {
+ /**
+  * No default value provided for a type in the `ReturnsDefaults` mode
+  */
+-public class NoDefaultValueForMockException <: Exception {
++public class NoDefaultValueForMockException <: UncheckedException {
+     public init(typeName: String, defaultValueForStubInterfaceName: String) {
+         super("No provided default value for a return type `${typeName}`. "
+             + "Make sure such type implements `${defaultValueForStubInterfaceName}<${typeName}>` interface")
+@@ -31,7 +31,7 @@ public class NoDefaultValueForMockException <: Exception {
+ /**
+  * Failed to cast the provided stubbed return value to the real declaration's return type
+  */
+-public class MockReturnValueTypeMismatchException <: Exception {
++public class MockReturnValueTypeMismatchException <: UncheckedException {
+     public init(declarationReturnTypeName: String) {
+         super("Type of the stub's return value doesn't match the corresponding declaration's return type. "
+             + "Please make sure that type in stub is `${declarationReturnTypeName}`")
+diff --git a/stdlib/libs/std/unittest/mock/mockmacro/syntax_errors.cj b/stdlib/libs/std/unittest/mock/mockmacro/syntax_errors.cj
+index 45b78e8..06923d9 100644
+--- a/stdlib/libs/std/unittest/mock/mockmacro/syntax_errors.cj
++++ b/stdlib/libs/std/unittest/mock/mockmacro/syntax_errors.cj
+@@ -71,7 +71,7 @@ func reportSyntaxErrors(errors: Array<SyntaxError>): Nothing {
+     throw MalformedMacroException(message, errors)
+ }
+ 
+-class MalformedMacroException <: Exception {
++class MalformedMacroException <: UncheckedException {
+     MalformedMacroException(
+         message: String,
+         let errors: Array<SyntaxError>
+diff --git a/stdlib/libs/std/unittest/testmacro/exception.cj b/stdlib/libs/std/unittest/testmacro/exception.cj
+index e236035..6d55e07 100644
+--- a/stdlib/libs/std/unittest/testmacro/exception.cj
++++ b/stdlib/libs/std/unittest/testmacro/exception.cj
+@@ -10,7 +10,7 @@ macro package std.unittest.testmacro
+ /**
+  * The MacroException.
+  */
+-class MacroException <: Exception {
++class MacroException <: UncheckedException {
+     public init(message: String) {
+         super("macro failed to expand.\n" + message)
+     }
+diff --git a/stdlib/libs/std/unittest/unittest_exception.cj b/stdlib/libs/std/unittest/unittest_exception.cj
+index f093b87..f344838 100644
+--- a/stdlib/libs/std/unittest/unittest_exception.cj
++++ b/stdlib/libs/std/unittest/unittest_exception.cj
+@@ -7,7 +7,7 @@
+  */
+ package std.unittest
+ 
+-public open class UnittestException <: Exception {
++public open class UnittestException <: UncheckedException {
+     init() {
+         super()
+     }
+@@ -21,7 +21,7 @@ public open class UnittestException <: Exception {
+     }
+ }
+ 
+-class ErrorWrapperException <: Exception {
++class ErrorWrapperException <: UncheckedException {
+     init(error: Error) {
+         super(error.getStackTraceMessage())
+     }
+@@ -35,7 +35,7 @@ class ErrorWrapperException <: Exception {
+     }
+ }
+ 
+-public class UnittestTimeoutException <: Exception {
++public class UnittestTimeoutException <: UncheckedException {
+     init() {
+         super()
+     }
+-- 
+2.54.0
+

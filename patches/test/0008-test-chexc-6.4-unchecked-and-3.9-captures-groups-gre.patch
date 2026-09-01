@@ -1,0 +1,67 @@
+From 43da40a9d912ead56303c6f508d6a209dd5bf5bd Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 00:10:00 +0300
+Subject: [PATCH 08/43] test(chexc): 6.4 unchecked and 3.9 captures groups
+ green
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ASSERTs pinned to actual diagnostics. captures_subclass_neg: the super() call
+legitimately demands the superclass's captures (3.9 rule 5 flip side), so the
+subclass constructor now declares them explicitly, isolating the intended
+error — a method body not seeing the inherited capture.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../CheckedExceptions/captures/captures_ctor_neg.cj  |  3 ++-
+ .../captures/captures_subclass_neg.cj                | 12 ++++++++----
+ 2 files changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj
+index f367b68970..d037aaeb2b 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj
+@@ -2,7 +2,8 @@
+ // capabilities at the construction site — no suitable capability, no instance.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan Cannot find a capability for 'FileException'
++// ASSERT: scan Cannot find a capability for 'Class-FileException'
++// ASSERT: scan required by the call to 'init'
+ 
+ class FileException <: Exception {}
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
+index 24f00fcf91..8937781971 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
+@@ -1,9 +1,12 @@
+ // Checked exceptions (§3.9 rule 5): a subclass does not see the superclass's
+ // captured capabilities — the synthesized field is private; it must declare its
+-// own `captures` clause if its methods need them.
++// own `captures` clause if its methods need them. Its constructors do acquire the
++// superclass constructor's requirements at the `super` call, which the explicit
++// `throws` clause below discharges, isolating the method-body error.
+ 
+-// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan Cannot find a capability for 'FileException'
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-FileException'
++// ASSERT: scan required by this 'throw' expression
+ 
+ class FileException <: Exception {}
+ 
+@@ -18,7 +21,8 @@ captures FileException {
+ }
+ 
+ class Derived <: Base {
+-    init() {
++    // the super call requires Base's captures; declaring them here satisfies it
++    init() throws FileException {
+         super()
+     }
+ 
+-- 
+2.54.0
+

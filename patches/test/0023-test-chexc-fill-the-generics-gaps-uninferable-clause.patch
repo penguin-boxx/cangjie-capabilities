@@ -1,0 +1,101 @@
+From bc553b324128e6bbb9a7d5b813cc5601e42fd738 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 22 Aug 2026 13:20:34 +0300
+Subject: [PATCH 23/43] test(chexc): fill the generics gaps -- uninferable
+ clause-only parameter, throwing a parameter
+
+Two rules of the generics section had no case of their own:
+
+- generics_uninferable_neg.cj -- capability argument inference follows type-argument
+  inference and never the reverse, so a type parameter occurring only in the clause leaves
+  the call uninferable. The positive half (explicit type arguments) was already covered;
+  only the error was not.
+- generics_throw_type_param.cj -- the value thrown may have a type parameter as its static
+  type, which the language admits because the parameter is bounded by 'Exception', and a
+  'catch' naming that parameter introduces the capability for it, discharging the
+  requirement inside the generic function. Runs, so the erasure holds at run time too.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../types/generics_throw_type_param.cj        | 40 +++++++++++++++++++
+ .../types/generics_uninferable_neg.cj         | 21 ++++++++++
+ 2 files changed, 61 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/generics_throw_type_param.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/generics_uninferable_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_throw_type_param.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_throw_type_param.cj
+new file mode 100644
+index 0000000000..3e79dbb94c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_throw_type_param.cj
+@@ -0,0 +1,40 @@
++// Checked exceptions (generics): a clause entry may be a type parameter, and the value thrown may
++// have that parameter as its static type -- the language admits the throw because the parameter is
++// bounded by `Exception` (an unbounded one is rejected by the ordinary throw rule, and by the
++// clause rule of clause_not_exception_neg.cj). A `catch` naming the parameter introduces the
++// capability for it, so the requirement is discharged inside the generic function itself.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++// the requirement travels to the call site as `throws E`
++func safeThrow<E>(e: E): Nothing where E <: Exception throws E {
++    throw e
++}
++
++// ... or is discharged locally by a catch naming the same parameter
++func catchOwn<E>(mk: () -> E): Int64 where E <: Exception {
++    try {
++        throw mk()
++    } catch (e: E) {
++        1
++    }
++}
++
++main(): Int64 {
++    if (catchOwn<AException>({ => AException() }) != 1) {
++        return 1
++    }
++    if (catchOwn<BException>({ => BException() }) != 1) {
++        return 1
++    }
++    try {
++        safeThrow<AException>(AException())
++    } catch (e: AException) {
++        return 0
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_uninferable_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_uninferable_neg.cj
+new file mode 100644
+index 0000000000..b0a7d2c946
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_uninferable_neg.cj
+@@ -0,0 +1,21 @@
++// Checked exceptions (generics): capability argument inference follows type-argument inference and
++// never the other way round, so a type parameter that occurs only in the clause gives inference
++// nothing to work with -- the call needs an explicit type argument, as the positive case above it
++// in generics_explicit.cj shows.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: unable to infer generic argument of this function
++
++class GenericException<T> <: Exception {}
++
++func onlyInClause<T>(): Nothing throws GenericException<T> {
++    throw GenericException<T>()
++}
++
++main() {
++    try {
++        onlyInClause() // T occurs nowhere but the clause
++    } catch (e: Exception) {
++    }
++    return 0
++}
+-- 
+2.54.0
+

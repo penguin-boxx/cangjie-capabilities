@@ -1,0 +1,95 @@
+From 0a790b3f46694c6414e7ffc99e521b8f44cab579 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 30 Aug 2026 16:56:05 +0300
+Subject: [PATCH 37/43] test(chexc): semantic form and unchecked entries reach
+ type identity
+
+'semantic_form_identity.cj' puts both spellings of one list into an invariant position, both
+directions, plus a duplicate spelling; 'unchecked_entry_identity.cj' does the same for an entry
+that instantiated to an unchecked type. Identity is what invariance compares, so these fail
+against any implementation that keeps the raw list.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../types/semantic_form_identity.cj           | 31 +++++++++++++++++++
+ .../types/unchecked_entry_identity.cj         | 30 ++++++++++++++++++
+ 2 files changed, 61 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/semantic_form_identity.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/unchecked_entry_identity.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/semantic_form_identity.cj b/testsuites/LLT/compiler/CheckedExceptions/types/semantic_form_identity.cj
+new file mode 100644
+index 0000000000..8eade96b09
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/semantic_form_identity.cj
+@@ -0,0 +1,31 @@
++// Checked exceptions (semantic form, "Capability parameters in declarations" rule 2): a covered
++// entry is not part of the list, and that has to reach type IDENTITY, not only comparisons.
++// Invariant positions are where identity is all there is: 'Box<T>' compares its argument by
++// identity, so two spellings of one semantic form must be one type. Before canonicalization the
++// assignment below was rejected with 'expected Box<() throws (BaseE) -> Unit>, found
++// Box<() throws (BaseE, DerE) -> Unit>' -- two names for the same list.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++open class BaseE <: Exception {}
++class DerE <: BaseE {}
++
++class Box<T> {
++    Box(let v: T) {}
++}
++
++func f(): Unit
++throws BaseE, DerE {}
++
++func g(): Unit
++throws BaseE {}
++
++main(): Int64 {
++    // the redundant spelling and the canonical one are one type, both directions
++    let b1: Box<() throws BaseE -> Unit> = Box<() throws (BaseE, DerE) -> Unit>(f)
++    let b2: Box<() throws (BaseE, DerE) -> Unit> = Box<() throws BaseE -> Unit>(g)
++    // and a duplicate spelling is the same type as its single-entry twin
++    let b3: Box<() throws BaseE -> Unit> = Box<() throws (BaseE, BaseE) -> Unit>(g)
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/unchecked_entry_identity.cj b/testsuites/LLT/compiler/CheckedExceptions/types/unchecked_entry_identity.cj
+new file mode 100644
+index 0000000000..fe5482b5d5
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/unchecked_entry_identity.cj
+@@ -0,0 +1,30 @@
++// Checked exceptions ("Unchecked types in 'throws' lists"): after substitution instantiates a type
++// parameter to an unchecked exception type, the entry is GONE from the type -- '() throws E -> R'
++// with an unchecked 'E' IS the clause-free '() -> R'. Assignability was the first half (fixed
++// 2026-08-30); identity is this one: the specialized function goes into an invariant position
++// declared with no clause at all.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class ReqExc <: UncheckedException {}
++
++class Box<T> {
++    Box(let v: T) {}
++}
++
++func safeThrow<E>(e: E): Unit where E <: Exception
++throws E {
++    throw e
++}
++
++main(): Int64 {
++    let direct: (ReqExc) -> Unit = safeThrow<ReqExc>
++    let boxed: Box<(ReqExc) -> Unit> = Box<(ReqExc) -> Unit>(safeThrow<ReqExc>)
++    try {
++        direct(ReqExc())
++    } catch (e: ReqExc) {
++        return 0
++    }
++    return 1
++}
+-- 
+2.54.0
+

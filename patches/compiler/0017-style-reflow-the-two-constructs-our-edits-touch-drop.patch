@@ -1,0 +1,59 @@
+From 0754bfdb934809bc64c8eaaa71be6945429f2e17 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Thu, 20 Aug 2026 16:43:09 +0300
+Subject: [PATCH 17/44] style: reflow the two constructs our edits touch; drop
+ a merge-added duplicate include
+
+clang-format works at construct granularity, so adding one entry to the large
+NAME_TO_ANNO_KIND initializer reflows the whole list (9 lines, some of them
+upstream's). Accepted here rather than left unformatted: it keeps
+`cj.py fmt --check` meaningful, and 9 lines is nothing against the ~1000 lines
+of churn the de-noising removed.
+
+Also removes a second `#include "Promotion.h"` in TypeCheckUtil.cpp that the
+three-way merge introduced (upstream has it once, so did the pre-rewrite head).
+A scan of all 63 touched files found this to be the only such artifact; the two
+remaining duplicate includes -- ConstantsUtils.h and StructInheritanceChecker.cpp
+-- exist upstream and are deliberately restored.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ include/cangjie/Parse/Parser.h | 9 ++++-----
+ src/Sema/TypeCheckUtil.cpp     | 1 -
+ 2 files changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/include/cangjie/Parse/Parser.h b/include/cangjie/Parse/Parser.h
+index a125ec65..a820eb55 100644
+--- a/include/cangjie/Parse/Parser.h
++++ b/include/cangjie/Parse/Parser.h
+@@ -49,11 +49,10 @@ std::string ConvertToken(const Token& t);
+ /// Record the correspondence between AnnotationKinds and identifiers.
+ const std::unordered_map<std::string, AST::AnnotationKind> NAME_TO_ANNO_KIND = {
+     {"JavaMirror", AST::AnnotationKind::JAVA_MIRROR}, {"JavaImpl", AST::AnnotationKind::JAVA_IMPL},
+-    {"JavaHasDefault", AST::AnnotationKind::JAVA_HAS_DEFAULT},
+-    {"ObjCMirror", AST::AnnotationKind::OBJ_C_MIRROR}, {"ObjCImpl", AST::AnnotationKind::OBJ_C_IMPL},
+-    {"ForeignGetterName", AST::AnnotationKind::FOREIGN_GETTER_NAME}, {"ForeignSetterName", AST::AnnotationKind::FOREIGN_SETTER_NAME},
+-    {"ObjCInit", AST::AnnotationKind::OBJ_C_INIT}, {"ObjCOptional", AST::AnnotationKind::OBJ_C_OPTIONAL},
+-    {"ForeignName", AST::AnnotationKind::FOREIGN_NAME},
++    {"JavaHasDefault", AST::AnnotationKind::JAVA_HAS_DEFAULT}, {"ObjCMirror", AST::AnnotationKind::OBJ_C_MIRROR},
++    {"ObjCImpl", AST::AnnotationKind::OBJ_C_IMPL}, {"ForeignGetterName", AST::AnnotationKind::FOREIGN_GETTER_NAME},
++    {"ForeignSetterName", AST::AnnotationKind::FOREIGN_SETTER_NAME}, {"ObjCInit", AST::AnnotationKind::OBJ_C_INIT},
++    {"ObjCOptional", AST::AnnotationKind::OBJ_C_OPTIONAL}, {"ForeignName", AST::AnnotationKind::FOREIGN_NAME},
+     {"CallingConv", AST::AnnotationKind::CALLING_CONV}, {"C", AST::AnnotationKind::C},
+     {"Attribute", AST::AnnotationKind::ATTRIBUTE}, {"Intrinsic", AST::AnnotationKind::INTRINSIC},
+     {"OverflowThrowing", AST::AnnotationKind::NUMERIC_OVERFLOW},
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index 99d0ce6c..2acd456d 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -14,7 +14,6 @@
+ 
+ #include "Promotion.h"
+ #include "TypeCheckUtil.h"
+-#include "Promotion.h"
+ 
+ #include <map>
+ #include <set>
+-- 
+2.54.0
+

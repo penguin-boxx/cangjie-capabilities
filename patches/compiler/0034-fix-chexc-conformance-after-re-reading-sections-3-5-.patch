@@ -1,0 +1,220 @@
+From 589857306c9ad6dfefa42fd305e7042e69745cbb Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 15:05:29 +0300
+Subject: [PATCH 34/44] fix(chexc): conformance after re-reading sections 3, 5
+ and 6
+
+Two rules were implemented more narrowly than the text states, and one diagnostic behaviour was
+losing information:
+
+- '@AssumeThrows' is rejected on a package that RECORDS capability lists of its own (6.3.2), and
+  6.1 says a 'warn' package records trusted lists. The check only rejected packages verified at
+  'error' -- a distinction the text does not make.
+- The warning group is named 'checked-exceptions' (6.1), not 'chexc', which is the flag's alias.
+- A requirement site missing several capabilities reported one of them. The compiler's diagnostic
+  set deduplicates by position and severity alone, so the rest were dropped and appeared one per
+  rebuild -- the loop a migration cannot afford. Misses are batched per site and reported
+  together; a site missing exactly one keeps the singular message.
+
+Probed and already conforming, recorded rather than changed: an entry whose type instantiates to
+an unchecked exception vanishes (5.1.2), the join of functional types unions their capability
+lists (3.4.3), and a public macro is never inferred (5.3.1).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../Basic/DiagRefactor/DiagnosticSema.def     | 10 +++-
+ .../DiagRefactor/DiagnosticWarnGroupKind.def  |  2 +-
+ include/cangjie/Option/Options.inc            |  2 +-
+ include/cangjie/Sema/CapabilityCheck.h        | 18 ++++++
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 58 ++++++++++++++++---
+ src/Sema/TypeChecker.cpp                      | 12 ++--
+ 6 files changed, 83 insertions(+), 19 deletions(-)
+
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index 156d2804..7f49eb83 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -444,9 +444,15 @@ ERROR(sema_chexc_performs_type_not_command, "type '%s' in 'performs' clause is n
+ ERROR(sema_chexc_performs_in_main, "'main' cannot declare a 'performs' clause",
+     "there is no default effect handler, unlike the default exception handler")
+ 
++ERROR(sema_chexc_missing_capabilities,
++    "Cannot find capabilities for %s (of types %s) in the current scope",
++    "%s")
++WARNING(sema_chexc_missing_capabilities_warn, CHEXC,
++    "Cannot find capabilities for %s (of types %s) in the current scope",
++    "%s")
+ ERROR(sema_chexc_assume_on_checked_package,
+-    "'@AssumeThrows' names package '%s', whose capability lists are verified",
+-    "an assumption stands in for lists a package does not have; this one was checked at 'error'")
++    "'@AssumeThrows' names package '%s', whose capability lists are recorded",
++    "an assumption stands in for lists a package does not have; this one records its own")
+ ERROR(sema_chexc_import_without_capability_metadata,
+     "package '%s' was compiled with effect handlers but records no capability metadata",
+     "its 'performs' lists cannot be read as empty ones; rebuild it with this compiler")
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticWarnGroupKind.def b/include/cangjie/Basic/DiagRefactor/DiagnosticWarnGroupKind.def
+index 534b8178..269eb41e 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticWarnGroupKind.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticWarnGroupKind.def
+@@ -14,4 +14,4 @@ WARN_GROUP("parser", PARSER)
+ WARN_GROUP("semantics", SEMANTICS)
+ WARN_GROUP("interpreter", INTERPRETER)
+ WARN_GROUP("apilevel-check", APILEVEL_CHECK)
+-WARN_GROUP("chexc", CHEXC)
++WARN_GROUP("checked-exceptions", CHEXC)
+diff --git a/include/cangjie/Option/Options.inc b/include/cangjie/Option/Options.inc
+index 5852047a..e9d848b9 100644
+--- a/include/cangjie/Option/Options.inc
++++ b/include/cangjie/Option/Options.inc
+@@ -133,7 +133,7 @@ PREDEFVALUE(warn_group, {
+     VALUE("semantics", "", { BACKEND(ALL) }, { GROUP(GLOBAL) COMMA GROUP(STABLE) COMMA GROUP(VISIBLE) }) COMMA
+     VALUE("interpreter", "", { BACKEND(ALL) }, { GROUP(GLOBAL) COMMA GROUP(STABLE) COMMA GROUP(VISIBLE) }) COMMA
+     VALUE("apilevel-check", "", { BACKEND(ALL) }, { GROUP(GLOBAL) COMMA GROUP(STABLE) COMMA GROUP(VISIBLE) }) COMMA
+-    VALUE("chexc", "", { BACKEND(ALL) }, { GROUP(GLOBAL) COMMA GROUP(STABLE) COMMA GROUP(VISIBLE) })});
++    VALUE("checked-exceptions", "", { BACKEND(ALL) }, { GROUP(GLOBAL) COMMA GROUP(STABLE) COMMA GROUP(VISIBLE) })});
+ PREDEFVALUE(diagnostic_value, {
+     VALUE("json", "", { BACKEND(ALL) }, { GROUP(STABLE) COMMA GROUP(VISIBLE) }) COMMA
+     VALUE("noColor", "", { BACKEND(ALL) }, { GROUP(STABLE) COMMA GROUP(VISIBLE) }) COMMA
+diff --git a/include/cangjie/Sema/CapabilityCheck.h b/include/cangjie/Sema/CapabilityCheck.h
+index 196ad968..508a02c8 100644
+--- a/include/cangjie/Sema/CapabilityCheck.h
++++ b/include/cangjie/Sema/CapabilityCheck.h
+@@ -50,6 +50,10 @@ class CapabilityMissHandler {
+ public:
+     virtual ~CapabilityMissHandler() = default;
+     virtual void HandleMiss(const CapabilityDemand& demand) = 0;
++    /// Called once the package has been walked, for handlers that batch what they collected.
++    virtual void Finish()
++    {
++    }
+ };
+ 
+ /**
+@@ -70,12 +74,26 @@ public:
+         : diag(diag), asWarning(asWarning), reportExceptions(reportExceptions)
+     {
+     }
++    ~ReportCapabilityMissHandler() override
++    {
++        Finish();
++    }
+     void HandleMiss(const CapabilityDemand& demand) override;
++    /**
++     * Emits one diagnostic per requirement site, naming every capability missing there. The
++     * compiler's diagnostic set deduplicates by position and severity alone, so several
++     * diagnostics at one site collapse into the first -- a call missing three capabilities would
++     * report one, and the next only after that one is fixed. Batching keeps them all visible,
++     * which is what burning warnings down during migration needs.
++     */
++    void Finish() override;
+ 
+ private:
+     DiagnosticEngine& diag;
+     bool asWarning;
+     bool reportExceptions;
++    /// Misses in the order they were found, grouped by site when they are reported.
++    std::vector<CapabilityDemand> pending;
+ };
+ 
+ /**
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 40f31e37..15e4b0d1 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -1260,14 +1260,54 @@ void ReportCapabilityMissHandler::HandleMiss(const CapabilityDemand& demand)
+     if (!demand.isEffect && !reportExceptions) {
+         return; // Exception checking is off: the clauses impose no obligations.
+     }
+-    auto tyName = Ty::ToString(demand.exceptionTy);
+-    // Effects: an effect capability is named 'Handler<C>', not 'CanThrow<E>', and a missing one is
+-    // an error at every exception-checking level -- there is no migration level for a 'perform'.
+-    auto kind = demand.isEffect ? DiagKindRefactor::sema_chexc_missing_handler_capability
+-                                : (asWarning ? DiagKindRefactor::sema_chexc_missing_capability_warn
+-                                             : DiagKindRefactor::sema_chexc_missing_capability);
+-    auto builder = diag.DiagnoseRefactor(kind, *demand.demandSite, tyName, tyName);
+-    builder.AddMainHintArguments(demand.requiredBy);
++    // Held until the package has been walked: several misses at one site have to be reported
++    // together (see 'Finish').
++    pending.emplace_back(demand);
++}
++
++void ReportCapabilityMissHandler::Finish()
++{
++    auto batch = std::move(pending);
++    pending.clear();
++    // Group by site AND kind: effects are always errors while exceptions follow the level, so a
++    // site that misses both cannot be one diagnostic.
++    std::vector<std::pair<std::pair<Ptr<const Node>, bool>, std::vector<const CapabilityDemand*>>> groups;
++    for (auto& demand : batch) {
++        auto key = std::make_pair(Ptr<const Node>(demand.demandSite), demand.isEffect);
++        auto it = std::find_if(groups.begin(), groups.end(), [&key](auto& g) { return g.first == key; });
++        if (it == groups.end()) {
++            groups.emplace_back(key, std::vector<const CapabilityDemand*>{&demand});
++        } else {
++            it->second.emplace_back(&demand);
++        }
++    }
++    for (auto& [key, demands] : groups) {
++        auto& first = *demands.front();
++        // Effects: an effect capability is named 'Handler<C>', not 'CanThrow<E>', and a missing one
++        // is an error at every exception-checking level -- there is no migration level for a
++        // 'perform'.
++        if (demands.size() == 1) {
++            auto tyName = Ty::ToString(first.exceptionTy);
++            auto kind = first.isEffect ? DiagKindRefactor::sema_chexc_missing_handler_capability
++                                       : (asWarning ? DiagKindRefactor::sema_chexc_missing_capability_warn
++                                                    : DiagKindRefactor::sema_chexc_missing_capability);
++            auto builder = diag.DiagnoseRefactor(kind, *first.demandSite, tyName, tyName);
++            builder.AddMainHintArguments(first.requiredBy);
++            continue;
++        }
++        std::string names;
++        std::string types;
++        const std::string capability = first.isEffect ? "Handler<" : "CanThrow<";
++        for (auto demand : demands) {
++            auto tyName = Ty::ToString(demand->exceptionTy);
++            names += (names.empty() ? "" : ", ") + ("'" + tyName + "'");
++            types += (types.empty() ? "" : ", ") + ("'" + capability + tyName + ">'");
++        }
++        auto kind = (!first.isEffect && asWarning) ? DiagKindRefactor::sema_chexc_missing_capabilities_warn
++                                                   : DiagKindRefactor::sema_chexc_missing_capabilities;
++        auto builder = diag.DiagnoseRefactor(kind, *first.demandSite, names, types);
++        builder.AddMainHintArguments("required by " + first.requiredBy);
++    }
+ }
+ 
+ void CheckInferredOverrides(
+@@ -1361,5 +1401,7 @@ void CheckCapabilities(TypeManager& typeManager, const ImportManager& importMana
+ {
+     auto assumed = CollectAssumedThrows(pkg, importManager);
+     CapabilityChecker(typeManager, importManager, missHandler, assumed, inferred, &diag).CheckPackage(pkg);
++    // A handler that batches its misses reports them now that the package is walked.
++    missHandler.Finish();
+ }
+ } // namespace Cangjie::Sema
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index 9b5a6e6b..8a23c561 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -345,13 +345,11 @@ void TypeChecker::TypeCheckerImpl::ChkImportedCapabilityMetadata(Package& pkg)
+                     }
+                     continue;
+                 }
+-                // An assumption stands in for lists the dependency does not have. Where it has
+-                // verified ones, the two are contradictory: the assumption would override what the
+-                // compiler proved, in whichever direction the author guessed wrong. Only 'error'
+-                // counts as verified -- a package built at 'warn' is mid-migration, its lists are
+-                // knowingly incomplete, and that is exactly when an assumption is still the tool
+-                // for the job.
+-                if (assumes && checkExceptions && info.level == PackageCapabilityInfo::Level::ERROR) {
++                // An assumption stands in for the lists a dependency does not have. A package that
++                // records lists of its own -- verified at 'error' or trusted at 'warn' -- has them,
++                // and the two would contradict each other: the assumption would override what the
++                // dependency states, in whichever direction the author guessed wrong.
++                if (assumes && checkExceptions && info.level != PackageCapabilityInfo::Level::OFF) {
+                     diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_assume_on_checked_package, *import, name);
+                 }
+             }
+-- 
+2.54.0
+

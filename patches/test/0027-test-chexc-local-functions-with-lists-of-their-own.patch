@@ -1,0 +1,120 @@
+From 5c42fd502382d4fd28f7fba759aacced9e8711e3 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 04:45:26 +0300
+Subject: [PATCH 27/43] test(chexc): local functions with lists of their own
+
+infer_local_func.cj -- a local function whose inferred list reaches the enclosing
+declaration's own list through the call, one defined and called inside the 'try'
+that handles what it throws, and one nested two deep. infer_local_func_neg.cj --
+the discriminating case: a 'try' that encloses the declaration but not the call
+discharges nothing.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../inference/infer_local_func.cj             | 63 +++++++++++++++++++
+ .../inference/infer_local_func_neg.cj         | 23 +++++++
+ 2 files changed, 86 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_local_func.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_local_func_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_local_func.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_local_func.cj
+new file mode 100644
+index 0000000000..252ee671ab
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_local_func.cj
+@@ -0,0 +1,63 @@
++// Checked exceptions (which declarations are inferred): a local function declaration is an ordinary
++// inference-eligible declaration with a capability list of its own. Its body resolves against that
++// list rather than against the scopes it happens to be nested in, and its call sites pay for what it
++// needs -- so a local function defined inside a `try` and called inside it is fine, and the list it
++// acquires propagates to the enclosing declaration's own inferred list when it is called elsewhere.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++// the local function's inferred list reaches this declaration's list through the call
++func propagates(): Int64 throws AException {
++    func inner(): Int64 {
++        throw AException()
++    }
++    inner()
++}
++
++// defined and called inside the try that handles what it throws
++func dischargedLocally(): Int64 {
++    try {
++        func inner(): Int64 {
++            throw BException()
++        }
++        inner()
++    } catch (e: BException) {
++        1
++    }
++}
++
++// a local function nested in a local function
++func nested(): Int64 throws AException {
++    func outer(): Int64 {
++        func innermost(): Int64 {
++            throw AException()
++        }
++        innermost()
++    }
++    outer()
++}
++
++main(): Int64 {
++    var caught = 0
++    try {
++        propagates()
++    } catch (e: AException) {
++        caught++
++    }
++    if (dischargedLocally() != 1) {
++        return 1
++    }
++    try {
++        nested()
++    } catch (e: AException) {
++        caught++
++    }
++    if (caught == 2) {
++        return 0
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_local_func_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_local_func_neg.cj
+new file mode 100644
+index 0000000000..4c38052269
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_local_func_neg.cj
+@@ -0,0 +1,23 @@
++// Checked exceptions (which declarations are inferred): because a local function has a capability
++// list of its own rather than the enclosing scopes', a requirement inside it is not discharged by a
++// `try` that merely encloses its declaration -- the call site pays, wherever it is.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-AException'
++
++class AException <: Exception {}
++
++public func calledOutside(): Unit {
++    func inner(): Unit {
++        throw AException()
++    }
++    try {
++        // the try handles AException, but nothing calls inner in here
++    } catch (e: AException) {
++    }
++    inner() // error: this call site supplies nothing
++}
++
++main() {
++    return 0
++}
+-- 
+2.54.0
+

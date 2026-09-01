@@ -1,0 +1,204 @@
+From 667b9a1c87818873e59a75c0f81705bb2af9436b Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 30 Aug 2026 16:56:02 +0300
+Subject: [PATCH 37/44] =?UTF-8?q?feat(chexc):=20R3=20=E2=80=94=20one=20can?=
+ =?UTF-8?q?onical=20form=20for=20capability=20lists,=20in=20type=20identit?=
+ =?UTF-8?q?y=20too?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The semantic form was satisfied behaviourally (every comparison is coverage-based) but not in
+identity: 'FuncTy' kept the raw spelling it was built with, and interning keys on that. The review
+found the observer -- 'Box<() throws (Base, Derived) -> Unit>' would not go where
+'Box<() throws Base -> Unit>' is expected, since invariance compares identity and never consults
+subtyping.
+
+Normalization now runs at the four boundaries where a list is PRODUCED, never inside interning
+(the 2026-08-22 attempt did that and broke 17 tests: coverage needs 'IsSubtype', which re-enters
+type formation): clause elaboration for declarations and for functional type nodes, generic
+substitution, and the inferred write-back; the '.cjo' loader gets it too, so a file from an older
+compiler cannot smuggle a raw list in. Accessor lists normalize after instantiation for the same
+reason. 'NormalizeCapTys' also drops a concrete entry whose type is unchecked, which is the rule
+of "Unchecked types in 'throws' lists" reaching identity: 'safeThrow<Unchecked>' and the
+clause-free shape are now literally one type, where the 2026-08-30 fix had only made them
+assignable.
+
+One regression on the way, worth the comment it got: with lists legitimately emptying by
+normalization, 'HandleCall's defence-in-depth fallback started firing and re-derived the callee's
+DECLARED list -- uninstantiated, so a call that pins 'E' to an unchecked type demanded
+'CanThrow<E>' again. The fallback now applies the call's own type mapping and normalizes, which is
+what it should have done from the start.
+
+Gate: compiler/Sema 3,502/3,502 (where the earlier attempt failed), IncrementalCompilation
+1,944/1,944, std and stdx build clean at 'warn'.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../ASTSerialization/ReferenceLoader.cpp       |  7 +++++--
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp   | 18 ++++++++++++++++++
+ src/Sema/PreCheck.cpp                          |  7 +++++--
+ src/Sema/TypeCheckUtil.cpp                     |  4 +++-
+ src/Sema/TypeChecker.cpp                       |  4 ++--
+ src/Sema/TypeManager.cpp                       | 15 ++++++++++++++-
+ 6 files changed, 47 insertions(+), 8 deletions(-)
+
+diff --git a/src/Modules/ASTSerialization/ReferenceLoader.cpp b/src/Modules/ASTSerialization/ReferenceLoader.cpp
+index ef53da24..016f59b1 100644
+--- a/src/Modules/ASTSerialization/ReferenceLoader.cpp
++++ b/src/Modules/ASTSerialization/ReferenceLoader.cpp
+@@ -377,8 +377,11 @@ void ASTLoader::ASTLoaderImpl::SetTypeTy(FormattedIndex type, const PackageForma
+                 capTys.emplace_back(LoadType(saved->Get(i)));
+             }
+         }
+-        ty = typeManager.GetFunctionTy(
+-            LoadTypeArgs(typeObj), LoadType(info->retType()), {info->isC(), false, info->hasVariableLenArg()}, capTys);
++        // Checked exceptions: the writer already stores the semantic form, but a '.cjo' from an
++        // older compiler may hold a raw list -- canonicalize on the way in so a loaded type has
++        // the same identity as the one the producing package had.
++        ty = typeManager.GetFunctionTy(LoadTypeArgs(typeObj), LoadType(info->retType()),
++            {info->isC(), false, info->hasVariableLenArg()}, typeManager.NormalizeCapTys(capTys));
+     } else {
+         auto info = typeObj.info_as_CompositeTyInfo();
+         CJC_NULLPTR_CHECK(info);
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index e45db10f..7c4c586e 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -724,6 +724,21 @@ private:
+                 receiverTy = ma->baseExpr->GetTy();
+             }
+             demands = TypeCheckUtil::GetInstantiatedAccessorCapTys(typeManager, *ce.resolvedFunction, receiverTy);
++            // The receiver's mapping instantiates a member's own type parameters; the CALL's type
++            // arguments instantiate the callee's. Without them a generic callee's entry stays a
++            // bare type parameter here -- and since an entry that instantiates to an unchecked
++            // type vanishes, that difference is the difference between demanding nothing and
++            // demanding 'CanThrow<E>' for an 'E' the call site has already pinned.
++            auto calleeMapping = CalleeTypeMapping(ce);
++            if (!calleeMapping.empty()) {
++                for (auto& cap : demands) {
++                    auto inst = typeManager.GetInstantiatedTy(cap, calleeMapping);
++                    if (Ty::IsTyCorrect(inst)) {
++                        cap = inst;
++                    }
++                }
++            }
++            demands = typeManager.NormalizeCapTys(demands);
+         }
+         // A callee whose list was inferred carries it beside the AST: this call
+         // site's type was formed during type check, before inference ran, so completing the
+@@ -1493,6 +1508,9 @@ void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCap
+                 completed.emplace_back(cap);
+             }
+         }
++        // The written-back list is a list like any other: it is the semantic form that becomes
++        // the declaration's type, so an inferred entry covered by a declared one leaves no trace.
++        completed = typeManager.NormalizeCapTys(completed);
+         if (completed.size() == funcTy->capTys.size()) {
+             continue;
+         }
+diff --git a/src/Sema/PreCheck.cpp b/src/Sema/PreCheck.cpp
+index 15d64700..f2474d57 100644
+--- a/src/Sema/PreCheck.cpp
++++ b/src/Sema/PreCheck.cpp
+@@ -620,7 +620,10 @@ Ptr<Ty> TypeChecker::TypeCheckerImpl::GetTyFromASTType(ASTContext& ctx, FuncType
+         auto expanded = TypeCheckUtil::ExpandCapabilityList(clause->capTypes);
+         capTys.insert(capTys.end(), expanded.begin(), expanded.end());
+     }
+-    funcType.SetTy(typeManager.GetFunctionTy(paramTys, funcType.retType->GetTy(), {funcType.isC}, capTys));
++    // Checked exceptions: the elaborated list is canonicalized once, here, so the functional
++    // type has the semantic form's identity -- '(A, B)' with 'B <: A' IS '(A)'.
++    funcType.SetTy(typeManager.GetFunctionTy(
++        paramTys, funcType.retType->GetTy(), {funcType.isC}, typeManager.NormalizeCapTys(capTys)));
+     return funcType.GetTy();
+ }
+ 
+@@ -1821,7 +1824,7 @@ void TypeChecker::TypeCheckerImpl::PreSetDeclType(const ASTContext& ctx)
+             continue; // Do not replace valid ty.
+         }
+         auto paramTys = GetFuncBodyParamTys(*fd->funcBody);
+-        auto capTys = GetFuncBodyCapTys(*fd->funcBody);
++        auto capTys = typeManager.NormalizeCapTys(GetFuncBodyCapTys(*fd->funcBody));
+         Ptr<Ty> retTy = TypeManager::GetQuestTy();
+         if (fd->TestAttr(Attribute::CONSTRUCTOR)) {
+             // Static init has return type of unit. Instance init has return type of current typeDecl.
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index c2465661..488b9ce8 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -417,7 +417,9 @@ std::vector<Ptr<Ty>> GetInstantiatedAccessorCapTys(TypeManager& tyMgr, const Fun
+             cap = inst;
+         }
+     }
+-    return caps;
++    // Instantiation may have made an entry unchecked or covered by a sibling; the caller demands
++    // the semantic form, as every consumer of a list does.
++    return tyMgr.NormalizeCapTys(caps);
+ }
+ 
+ std::vector<Ptr<Ty>> GetDeclCapturesCapTys(const Decl& decl)
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index d36bde48..319e3d39 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -501,7 +501,7 @@ bool TypeChecker::TypeCheckerImpl::CheckNormalFuncBody(ASTContext& ctx, FuncBody
+     }
+     CheckFuncParamList(ctx, *fb.paramLists[0]);
+     paramTys = GetFuncBodyParamTys(fb);
+-    auto capTys = GetFuncBodyCapTys(fb);
++    auto capTys = typeManager.NormalizeCapTys(GetFuncBodyCapTys(fb));
+ 
+     bool isCFFIBackend = IsUnsafeBackend(backendType);
+     bool isCFunc =
+@@ -728,7 +728,7 @@ void TypeChecker::TypeCheckerImpl::CheckCtorFuncBody(ASTContext& ctx, FuncBody&
+     }
+     CheckFuncParamList(ctx, *fb.paramLists[0].get());
+     auto paramTys = GetFuncBodyParamTys(fb);
+-    fb.SetTy(typeManager.GetFunctionTy(paramTys, ctorTy, {}, GetFuncBodyCapTys(fb)));
++    fb.SetTy(typeManager.GetFunctionTy(paramTys, ctorTy, {}, typeManager.NormalizeCapTys(GetFuncBodyCapTys(fb))));
+     fb.funcDecl->SetTy(fb.GetTy());
+     fb.retType->SetTy(ctorTy);
+     Synthesize({ctx, SynPos::UNUSED}, fb.body.get());
+diff --git a/src/Sema/TypeManager.cpp b/src/Sema/TypeManager.cpp
+index dfc09f83..ce6386d9 100644
+--- a/src/Sema/TypeManager.cpp
++++ b/src/Sema/TypeManager.cpp
+@@ -333,6 +333,11 @@ Ptr<Ty> TypeManager::TyInstantiator::Instantiate(Ty& ty)
+             for (auto& it : funcTy.capTys) {
+                 capTys.push_back(Instantiate(it));
+             }
++            // Checked exceptions (semantic form): substitution is where an entry becomes covered
++            // by a sibling, or becomes unchecked -- 'throws E' with 'E := IllegalStateException'
++            // IS the clause-free type. Canonicalize here so the instantiated type has one
++            // identity, rather than leaving the raw spelling to be compared by coverage forever.
++            capTys = tyMgr.NormalizeCapTys(capTys);
+             Ptr<Ty> ret = tyMgr.GetFunctionTy(
+                 paramTys, retType, {funcTy.IsCFunc(), funcTy.isClosureTy, funcTy.hasVariableLenArg}, capTys);
+             return ret;
+@@ -928,7 +933,7 @@ bool HasPlaceholder(Ptr<const Ty> ty)
+ 
+ std::vector<Ptr<Ty>> TypeManager::NormalizeCapTys(const std::vector<Ptr<Ty>>& capTys)
+ {
+-    if (capTys.size() < 2) {
++    if (capTys.empty()) {
+         return capTys;
+     }
+     // While type arguments are still being solved, a placeholder entry must not be compared: the
+@@ -943,6 +948,14 @@ std::vector<Ptr<Ty>> TypeManager::NormalizeCapTys(const std::vector<Ptr<Ty>>& ca
+             kept.emplace_back(cap); // an invalid entry is left alone; its error is reported already
+             continue;
+         }
++        // An entry whose type is unchecked is not part of the list ("Unchecked types in 'throws'
++        // lists"): a written one is rejected at the declaration, so this only ever fires after
++        // substitution instantiated a type parameter to an unchecked type -- and then the clause
++        // IS gone, which is what makes the instantiated type identical to the clause-free one.
++        // A type parameter is left alone: its instantiation decides, not its bound.
++        if (uncheckedExceptionTy && !cap->IsGeneric() && IsSubtype(cap, uncheckedExceptionTy)) {
++            continue;
++        }
+         // Keep the maximal entries. An entry equal to one already kept -- mutual subtypes -- is
+         // dropped by the same test, which is what deduplication needs.
+         bool covered = std::any_of(capTys.begin(), capTys.end(),
+-- 
+2.54.0
+

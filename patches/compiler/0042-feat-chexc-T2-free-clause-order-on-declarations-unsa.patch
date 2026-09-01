@@ -1,0 +1,194 @@
+From 06db1cf2cec97d1240513b23090fa2608443ef9b Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Mon, 31 Aug 2026 15:14:16 +0300
+Subject: [PATCH 42/44] =?UTF-8?q?feat(chexc):=20T2=20=E2=80=94=20free=20cl?=
+ =?UTF-8?q?ause=20order=20on=20declarations,=20unsafeCanThrow,=20resume=20?=
+ =?UTF-8?q?against=20the=20try's=20own=20catches?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three items of the 2026-08-30 text revision:
+
+- Declaration clause order is free (keyword scheme rule 9): 'where', 'performs' and 'throws' are
+  keyword-led and each appears at most once, so a fixed order buys nothing while 'where' already
+  sits anywhere. Functional types keep the opposite rule -- there the pre-arrow clause sequence is
+  one grammar production with 'performs' first -- and that check lives where such a type is parsed.
+
+- The escape hatch is 'unsafeCanThrow', named for the capability it fabricates; 'unsafeAssumeHandled'
+  was rejected as kind-ambiguous once the effect twin was specified.
+
+- 'resume throwing e' is discharged by the catch clauses of its own 'try' (rule 5 as revised): the
+  injected exception surfaces at the suspended 'perform', which is inside the try's body, so the
+  text's own positive example must compile -- it did not. Implemented as a resume-only supply
+  stack consulted by 'ResumeExpr' alone: an ordinary 'throw' in a handler body still resolves in
+  the enclosing scopes, since the handler runs where it was installed.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../Basic/DiagRefactor/DiagnosticSema.def     |  2 +-
+ include/cangjie/Utils/ConstantsUtils.h        |  3 +-
+ src/Parse/ParseDecl.cpp                       | 16 +++----
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 43 ++++++++++++++++---
+ 4 files changed, 46 insertions(+), 18 deletions(-)
+
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index 340153bf..1aca4f69 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -492,7 +492,7 @@ ERROR(sema_chexc_subclass_captures_missing,
+     "superclass does",
+     "add it to the 'captures' clause, or a type that covers it")
+ WARNING(sema_chexc_useless_escape_hatch, CHEXC,
+-    "'unsafeAssumeHandled' assumes '%s', which is unchecked and never required a capability",
++    "'unsafeCanThrow' assumes '%s', which is unchecked and never required a capability",
+     "the call has no effect on checking")
+ 
+ ERROR(sema_chexc_capturing_needs_ctor,
+diff --git a/include/cangjie/Utils/ConstantsUtils.h b/include/cangjie/Utils/ConstantsUtils.h
+index 77e8d8a0..abdd9197 100644
+--- a/include/cangjie/Utils/ConstantsUtils.h
++++ b/include/cangjie/Utils/ConstantsUtils.h
+@@ -51,7 +51,8 @@ inline const std::string CHIR_READABLE_FILE_EXTENSION = ".chirtxt";
+ inline const std::string CLASS_EXCEPTION = "Exception";
+ inline const std::string CLASS_UNCHECKED_EXCEPTION = "UncheckedException";
+ /// Checked exceptions: the escape hatch, a compiler intrinsic with a library-visible signature.
+-inline const std::string UNSAFE_ASSUME_HANDLED = "unsafeAssumeHandled";
++/// Named for the capability it fabricates; its effect twin will be 'unsafeCanPerform'.
++inline const std::string UNSAFE_CAN_THROW = "unsafeCanThrow";
+ inline const std::string CLASS_ERROR = "Error";
+ inline const std::string CLASS_COMMAND = "Command";
+ inline const std::string CLASS_HANDLER_FRAME = "HandlerFrame";
+diff --git a/src/Parse/ParseDecl.cpp b/src/Parse/ParseDecl.cpp
+index 28a7d849..8719c929 100644
+--- a/src/Parse/ParseDecl.cpp
++++ b/src/Parse/ParseDecl.cpp
+@@ -2335,9 +2335,8 @@ OwnedPtr<FuncBody> ParserImpl::ParseFuncBody(ScopeKind scopeKind)
+             enableThis = false;
+         }
+     }
+-    // Checked exceptions (experimental): a `throws` clause and generic constraints may appear
+-    // in either order after the return type (the language rule). Effects add a
+-    // 'performs' clause, which precedes 'throws'.
++    // The three blocks order freely after the return type: capability clauses, then 'where', then
++    // capability clauses again, so 'throws E where C performs H' and every other permutation parse.
+     ParseCapabilityClauses(*ret);
+     ParseFuncGenericConstraints(*ret);
+     ParseCapabilityClauses(*ret);
+@@ -2387,12 +2386,11 @@ void ParserImpl::ParseCapabilityClauses(FuncBody& fb)
+     while (SeeingChexcClause("performs") || SeeingChexcClause("throws")) {
+         bool isPerforms = SeeingChexcClause("performs");
+         auto clausePos = lookahead.Begin();
+-        // 'throws E performs H', or 'throws E where ... performs H' across the two calls: the
+-        // fixed order is violated. Diagnosed at the offending clause, then parsed anyway so the
+-        // semantic checks still see the declared requirements.
+-        if (isPerforms && fb.throwsClause) {
+-            ParseDiagnoseRefactor(DiagKindRefactor::parse_performs_clause_after_throws, clausePos);
+-        }
++        // On a DECLARATION the 'where', 'performs' and 'throws' blocks order freely, each at most
++        // once (keyword scheme rule 9): they are keyword-led, and 'where' already sits anywhere,
++        // so a fixed order would buy nothing. Functional types are the opposite case -- there the
++        // pre-arrow clause sequence is one grammar production and 'performs' precedes 'throws',
++        // enforced where such a type is parsed.
+         auto& slot = isPerforms ? fb.performsClause : fb.throwsClause;
+         if (slot) {
+             ParseDiagnoseRefactor(isPerforms ? DiagKindRefactor::parse_duplicate_performs_clause
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 71bbfb18..d09187a9 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -281,13 +281,13 @@ private:
+         }
+     }
+ 
+-    /// The escape hatch: 'std.core.unsafeAssumeHandled<E, R>' is a compiler intrinsic with a
++    /// The escape hatch: 'std.core.unsafeCanThrow<E, R>' is a compiler intrinsic with a
+     /// library-visible signature. Inside it -- and nowhere else -- a capability for its own 'E' is
+     /// fabricated, which is what lets it invoke a callback that requires one. No source operation
+     /// fabricates capabilities; this is the one declaration that gets one for free.
+     static bool IsEscapeHatch(const FuncDecl& fd)
+     {
+-        return fd.identifier == UNSAFE_ASSUME_HANDLED && fd.fullPackageName == CORE_PACKAGE_NAME;
++        return fd.identifier == UNSAFE_CAN_THROW && fd.fullPackageName == CORE_PACKAGE_NAME;
+     }
+ 
+     SupplyScope FabricatedCapabilities(const FuncDecl& fd) const
+@@ -443,13 +443,14 @@ private:
+                 HandleSpawn(StaticCast<SpawnExpr&>(*node));
+                 return VisitAction::SKIP_CHILDREN;
+             case ASTKind::RESUME_EXPR: {
+-                // Effects: 'resume r throwing e' injects 'e' at the suspended 'perform' site, so it
+-                // is a requirement site classified by the static type of 'e', exactly as 'throw e'
+-                // is. It resolves in the handler body's enclosing scopes -- which is what the
+-                // supply stack holds here, a 'handle' body being outside its own try's scope.
++                // Effects: 'resume r throwing e' injects 'e' at the suspended 'perform' site, so
++                // it is a requirement site classified by the static type of 'e', exactly as
++                // 'throw e' is -- but resolved where the injected exception SURFACES: inside the
++                // try's body, so the try's own catch clauses discharge it, and the scopes
++                // enclosing the 'try-handle' follow.
+                 auto& re = StaticCast<ResumeExpr&>(*node);
+                 if (re.throwingExpr && Ty::IsTyCorrect(re.throwingExpr->GetTy())) {
+-                    Demand(re.throwingExpr->GetTy(), re, "this 'resume ... throwing' expression");
++                    DemandInjected(re.throwingExpr->GetTy(), re, "this 'resume ... throwing' expression");
+                 }
+                 return VisitAction::WALK_CHILDREN;
+             }
+@@ -609,6 +610,11 @@ private:
+         for (auto& catchBlock : te.catchBlocks) {
+             WalkScoped(catchBlock.get());
+         }
++        // A handler body runs where the handler was installed -- outside the try's scope for an
++        // ordinary 'throw' -- but a 'resume ... throwing' inside it injects at the suspended
++        // 'perform', which is inside the try's body. The try's catch capabilities are therefore
++        // offered to resume sites alone.
++        resumeSupplies.emplace_back(CollectCatchCapTys(te));
+         for (auto& handler : te.handlers) {
+             if (handler.desugaredLambda) {
+                 WalkScoped(handler.desugaredLambda.get());
+@@ -616,6 +622,7 @@ private:
+                 WalkScoped(handler.block.get());
+             }
+         }
++        resumeSupplies.pop_back();
+         WalkScoped(te.finallyBlock.get());
+     }
+ 
+@@ -955,6 +962,22 @@ private:
+         });
+     }
+ 
++    /**
++     * Effects (rule 5 of "Effect requirements"): 'resume r throwing e' injects 'e' at the
++     * suspended 'perform' site, so it is resolved by the scopes that cover every possible perform
++     * site -- the 'try''s own catch clauses, and the scopes enclosing the 'try-handle'. The catch
++     * clauses come from the resume-only stack, which nothing else consults; everything beyond
++     * that is the ordinary resolution.
++     */
++    void DemandInjected(Ptr<Ty> exceptionTy, const Node& site, const std::string& requiredBy)
++    {
++        if (!resumeSupplies.empty() && Ty::IsTyCorrect(exceptionTy) &&
++            HasSuitableSupply(resumeSupplies.back(), exceptionTy)) {
++            return;
++        }
++        Demand(exceptionTy, site, requiredBy);
++    }
++
+     void Demand(Ptr<Ty> exceptionTy, const Node& site, const std::string& requiredBy)
+     {
+         // Throwing an unchecked exception never requires a capability. Call-site
+@@ -1005,6 +1028,12 @@ private:
+     /// from the whole consuming package" -- so the file that wrote the import does not narrow it.
+     const AssumedThrows& assumed;
+     std::vector<SupplyScope> supplies;
++    /// Effects: the capabilities a 'resume ... throwing' may resolve against on top of the
++    /// ordinary stack -- the catch clauses of the very 'try' whose handler is running. Kept apart
++    /// from 'supplies' because an ordinary 'throw' in a handler body must NOT see them: the
++    /// handler runs where the handler was installed, while a resumed exception surfaces at the
++    /// suspended 'perform', inside the try's body.
++    std::vector<SupplyScope> resumeSupplies;
+     RootSupply rootSupply;
+     // Lists inferred for declarations without an authoritative clause.
+     /// Callee expressions, which the call path already accounts for; see 'ImposeAssumedOnValue'.
+-- 
+2.54.0
+

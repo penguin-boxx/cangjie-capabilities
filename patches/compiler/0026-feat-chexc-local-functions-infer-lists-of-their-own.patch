@@ -1,0 +1,144 @@
+From cf6b10dcec54014f68af29314da8b034f2af02f6 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 04:45:18 +0300
+Subject: [PATCH 26/44] feat(chexc): local functions infer lists of their own
+
+A local function declaration is an ordinary inference-eligible declaration with a
+capability list of its own, so its body resolves against that list rather than
+against the scopes it happens to be nested in: a requirement inside it belongs to
+the local function, and its call sites pay for it. Calling it outside the 'try' that
+merely encloses its declaration is now an error where the purely lexical treatment
+discharged it silently.
+
+Collection descends into every body, not only into the bodies of declarations that
+are themselves eligible -- the first attempt missed exactly the case that matters,
+a local function inside a function carrying an explicit clause, which is never
+eligible itself. Isolation reuses the shape 'spawn' already uses: swap the supply
+stack out for the body and restore it after.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp | 70 +++++++++++++++++---
+ 1 file changed, 62 insertions(+), 8 deletions(-)
+
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index a4742ecf..6613d574 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -44,6 +44,7 @@
+ 
+ #include "TypeCheckUtil.h"
+ #include "cangjie/AST/ASTCasting.h"
++#include "cangjie/AST/Utils.h"
+ #include "cangjie/AST/Walker.h"
+ #include "cangjie/Basic/DiagnosticEngine.h"
+ #include "cangjie/Modules/ImportManager.h"
+@@ -376,10 +377,10 @@ private:
+         switch (node->astKind) {
+             case ASTKind::FUNC_BODY: {
+                 // Named callables: the body of a callable with a 'throws' list is a capability
+-                // scope. Nested (local) functions keep the enclosing scopes: pre-Modal,
+-                // capability checking is purely lexical (author ruling).
++                // scope.
+                 auto& fb = StaticCast<FuncBody&>(*node);
+                 auto caps = TypeCheckUtil::GetFuncBodyCapTys(fb);
++
+                 // An inferred list acts as the declaration's clause — except while collecting
+                 // that very declaration's residual demands, when consulting it would make every
+                 // requirement look discharged.
+@@ -392,6 +393,20 @@ private:
+                 supplies.emplace_back(std::move(caps));
+                 return VisitAction::WALK_CHILDREN;
+             }
++            case ASTKind::FUNC_DECL: {
++                auto& fd = StaticCast<FuncDecl&>(*node);
++                if (!IsNestedFunc(fd) || !fd.funcBody) {
++                    return VisitAction::WALK_CHILDREN;
++                }
++                // A local function declaration is an ordinary declaration with a capability list of
++                // its own: its body resolves against that list, not against the scopes it happens
++                // to be nested in, and its call sites pay for what it needs. Checked on its own,
++                // like any declaration -- the walk of the enclosing body stops here. (A literal is
++                // the other case: its list comes from an expected type, and its body does resolve
++                // from the enclosing scopes, capturing what it finds there.)
++                CheckLocalFunc(fd);
++                return VisitAction::SKIP_CHILDREN;
++            }
+             case ASTKind::LAMBDA_EXPR:
+                 // A literal's capability list comes from the expected type only and is stored
+                 // on the literal's functional type.
+@@ -535,6 +550,17 @@ private:
+         return caps;
+     }
+ 
++    void CheckLocalFunc(FuncDecl& fd)
++    {
++        std::vector<SupplyScope> savedSupplies;
++        savedSupplies.swap(supplies);
++        auto savedRoot = std::move(rootSupply);
++        rootSupply = nullptr;
++        WalkScoped(fd.funcBody.get());
++        supplies = std::move(savedSupplies);
++        rootSupply = std::move(savedRoot);
++    }
++
+     void HandleSpawn(SpawnExpr& se)
+     {
+         // The thread context argument is evaluated at the spawn site, in the current scopes.
+@@ -842,19 +868,47 @@ private:
+         return !clause || clause->hasEllipsis;
+     }
+ 
++    /// Local function declarations are ordinary inference-eligible declarations with lists of their
++    /// own, so they are collected from the bodies of the declarations that contain them. A literal
++    /// is not: its list comes from an expected type, never from its body.
++    void CollectLocalFuncs(FuncDecl& fd)
++    {
++        if (!fd.funcBody || !fd.funcBody->body) {
++            return;
++        }
++        Walker(fd.funcBody->body.get(), [this, &fd](Ptr<Node> node) {
++            auto local = DynamicCast<FuncDecl*>(node.get());
++            if (!local || local == &fd) {
++                return VisitAction::WALK_CHILDREN;
++            }
++            CollectFrom(*local); // and functions nested in functions, to any depth
++            return VisitAction::SKIP_CHILDREN;
++        }).Walk();
++    }
++
++    /// A declaration that is not itself eligible -- exported, or carrying an authoritative clause --
++    /// still contains local functions that are, so every body is descended into either way.
++    void CollectFrom(FuncDecl& fd)
++    {
++        if (IsEligible(fd)) {
++            order.emplace_back(&fd);
++        }
++        CollectLocalFuncs(fd);
++    }
++
+     void CollectEligibleMember(Decl& member)
+     {
+-        if (auto fd = DynamicCast<FuncDecl*>(&member); fd && IsEligible(*fd)) {
+-            order.emplace_back(fd);
++        if (auto fd = DynamicCast<FuncDecl*>(&member)) {
++            CollectFrom(*fd);
+         } else if (auto pd = DynamicCast<PropDecl*>(&member)) {
+             for (auto& accessor : pd->getters) {
+-                if (accessor && IsEligible(*accessor)) {
+-                    order.emplace_back(accessor.get());
++                if (accessor) {
++                    CollectFrom(*accessor);
+                 }
+             }
+             for (auto& accessor : pd->setters) {
+-                if (accessor && IsEligible(*accessor)) {
+-                    order.emplace_back(accessor.get());
++                if (accessor) {
++                    CollectFrom(*accessor);
+                 }
+             }
+         }
+-- 
+2.54.0
+

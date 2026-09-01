@@ -1,0 +1,260 @@
+From 6bb34808b9065c096519516e51457f1f34519f58 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 30 Aug 2026 16:18:31 +0300
+Subject: [PATCH 36/43] test(chexc): clause-only type arguments, checking-off
+ identity, the implicit close()
+
+'generics_clause_only_neg.cj' is the text's own example plus the variant that used to be paid at
+the bound; '_ok.cj' pins that explicit arguments and ordinarily-inferred parameters stay legal.
+'off_ignores_throws.cj' and 'xpkg_off_consumer.cj' pin the ruling in both directions -- a local
+clause and a clause loaded from a checked dependency both read as clause-free with the feature
+off. 'twr_close_demand.cj' and 'twr_close_neg.cj' pin the implicit close: caught by the try's own
+clauses, reported when they do not cover it.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../scopes/off_ignores_throws.cj              | 35 ++++++++++++++++
+ .../scopes/twr_close_demand.cj                | 30 ++++++++++++++
+ .../CheckedExceptions/scopes/twr_close_neg.cj | 30 ++++++++++++++
+ .../serialization/xpkg_off_consumer.cj        | 23 +++++++++++
+ .../types/generics_clause_only_neg.cj         | 34 ++++++++++++++++
+ .../types/generics_clause_only_ok.cj          | 40 +++++++++++++++++++
+ 6 files changed, 192 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/off_ignores_throws.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/twr_close_demand.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/twr_close_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_off_consumer.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/generics_clause_only_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/generics_clause_only_ok.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/off_ignores_throws.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/off_ignores_throws.cj
+new file mode 100644
+index 0000000000..9272b49dd8
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/off_ignores_throws.cj
+@@ -0,0 +1,35 @@
++// Checked exceptions (author ruling on Q10, 2026-08-30): a package compiled WITHOUT the feature
++// ignores 'throws' in every position. The clause still parses -- the grammar is unconditional --
++// but it shapes no type: '() throws E -> Unit' IS '() -> Unit', one identity, so assignment,
++// invariant generic positions and calls through the value all behave as clause-free. 'throws'
++// never affects overloading at any level; here it stops affecting subtyping too.
++
++// EXEC: %compiler %cmp_opt %n.cj -o %output
++// EXEC: %run %output
++
++class OffExc <: Exception {}
++
++class Box<T> {
++    Box(let v: T) {}
++}
++
++func f(): Unit
++throws OffExc {
++    throw OffExc()
++}
++
++main(): Int64 {
++    let w: () -> Unit = f                       // subtyping ignores the clause
++    let b: Box<() -> Unit> = Box<() throws OffExc -> Unit>(f)   // identity ignores it too
++    try {
++        w()
++        return 1
++    } catch (e: OffExc) {
++        try {
++            b.v()
++            return 1
++        } catch (e2: OffExc) {
++            return 0
++        }
++    }
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/twr_close_demand.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/twr_close_demand.cj
+new file mode 100644
+index 0000000000..2c75a2a16c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/twr_close_demand.cj
+@@ -0,0 +1,30 @@
++// Checked exceptions ("Capability scopes" rule 1): try-with-resources closes its resources
++// implicitly, and that closing is INSIDE the try's own capability scope -- the desugaring puts it
++// in a 'finally' inner to the user's catch clauses, so the same clauses catch what it throws.
++// The capability pass runs before desugar, where those calls do not exist yet, so the requirement
++// is synthesized for each resource. Here the try catches 'CloseExc', which discharges it; the
++// negative half is 'twr_close_neg.cj'.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc=warn %n.cj -o %output 2> warn_out.txt
++// EXEC: %run %output
++// EXEC-PIPE: cat warn_out.txt | compare %f
++// ASSERT: scan-not the implicit 'close()' of this resource
++
++class CloseExc <: Exception {}
++
++class Res <: Resource {
++    public func isClosed(): Bool { false }
++    public func close(): Unit
++    throws CloseExc {
++        throw CloseExc()
++    }
++}
++
++main(): Int64 {
++    try (r = Res()) {
++        ()
++    } catch (e: CloseExc) {
++        return 0   // the closing throw is caught by this very clause
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/twr_close_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/twr_close_neg.cj
+new file mode 100644
+index 0000000000..42dec43560
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/twr_close_neg.cj
+@@ -0,0 +1,30 @@
++// Checked exceptions ("Capability scopes" rule 1): the negative half. A try-with-resources whose
++// clauses do not cover what the resource's 'close()' requires must report it -- before this rule
++// nothing was demanded for the implicit closing at all, so a clause-bearing 'close' ran with no
++// capability anywhere (the silent-leak class).
++
++// EXEC-PIPE: %compiler %cmp_opt --experimental --enable-chexc=warn %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan warning: Cannot find a capability for 'Class-CloseExc'
++// ASSERT: scan required by the implicit 'close()' of this resource
++
++class CloseExc <: Exception {}
++class OtherExc <: Exception {}
++
++class Res <: Resource {
++    public func isClosed(): Bool { false }
++    public func close(): Unit
++    throws CloseExc {
++        throw CloseExc()
++    }
++}
++
++public func f(): Unit
++throws () {
++    try (r = Res()) {          // the clause below covers OtherExc, not CloseExc
++        ()
++    } catch (e: OtherExc) {
++        ()
++    }
++}
++
++main(): Int64 { 0 }
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_off_consumer.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_off_consumer.cj
+new file mode 100644
+index 0000000000..d623f0a718
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_off_consumer.cj
+@@ -0,0 +1,23 @@
++// Checked exceptions (author ruling on Q10): the consumer side of "off ignores 'throws' in all
++// positions". The dependency is compiled WITH checking and records its lists; the consumer is
++// compiled with the feature off, so the loaded signatures read as clause-free -- assignment to a
++// clause-free functional type works, and nothing is demanded anywhere.
++
++// DEPENDENCE: libx.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions libx.cj -o libx.%middle
++// EXEC: %compiler %cmp_opt libx.%middle %n.cj -o %output
++// EXEC: %run %output
++
++import libx.*
++
++main(): Int64 {
++    // libx.query declares 'throws XException'; with checking off the clause shapes nothing, so
++    // the reference is assignable to the clause-free type and nothing is demanded here.
++    let w: (String) -> Int64 = query
++    try {
++        w("")
++    } catch (e: XException) {
++        return 0
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_clause_only_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_clause_only_neg.cj
+new file mode 100644
+index 0000000000..e243765343
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_clause_only_neg.cj
+@@ -0,0 +1,34 @@
++// Checked exceptions ("Generics", author ruling of 2026-08-30): a type parameter that occurs ONLY
++// in capability lists is rejected at the call site unless the argument is written. Inference
++// ignores capability lists on purpose (no row unification), so nothing constrains such a
++// parameter -- the language's general machinery would solve it at its bound, silently choosing a
++// list the author never wrote. The text's own example is the first call below.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: type parameters 'G', 'T' of 'g' occur only in capability lists, which take no part in type-argument inference
++// ASSERT: scan error: type parameter 'E' of 'h' occurs only in capability lists, which take no part in type-argument inference
++
++class AException <: Exception {}
++
++func f(): Unit
++throws AException {
++    throw AException()
++}
++
++// The example of the "Generics" section, verbatim in shape.
++func g<T, G>(x: Int64, block: () throws (T, G) -> Unit): Unit
++where T <: Exception, G <: Exception {}
++
++// The variant whose parameter also reaches the callee's own clause: it used to be accepted and
++// paid at the bound, which is exactly the silent choice the rule closes.
++func h<E>(block: () throws E -> Unit): Unit
++where E <: Exception
++throws E {
++    block()
++}
++
++main(): Int64 {
++    g(0, f)
++    h(f)
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_clause_only_ok.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_clause_only_ok.cj
+new file mode 100644
+index 0000000000..b697dd5f4d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_clause_only_ok.cj
+@@ -0,0 +1,40 @@
++// Checked exceptions ("Generics"): the positive half of 'generics_clause_only_neg.cj'. Writing the
++// type argument is what the rule asks for, and then the call is ordinary: the callee's clause
++// instantiates to the written type and the caller pays exactly it. A parameter that ALSO occurs
++// outside the clause is inferred as usual -- the rule is about parameters nothing else constrains.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++
++func f(): Unit
++throws AException {
++    throw AException()
++}
++
++func h<E>(block: () throws E -> Unit): Unit
++where E <: Exception
++throws E {
++    block()
++}
++
++// 'E' appears in an ordinary parameter position too, so inference has information about it.
++func withValue<E>(e: E, block: () throws E -> Unit): Unit
++where E <: Exception
++throws E {
++    block()
++}
++
++main(): Int64 {
++    try {
++        h<AException>(f)        // explicit: legal
++    } catch (e: AException) {
++        try {
++            withValue(AException(), f)   // inferred from the ordinary argument: legal
++        } catch (e2: AException) {
++            return 0
++        }
++    }
++    return 1
++}
+-- 
+2.54.0
+

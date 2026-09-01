@@ -1,0 +1,784 @@
+From 066a5ab07103558ebe9b3c98d449ef80b67c8680 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 17:39:28 +0300
+Subject: [PATCH 3/6] feat(chexc): annotate the fs/io checked flows (proposal
+ 5.3, phase 2)
+
+90 'throws' clauses across std.fs and std.io -- the half of the warn-mode
+enumeration that the classification principle (I/O, parse, net,
+concurrency-wait -> checked) decides without judgment.
+
+Derived mechanically in four rings, each read off the previous warn-mode
+build: ring 1 the direct throwers (45), ring 2 their Path/String overload
+twins (31), ring 3 the writeln family (13), ring 4 one straggler. No design
+input at any ring -- which is the argument for the --suggest-throws fixer
+sketched in notes/production-gap-analysis.md: this entire diff could have
+been generated.
+
+Converged to 8 remaining warnings, all of them blocked by an interface
+contract rather than by judgment: File.read/write/seek/close (IOStream,
+Seekable, Resource), ByteBuffer.seek, ChainedInputStream.read, and
+StringReader's two next(). Annotating an implementation whose interface
+method has no clause violates 3.8, so the clause belongs on the interface --
+the single highest-leverage decision in the migration, costed in
+notes/stdlib-migration-questions.md as Q-STD-5, with Iterator.next() (Q-STD-6)
+the sharper case: no iterator can do checked-throwing work at all until the
+protocol takes capability polymorphism. Both left warning, deliberately.
+
+Everything else stays a warning pending rulings (Q-STD-1..7 and the 23
+UNCERTAIN inventory classes), per the directive to annotate only the obvious.
+
+Verified: std builds clean; CheckedExceptions + API/std/{core,fs,io,mock}
+466/466.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ stdlib/libs/std/fs/common.cj        | 16 +++++------
+ stdlib/libs/std/fs/directory.cj     | 24 ++++++++--------
+ stdlib/libs/std/fs/file.cj          | 28 +++++++++---------
+ stdlib/libs/std/fs/file_info.cj     | 36 +++++++++++------------
+ stdlib/libs/std/fs/hardlink.cj      |  4 +--
+ stdlib/libs/std/fs/path.cj          |  8 +++---
+ stdlib/libs/std/fs/symboliclink.cj  |  8 +++---
+ stdlib/libs/std/io/io_utils.cj      |  2 +-
+ stdlib/libs/std/io/string_reader.cj | 10 +++----
+ stdlib/libs/std/io/string_writer.cj | 44 ++++++++++++++---------------
+ 10 files changed, 90 insertions(+), 90 deletions(-)
+
+diff --git a/stdlib/libs/std/fs/common.cj b/stdlib/libs/std/fs/common.cj
+index 6d3988f..6ca00b5 100644
+--- a/stdlib/libs/std/fs/common.cj
++++ b/stdlib/libs/std/fs/common.cj
+@@ -11,7 +11,7 @@
+  */
+ package std.fs
+ 
+-public func copy(sourcePath: Path, to!: Path, overwrite!: Bool = false): Unit {
++public func copy(sourcePath: Path, to!: Path, overwrite!: Bool = false): Unit throws FSException {
+     PathValidator.throwIfEmptyOrContainsNullByte("sourcePath", sourcePath, true)
+     PathValidator.throwIfEmptyOrContainsNullByte("to", to, true)
+     if (sourcePath == to) {
+@@ -60,15 +60,15 @@ public func copy(sourcePath: Path, to!: Path, overwrite!: Bool = false): Unit {
+     throw FSException("File type of `${sourcePath}` is not supported.")
+ }
+ 
+-public func copy(sourcePath: String, to!: String, overwrite!: Bool = false): Unit {
++public func copy(sourcePath: String, to!: String, overwrite!: Bool = false): Unit throws FSException {
+     copy(Path(sourcePath), to: Path(to), overwrite: overwrite)
+ }
+ 
+-public func remove(path: Path, recursive!: Bool = false): Unit {
++public func remove(path: Path, recursive!: Bool = false): Unit throws FSException {
+     remove(path._rawPath, recursive: recursive)
+ }
+ 
+-public func remove(path: String, recursive!: Bool = false): Unit {
++public func remove(path: String, recursive!: Bool = false): Unit throws FSException {
+     PathValidator.throwIfEmptyOrContainsNullByte("path", path, true)
+ 
+     unsafe {
+@@ -107,7 +107,7 @@ public func exists(path: String): Bool {
+     }
+ }
+ 
+-public func rename(sourcePath: String, to!: String, overwrite!: Bool = false): Unit {
++public func rename(sourcePath: String, to!: String, overwrite!: Bool = false): Unit throws FSException {
+     PathValidator.throwIfEmptyOrContainsNullByte("sourcePath", sourcePath, true)
+     PathValidator.throwIfEmptyOrContainsNullByte("to", to, true)
+     if (Path(sourcePath) == Path(to)) {
+@@ -137,11 +137,11 @@ public func rename(sourcePath: String, to!: String, overwrite!: Bool = false): U
+     }
+ }
+ 
+-public func rename(sourcePath: Path, to!: Path, overwrite!: Bool = false): Unit {
++public func rename(sourcePath: Path, to!: Path, overwrite!: Bool = false): Unit throws FSException {
+     rename(sourcePath._rawPath, to: to._rawPath, overwrite: overwrite)
+ }
+ 
+-public func removeIfExists(path: Path, recursive!: Bool = false): Bool {
++public func removeIfExists(path: Path, recursive!: Bool = false): Bool throws FSException {
+     if (exists(path)) {
+         remove(path, recursive: recursive)
+         return true
+@@ -149,6 +149,6 @@ public func removeIfExists(path: Path, recursive!: Bool = false): Bool {
+     return false
+ }
+ 
+-public func removeIfExists(path: String, recursive!: Bool = false): Bool {
++public func removeIfExists(path: String, recursive!: Bool = false): Bool throws FSException {
+     removeIfExists(Path(path), recursive: recursive)
+ }
+diff --git a/stdlib/libs/std/fs/directory.cj b/stdlib/libs/std/fs/directory.cj
+index 8e2b742..bd78830 100644
+--- a/stdlib/libs/std/fs/directory.cj
++++ b/stdlib/libs/std/fs/directory.cj
+@@ -22,7 +22,7 @@ public class Directory {
+      * @throws FSException while path is exist, or while recursive is false
+      * and the middle path is not exist.
+      */
+-    public static func create(path: String, recursive!: Bool = false): Unit {
++    public static func create(path: String, recursive!: Bool = false): Unit throws FSException {
+         let normalPath = removeTralingSlashChar(path)
+         if (exists(normalPath)) {
+             throw FSException("The input path `${path}` is already exists.")
+@@ -40,7 +40,7 @@ public class Directory {
+      * @throws FSException while path is exist, or while recursive is false
+      * and the middle path is not exist.
+      */
+-    public static func create(path: Path, recursive!: Bool = false): Unit {
++    public static func create(path: Path, recursive!: Bool = false): Unit throws FSException {
+         create(path.toString(), recursive: recursive)
+     }
+ 
+@@ -48,7 +48,7 @@ public class Directory {
+      * @throws FSException while path is not exist or failed to create temporary directory
+      * @throws IllegalArgumentException while path is empty or path contains null character
+      */
+-    public static func createTemp(directoryPath: String): Path {
++    public static func createTemp(directoryPath: String): Path throws FSException {
+         createTemp(Path(directoryPath))
+     }
+ 
+@@ -56,7 +56,7 @@ public class Directory {
+      * @throws FSException while path is not exist or failed to create temporary directory.
+      * @throws IllegalArgumentException while path is empty or path contains null character
+      */
+-    public static func createTemp(directoryPath: Path): Path {
++    public static func createTemp(directoryPath: Path): Path throws FSException {
+         var directoryPathArr = unsafe { canonicalize(directoryPath).toString().rawData() }
+ 
+         // Append Six random characters and r'\0'
+@@ -75,11 +75,11 @@ public class Directory {
+         return Path(String.fromUtf8(tempArr.slice(0, tempArr.size - 1)))
+     }
+ 
+-    public static func isEmpty(path: Path): Bool {
++    public static func isEmpty(path: Path): Bool throws FSException {
+         isEmpty(path.toString())
+     }
+ 
+-    public static func isEmpty(path: String): Bool {
++    public static func isEmpty(path: String): Bool throws FSException {
+         unsafe {
+             let absPath = checkDirectoryPath(Path(path))
+             let cPath: CString = LibC.mallocCString(absPath.toString())
+@@ -92,7 +92,7 @@ public class Directory {
+         }
+     }
+ 
+-    public static func readFrom(path: Path): Array<FileInfo> {
++    public static func readFrom(path: Path): Array<FileInfo> throws FSException {
+         let fileInfos = ArrayList<FileInfo>()
+         walk(path) {
+             info =>
+@@ -102,7 +102,7 @@ public class Directory {
+         return fileInfos.toArray()
+     }
+ 
+-    public static func readFrom(path: String): Array<FileInfo> {
++    public static func readFrom(path: String): Array<FileInfo> throws FSException {
+         readFrom(Path(path))
+     }
+ 
+@@ -110,11 +110,11 @@ public class Directory {
+      * @throws FSException if the input path is not a directory.
+      * @throws FSException if get handle of the directory failed.
+      */
+-    public static func walk(path: Path, f: (FileInfo) -> Bool): Unit {
++    public static func walk(path: Path, f: (FileInfo) -> Bool): Unit throws FSException {
+         let absPath = checkDirectoryPath(path)
+         let absPathStr = absPath.toString()
+ 
+-        func walkFuncWrapper(cstr: CString): Bool {
++        func walkFuncWrapper(cstr: CString): Bool throws FSException {
+             let fileName = cstr.toString()
+             unsafe { LibC.free(cstr) }
+             let fullPathName = String.join([absPathStr, fileName], delimiter: SLASH_STRING)
+@@ -146,7 +146,7 @@ public class Directory {
+         }
+     }
+ 
+-    public static func walk(path: String, f: (FileInfo) -> Bool): Unit {
++    public static func walk(path: String, f: (FileInfo) -> Bool): Unit throws FSException {
+         walk(Path(path), f)
+     }
+ 
+@@ -229,7 +229,7 @@ public class Directory {
+      * or destinationDirPath is in sourceDirPath.
+      * @throws IllegalArgumentException while path contains null character.
+      */
+-    static func copy(sourceDirPath: String, destinationDirPath: String, overwrite: Bool): Unit {
++    static func copy(sourceDirPath: String, destinationDirPath: String, overwrite: Bool): Unit throws FSException {
+         PathValidator.throwIfEmptyOrContainsNullByte("sourceDirPath", sourceDirPath, true)
+         PathValidator.throwIfEmptyOrContainsNullByte("destinationDirPath", destinationDirPath, true)
+         if (!exists(sourceDirPath)) {
+diff --git a/stdlib/libs/std/fs/file.cj b/stdlib/libs/std/fs/file.cj
+index 30bc38c..377f768 100644
+--- a/stdlib/libs/std/fs/file.cj
++++ b/stdlib/libs/std/fs/file.cj
+@@ -94,7 +94,7 @@ public class File <: Resource & IOStream & Seekable {
+      * the parent directory of the file does not exist,
+      * or other reasons caused fail to open file.
+      */
+-    public init(path: String, mode: OpenMode) {
++    public init(path: String, mode: OpenMode) throws FSException {
+         PathValidator.throwIfEmptyOrContainsNullByte("path", path, true)
+ 
+         let filePath: Path = Path(path)
+@@ -120,7 +120,7 @@ public class File <: Resource & IOStream & Seekable {
+      * the parent directory of the file does not exist,
+      * or other reasons caused fail to open file.
+      */
+-    public init(path: Path, mode: OpenMode) {
++    public init(path: Path, mode: OpenMode) throws FSException {
+         this(path.toString(), mode)
+     }
+ 
+@@ -161,7 +161,7 @@ public class File <: Resource & IOStream & Seekable {
+         }
+     }
+ 
+-    public func setLength(length: Int64): Unit {
++    public func setLength(length: Int64): Unit throws FSException {
+         if (length < 0) {
+             throw IllegalArgumentException("Invalid length: ${length}.")
+         }
+@@ -297,7 +297,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws FSException while path is empty.
+      * @throws IllegalArgumentException while path contains null character.
+      */
+-    public static func create(path: Path): File {
++    public static func create(path: Path): File throws FSException {
+         return create(path.toString())
+     }
+ 
+@@ -305,7 +305,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws FSException while path is empty.
+      * @throws IllegalArgumentException while path contains null character.
+      */
+-    public static func create(path: String): File {
++    public static func create(path: String): File throws FSException {
+         if (exists(path)) {
+             throw FSException("The file `${path}` is already exists.")
+         }
+@@ -316,7 +316,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws FSException if failed to create the temporary file or directoryPath is invalid.
+      * @throws IllegalArgumentException while path contains null character or path is empty.
+      */
+-    public static func createTemp(directoryPath: String): File {
++    public static func createTemp(directoryPath: String): File throws FSException {
+         return createTemp(Path(directoryPath))
+     }
+ 
+@@ -324,7 +324,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws FSException if failed to create the temporary file or directoryPath is invalid.
+      * @throws IllegalArgumentException while path contains null character or path is empty.
+      */
+-    public static func createTemp(directoryPath: Path): File {
++    public static func createTemp(directoryPath: Path): File throws FSException {
+         var utf8View = unsafe { canonicalize(directoryPath).toString().rawData() }
+ 
+         // Append r'/' + "tmpfile" + Six random characters and r'\0'
+@@ -350,7 +350,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws FSException while path is empty.
+      * @throws IllegalArgumentException while path contains null character.
+      */
+-    static func copy(sourcePath: String, destinationPath: String, overwrite: Bool): Unit {
++    static func copy(sourcePath: String, destinationPath: String, overwrite: Bool): Unit throws FSException {
+         if (overwrite) {
+             callNativeFunc(sourcePath, destinationPath, CJ_FS_CopyREF,
+                 "Failed to copy file from `${sourcePath}` to `${destinationPath}`")
+@@ -366,7 +366,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws FSException while path is empty.
+      * @throws IllegalArgumentException while path contains null character.
+      */
+-    public static func readFrom(path: Path): Array<Byte> {
++    public static func readFrom(path: Path): Array<Byte> throws FSException {
+         File.readFrom(path.toString())
+     }
+ 
+@@ -376,7 +376,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws FSException if file read failed
+      * @throws FSException if system failed to close file
+      */
+-    public static func readFrom(path: String): Array<Byte> {
++    public static func readFrom(path: String): Array<Byte> throws FSException {
+         var file = File(path, Read)
+         try {
+             return readToEnd(file)
+@@ -390,7 +390,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws IllegalArgumentException while path contains null character.
+      * @throws FSException if system failed to close file.
+      */
+-    public static func writeTo(path: Path, buffer: Array<Byte>): Unit {
++    public static func writeTo(path: Path, buffer: Array<Byte>): Unit throws FSException {
+         writeTo(path.toString(), buffer)
+     }
+ 
+@@ -399,7 +399,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws IllegalArgumentException while path contains null character.
+      * @throws FSException if system failed to close file.
+      */
+-    public static func writeTo(path: String, buffer: Array<Byte>): Unit {
++    public static func writeTo(path: String, buffer: Array<Byte>): Unit throws FSException {
+         writeTo(path, buffer, Write)
+     }
+ 
+@@ -408,7 +408,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws IllegalArgumentException while path contains null character.
+      * @throws FSException if system failed to close file
+      */
+-    public static func appendTo(path: Path, buffer: Array<Byte>): Unit {
++    public static func appendTo(path: Path, buffer: Array<Byte>): Unit throws FSException {
+         appendTo(path.toString(), buffer)
+     }
+ 
+@@ -417,7 +417,7 @@ public class File <: Resource & IOStream & Seekable {
+      * @throws IllegalArgumentException while path contains null character.
+      * @throws FSException if system failed to close file
+      */
+-    public static func appendTo(path: String, buffer: Array<Byte>): Unit {
++    public static func appendTo(path: String, buffer: Array<Byte>): Unit throws FSException {
+         writeTo(path, buffer, OpenMode.Append)
+     }
+ 
+diff --git a/stdlib/libs/std/fs/file_info.cj b/stdlib/libs/std/fs/file_info.cj
+index f97e18a..53d1922 100644
+--- a/stdlib/libs/std/fs/file_info.cj
++++ b/stdlib/libs/std/fs/file_info.cj
+@@ -18,11 +18,11 @@ import std.time.*
+ public struct FileInfo <: Equatable<FileInfo> {
+     var _path: Path
+ 
+-    public init(path: Path) {
++    public init(path: Path) throws FSException {
+         this(path, true)
+     }
+ 
+-    public init(path: String) {
++    public init(path: String) throws FSException {
+         this(Path(path), true)
+     }
+ 
+@@ -43,7 +43,7 @@ public struct FileInfo <: Equatable<FileInfo> {
+     }
+ 
+     public prop parentDirectory: Option<FileInfo> {
+-        get() {
++        get() throws FSException {
+             let parent = _path.parent
+             if (!parent.toString().isEmpty() && !isRootPath(_path.toString())) {
+                 return FileInfo(parent)
+@@ -62,7 +62,7 @@ public struct FileInfo <: Equatable<FileInfo> {
+      * @throws FSException if system failed to get creation time
+      */
+     public prop creationTime: DateTime {
+-        get() {
++        get() throws FSException {
+             let time = callNativeFunc(CJ_FS_GetCreationTime, "Failed to get creation time.")
+             return DateTime.ofEpoch(second: time, nanosecond: 0)
+         }
+@@ -72,7 +72,7 @@ public struct FileInfo <: Equatable<FileInfo> {
+      * @throws FSException if system failed to get last access time
+      */
+     public prop lastAccessTime: DateTime {
+-        get() {
++        get() throws FSException {
+             let time = callNativeFunc(CJ_FS_GetLastAccessTime, "Failed to get last access time.")
+             return DateTime.ofEpoch(second: time, nanosecond: 0)
+         }
+@@ -82,7 +82,7 @@ public struct FileInfo <: Equatable<FileInfo> {
+      * @throws FSException if system failed to get last modification time
+      */
+     public prop lastModificationTime: DateTime {
+-        get() {
++        get() throws FSException {
+             let time = callNativeFunc(CJ_FS_GetLastModificationTime, "Failed to get last modification time.")
+             return DateTime.ofEpoch(second: time, nanosecond: 0)
+         }
+@@ -92,7 +92,7 @@ public struct FileInfo <: Equatable<FileInfo> {
+      * @throws FSException if memory copy failed or get directory/file size failed
+      */
+     public prop size: Int64 {
+-        get() {
++        get() throws FSException {
+             return callNativeFunc(CJ_FS_PathSize, "Failed to get file size.")
+         }
+     }
+@@ -100,32 +100,32 @@ public struct FileInfo <: Equatable<FileInfo> {
+     /**
+      * @throws FSException if cPath is invalid or symbol not linked
+      */
+-    public func isSymbolicLink(): Bool {
++    public func isSymbolicLink(): Bool throws FSException {
+         return callNativeFunc(CJ_FS_IsLink)
+     }
+ 
+     /**
+      * @throws FSException if cPath is invalid
+      */
+-    public func isRegular(): Bool {
++    public func isRegular(): Bool throws FSException {
+         return callNativeFunc(CJ_FS_IsFile)
+     }
+ 
+     /**
+      * @throws FSException if cPath is invalid
+      */
+-    public func isDirectory(): Bool {
++    public func isDirectory(): Bool throws FSException {
+         return callNativeFunc(CJ_FS_IsDir)
+     }
+ 
+     /**
+      * @throws FSException if cPath is invalid
+      */
+-    public func isReadOnly(): Bool {
++    public func isReadOnly(): Bool throws FSException {
+         return callNativeFunc(CJ_FS_IsReadOnly)
+     }
+ 
+-    public func isHidden(): Bool {
++    public func isHidden(): Bool throws FSException {
+         let fileName = canonicalize(_path).fileName
+         if (fileName.isEmpty()) {
+             throw FSException("FileName is empty.")
+@@ -136,7 +136,7 @@ public struct FileInfo <: Equatable<FileInfo> {
+     /**
+      * @throws FSException if cPath is invalid
+      */
+-    public func canExecute(): Bool {
++    public func canExecute(): Bool throws FSException {
+         // _wstat in implementation do not accept "\\\\?\\" as it's argument
+         return callNativeFunc(CJ_FS_CanExecute, shouldFixLongPath: false)
+     }
+@@ -144,14 +144,14 @@ public struct FileInfo <: Equatable<FileInfo> {
+     /**
+      * @throws FSException if cPath is invalid
+      */
+-    public func canRead(): Bool {
++    public func canRead(): Bool throws FSException {
+         return callNativeFunc(CJ_FS_CanRead)
+     }
+ 
+     /**
+      * @throws FSException if cPath is invalid
+      */
+-    public func canWrite(): Bool {
++    public func canWrite(): Bool throws FSException {
+         return callNativeFunc(CJ_FS_CanWrite)
+     }
+ 
+@@ -160,7 +160,7 @@ public struct FileInfo <: Equatable<FileInfo> {
+      * @throws FSException if operation not permitted on Windows
+      * Processes running as a privileged user may bypass this permission setting.
+      */
+-    public func setExecutable(executable: Bool): Bool {
++    public func setExecutable(executable: Bool): Bool throws FSException {
+         return callNativeFunc(CJ_FS_SetExecutable, executable)
+     }
+ 
+@@ -169,7 +169,7 @@ public struct FileInfo <: Equatable<FileInfo> {
+      * @throws FSException if operation not permitted on Windows
+      * Processes running as a privileged user may bypass this permission setting.
+      */
+-    public func setReadable(readable: Bool): Bool {
++    public func setReadable(readable: Bool): Bool throws FSException {
+         return callNativeFunc(CJ_FS_SetReadable, readable)
+     }
+ 
+@@ -177,7 +177,7 @@ public struct FileInfo <: Equatable<FileInfo> {
+      * @throws FSException if cPath is invalid
+      * @throws FSException if operation not permitted on Windows
+      */
+-    public func setWritable(writable: Bool): Bool {
++    public func setWritable(writable: Bool): Bool throws FSException {
+         // _wstat in implementation do not accept "\\\\?\\" as it's argument
+         return callNativeFunc(CJ_FS_SetWritable, writable, shouldFixLongPath: false)
+     }
+diff --git a/stdlib/libs/std/fs/hardlink.cj b/stdlib/libs/std/fs/hardlink.cj
+index 32235c7..64fbdf0 100644
+--- a/stdlib/libs/std/fs/hardlink.cj
++++ b/stdlib/libs/std/fs/hardlink.cj
+@@ -14,11 +14,11 @@ package std.fs
+ public class HardLink {
+     private init() {}
+ 
+-    public static func create(link: Path, to!: Path): Unit {
++    public static func create(link: Path, to!: Path): Unit throws FSException {
+         HardLink.create(link._rawPath, to: to._rawPath)
+     }
+ 
+-    public static func create(link: String, to!: String): Unit {
++    public static func create(link: String, to!: String): Unit throws FSException {
+         PathValidator.throwIfEmptyOrContainsNullByte("link", link, true)
+         PathValidator.throwIfEmptyOrContainsNullByte("to", to, true)
+ 
+diff --git a/stdlib/libs/std/fs/path.cj b/stdlib/libs/std/fs/path.cj
+index eb25b82..979005e 100644
+--- a/stdlib/libs/std/fs/path.cj
++++ b/stdlib/libs/std/fs/path.cj
+@@ -13,7 +13,7 @@
+  */
+ package std.fs
+ 
+-public func canonicalize(path: String): Path {
++public func canonicalize(path: String): Path throws FSException {
+     PathValidator.throwIfEmptyOrContainsNullByte("path", path, true)
+     if (!exists(path)) {
+         throw FSException("Failed to canonical: the input path `${path}` may not exist or permission denied!")
+@@ -22,7 +22,7 @@ public func canonicalize(path: String): Path {
+     return Path(processPathHeader(path, Path.canonicalizePath(path)))
+ }
+ 
+-public func canonicalize(path: Path): Path {
++public func canonicalize(path: Path): Path throws FSException {
+     PathValidator.throwIfEmptyOrContainsNullByte("path", path, true)
+ 
+     let rawPath = path.toString()
+@@ -143,7 +143,7 @@ public struct Path <: Equatable<Path> & Hashable & ToString {
+      * @throws IllegalArgumentException while rawpath or path contains null character, or rawpath is empty.
+      * @throws FSException if path is an absolute path.
+      */
+-    public func join(path: String): Path {
++    public func join(path: String): Path throws FSException {
+         PathValidator.throwIfContainsNullByte("path", path, true)
+         PathValidator.throwIfEmptyOrContainsNullByte("path", _rawPath, false)
+ 
+@@ -169,7 +169,7 @@ public struct Path <: Equatable<Path> & Hashable & ToString {
+      * @throws IllegalArgumentException while path contains null character,
+      * or path is empty.
+      */
+-    public func join(path: Path): Path {
++    public func join(path: Path): Path throws FSException {
+         return join(path.toString())
+     }
+ 
+diff --git a/stdlib/libs/std/fs/symboliclink.cj b/stdlib/libs/std/fs/symboliclink.cj
+index 1b9275b..29705a2 100644
+--- a/stdlib/libs/std/fs/symboliclink.cj
++++ b/stdlib/libs/std/fs/symboliclink.cj
+@@ -14,11 +14,11 @@ package std.fs
+ public class SymbolicLink {
+     private init() {}
+ 
+-    public static func create(link: Path, to!: Path): Unit {
++    public static func create(link: Path, to!: Path): Unit throws FSException {
+         SymbolicLink.create(link._rawPath, to: to._rawPath)
+     }
+ 
+-    public static func create(link: String, to!: String): Unit {
++    public static func create(link: String, to!: String): Unit throws FSException {
+         PathValidator.throwIfEmptyOrContainsNullByte("link", link, true)
+         PathValidator.throwIfEmptyOrContainsNullByte("to", to, true)
+ 
+@@ -43,11 +43,11 @@ public class SymbolicLink {
+         }
+     }
+ 
+-    public static func readFrom(path: String, recursive!: Bool = false): Path {
++    public static func readFrom(path: String, recursive!: Bool = false): Path throws FSException {
+         return SymbolicLink.readFrom(Path(path), recursive: recursive)
+     }
+ 
+-    public static func readFrom(path: Path, recursive!: Bool = false): Path {
++    public static func readFrom(path: Path, recursive!: Bool = false): Path throws FSException {
+         PathValidator.throwIfEmptyOrContainsNullByte("path", path, true)
+         if (!FileInfo(path).isSymbolicLink()) {
+             throw IllegalArgumentException("The input path `${path}` is not a symbolic link.")
+diff --git a/stdlib/libs/std/io/io_utils.cj b/stdlib/libs/std/io/io_utils.cj
+index 9fc348a..919ba09 100644
+--- a/stdlib/libs/std/io/io_utils.cj
++++ b/stdlib/libs/std/io/io_utils.cj
+@@ -25,7 +25,7 @@ public enum SeekPosition {
+     | End(Int64) /* < end position of the file. */
+ }
+ 
+-public func readString<T>(from: T): String where T <: InputStream & Seekable {
++public func readString<T>(from: T): String throws ContentFormatException where T <: InputStream & Seekable {
+     var data = Array<Byte>(from.remainLength, repeat: 0)
+     return try {
+         from.read(data)
+diff --git a/stdlib/libs/std/io/string_reader.cj b/stdlib/libs/std/io/string_reader.cj
+index 8599625..5354fcc 100644
+--- a/stdlib/libs/std/io/string_reader.cj
++++ b/stdlib/libs/std/io/string_reader.cj
+@@ -30,7 +30,7 @@ public class StringReader<T> where T <: InputStream {
+      * @throws ContentFormatException if the format of the read data is incorrect.
+      */
+     @Frozen
+-    public func read(): ?Rune {
++    public func read(): ?Rune throws ContentFormatException {
+         if (isFinished()) {
+             return None
+         }
+@@ -83,7 +83,7 @@ public class StringReader<T> where T <: InputStream {
+      * @throws ContentFormatException if the format of the read data is incorrect.
+      */
+     @Frozen
+-    public func readln(): Option<String> {
++    public func readln(): Option<String> throws ContentFormatException {
+         if (isFinished()) {
+             return Option<String>.None
+         }
+@@ -113,7 +113,7 @@ public class StringReader<T> where T <: InputStream {
+      * @throws ContentFormatException if the format of the read data is incorrect.
+      */
+     @Frozen
+-    public func readToEnd(): String {
++    public func readToEnd(): String throws ContentFormatException {
+         var bas: ByteBuffer = ByteBuffer()
+         let buf = Array<Byte>(4096, repeat: 0)
+         while (!isFinished()) {
+@@ -131,14 +131,14 @@ public class StringReader<T> where T <: InputStream {
+     /**
+      * @throws ContentFormatException if the format of the read data is incorrect.
+      */
+-    public func readUntil(v: Rune): Option<String> {
++    public func readUntil(v: Rune): Option<String> throws ContentFormatException {
+         return readUntil({c: Rune => return c == v})
+     }
+ 
+     /**
+      * @throws ContentFormatException if the format of the read data is incorrect.
+      */
+-    public func readUntil(predicate: (Rune) -> Bool): Option<String> {
++    public func readUntil(predicate: (Rune) -> Bool): Option<String> throws ContentFormatException {
+         if (isFinished()) {
+             return Option<String>.None
+         }
+diff --git a/stdlib/libs/std/io/string_writer.cj b/stdlib/libs/std/io/string_writer.cj
+index 104646f..053dba2 100644
+--- a/stdlib/libs/std/io/string_writer.cj
++++ b/stdlib/libs/std/io/string_writer.cj
+@@ -69,19 +69,19 @@ public class StringWriter<T> where T <: OutputStream {
+         })
+     }
+ 
+-    public func write(v: Int8): Unit {
++    public func write(v: Int8): Unit throws IOException {
+         write(Int64(v))
+     }
+ 
+-    public func write(v: Int16): Unit {
++    public func write(v: Int16): Unit throws IOException {
+         write(Int64(v))
+     }
+ 
+-    public func write(v: Int32): Unit {
++    public func write(v: Int32): Unit throws IOException {
+         write(Int64(v))
+     }
+ 
+-    public func write(v: Int64): Unit {
++    public func write(v: Int64): Unit throws IOException {
+         var cnt: Int64 = if (v >= 0 && v < 10) {
+             1
+         } else {
+@@ -108,19 +108,19 @@ public class StringWriter<T> where T <: OutputStream {
+         }
+     }
+ 
+-    public func write(v: UInt8): Unit {
++    public func write(v: UInt8): Unit throws IOException {
+         write(UInt64(v))
+     }
+ 
+-    public func write(v: UInt16): Unit {
++    public func write(v: UInt16): Unit throws IOException {
+         write(UInt64(v))
+     }
+ 
+-    public func write(v: UInt32): Unit {
++    public func write(v: UInt32): Unit throws IOException {
+         write(UInt64(v))
+     }
+ 
+-    public func write(v: UInt64): Unit {
++    public func write(v: UInt64): Unit throws IOException {
+         var cnt: Int64 = if (v >= 0 && v < 10) {
+             1
+         } else {
+@@ -139,15 +139,15 @@ public class StringWriter<T> where T <: OutputStream {
+         outputBOS.curPos += res
+     }
+ 
+-    public func write(v: Float16): Unit {
++    public func write(v: Float16): Unit throws IOException {
+         write(Float64(v))
+     }
+ 
+-    public func write(v: Float32): Unit {
++    public func write(v: Float32): Unit throws IOException {
+         write(Float64(v))
+     }
+ 
+-    public func write(v: Float64): Unit {
++    public func write(v: Float64): Unit throws IOException {
+         unsafe {
+             let p: CPointer<UInt8> = CJ_CORE_Float64ToCPointer(v)
+             if (p.isNull()) {
+@@ -197,49 +197,49 @@ public class StringWriter<T> where T <: OutputStream {
+         })
+     }
+ 
+-    public func writeln(v: Int8): Unit {
++    public func writeln(v: Int8): Unit throws IOException {
+         writeln(Int64(v))
+     }
+ 
+-    public func writeln(v: Int16): Unit {
++    public func writeln(v: Int16): Unit throws IOException {
+         writeln(Int64(v))
+     }
+ 
+-    public func writeln(v: Int32): Unit {
++    public func writeln(v: Int32): Unit throws IOException {
+         writeln(Int64(v))
+     }
+ 
+-    public func writeln(v: Int64): Unit {
++    public func writeln(v: Int64): Unit throws IOException {
+         write(v)
+         writeln()
+     }
+ 
+-    public func writeln(v: UInt8): Unit {
++    public func writeln(v: UInt8): Unit throws IOException {
+         writeln(UInt64(v))
+     }
+ 
+-    public func writeln(v: UInt16): Unit {
++    public func writeln(v: UInt16): Unit throws IOException {
+         writeln(UInt64(v))
+     }
+ 
+-    public func writeln(v: UInt32): Unit {
++    public func writeln(v: UInt32): Unit throws IOException {
+         writeln(UInt64(v))
+     }
+ 
+-    public func writeln(v: UInt64): Unit {
++    public func writeln(v: UInt64): Unit throws IOException {
+         write(v)
+         writeln()
+     }
+ 
+-    public func writeln(v: Float16): Unit {
++    public func writeln(v: Float16): Unit throws IOException {
+         writeln(Float64(v))
+     }
+ 
+-    public func writeln(v: Float32): Unit {
++    public func writeln(v: Float32): Unit throws IOException {
+         writeln(Float64(v))
+     }
+ 
+-    public func writeln(v: Float64): Unit {
++    public func writeln(v: Float64): Unit throws IOException {
+         write(v)
+         writeln()
+     }
+-- 
+2.54.0
+

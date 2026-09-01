@@ -1,0 +1,190 @@
+From d80a69149e017a717c9bd2d2cb7336a5e89e2bf4 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Mon, 31 Aug 2026 15:14:21 +0300
+Subject: [PATCH 41/43] test(chexc): free declaration clause order, the
+ sibling-catch resume, the rename
+
+'performs_order_free.cj' runs all four permutations (performs-first, throws-first, and 'where'
+on either side) and checks they mean the same thing; 'performs_order_neg.cj' keeps the
+functional-type half, where the order is still fixed. 'resume_throwing_sibling.cj' is the text's
+own positive example, which was rejected before the rule. The escape-hatch tests follow the
+rename.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../performs/performs_order_free.cj           | 55 +++++++++++++++++++
+ .../performs/performs_order_neg.cj            |  9 ++-
+ .../performs/resume_throwing_sibling.cj       | 35 ++++++++++++
+ .../CheckedExceptions/scopes/escape_hatch.cj  |  4 +-
+ .../scopes/escape_hatch_unchecked_warn.cj     |  4 +-
+ 5 files changed, 100 insertions(+), 7 deletions(-)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_free.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/resume_throwing_sibling.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_free.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_free.cj
+new file mode 100644
+index 0000000000..941d84b505
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_free.cj
+@@ -0,0 +1,55 @@
++// Effects (keyword scheme rule 9): on a DECLARATION the 'where', 'performs' and 'throws' blocks
++// order freely, each at most once — they are keyword-led, and 'where' already sits anywhere, so a
++// fixed order would buy nothing. Every permutation below is legal and means the same thing.
++// Functional types are the opposite case ('performs_order_neg.cj').
++
++// EXEC: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %set_stdx_path %run_opt %output
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++class MyExc <: Exception {}
++
++func performsFirst(): Int64
++performs GetNumber
++throws MyExc {
++    return perform GetNumber()
++}
++
++func throwsFirst(): Int64
++throws MyExc
++performs GetNumber {
++    return perform GetNumber()
++}
++
++func aroundWhere<T>(x: T): Int64
++throws MyExc
++where T <: ToString
++performs GetNumber {
++    return perform GetNumber()
++}
++
++func whereFirst<T>(x: T): Int64
++where T <: ToString
++performs GetNumber
++throws MyExc {
++    return perform GetNumber()
++}
++
++func sumAll(): Int64 {
++    try {
++        return performsFirst() + throwsFirst() + aroundWhere<Int64>(1) + whereFirst<Int64>(1)
++    } catch (e: MyExc) {
++        return -1
++    } handle (_: GetNumber) {
++        resume with 11
++    }
++}
++
++main(): Int64 {
++    if (sumAll() != 44) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj
+index fb1c5b0291..55501a9d02 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj
+@@ -1,5 +1,7 @@
+-// Effects (the keyword scheme rule 8): the clause order is fixed — 'performs' precedes 'throws'. The reverse
+-// order is rejected, not silently accepted.
++// Effects (keyword scheme rule 9): in FUNCTIONAL TYPES the pre-arrow clause sequence is one
++// grammar production and 'performs' precedes 'throws' — the reverse order is rejected there. On
++// DECLARATIONS the 'where', 'performs' and 'throws' blocks order freely, which
++// 'performs_order_free.cj' pins; this test keeps the functional-type half.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+ // ASSERT: scan must precede
+@@ -9,7 +11,8 @@ import stdx.effect.*
+ class GetNumber <: Command<Int64> {}
+ class MyExc <: Exception {}
+ 
+-func wrongOrder(): Int64 throws MyExc performs GetNumber {
++// A functional type: 'performs' must come first, so this is rejected.
++func takesCallback(f: (Int64) throws MyExc performs GetNumber -> Int64): Int64 {
+     return 0
+ }
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/resume_throwing_sibling.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/resume_throwing_sibling.cj
+new file mode 100644
+index 0000000000..64004e6013
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/resume_throwing_sibling.cj
+@@ -0,0 +1,35 @@
++// Effects (rule 5 of "Effect requirements"): 'resume throwing e' injects 'e' at the suspended
++// 'perform' site, which is inside the try's own body — so the try's own catch clauses discharge
++// it. This is the text's own positive example; before the rule it was rejected, since the handler
++// body was checked against the enclosing scopes alone.
++
++// EXEC: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %set_stdx_path %run_opt %output
++
++import stdx.effect.*
++
++class GetLogger <: Command<Int64> {}
++class LoggerUnavailable <: Exception {}
++
++func f(): Int64
++performs GetLogger {
++    return perform GetLogger()
++}
++
++public func caller(): Int64
++throws () {
++    try {
++        return f()
++    } catch (e: LoggerUnavailable) {
++        return 7          // the injected exception surfaces at the perform, inside this try
++    } handle (_: GetLogger) {
++        resume throwing LoggerUnavailable()
++    }
++}
++
++main(): Int64 {
++    if (caller() != 7) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch.cj
+index 49b8425e72..f468df9c58 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (the escape hatch): 'unsafeAssumeHandled<E>(f)' runs 'f' with a fabricated
++// Checked exceptions (the escape hatch): 'unsafeCanThrow<E>(f)' runs 'f' with a fabricated
+ // capability for 'E' -- a type-level assumption with no runtime content, for migration and boundary
+ // code that knows an exception cannot occur. The callback takes its capability list from the
+ // parameter's type, so a requirement inside it is discharged; the call site itself requires nothing.
+@@ -18,7 +18,7 @@ func mayThrow(n: Int64): Int64 throws AException {
+ 
+ // no clause of its own: the assumption removes the obligation rather than passing it on
+ func assumed(n: Int64): Int64 {
+-    unsafeAssumeHandled<AException, Int64>({ => mayThrow(n) })
++    unsafeCanThrow<AException, Int64>({ => mayThrow(n) })
+ }
+ 
+ main(): Int64 {
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch_unchecked_warn.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch_unchecked_warn.cj
+index b0ce82bfc8..0fdcb65aac 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch_unchecked_warn.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch_unchecked_warn.cj
+@@ -3,12 +3,12 @@
+ // in the 'checked-exceptions' group.
+ 
+ // EXEC-PIPE: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan warning: 'unsafeAssumeHandled' assumes 'Class-MyUnchecked', which is unchecked
++// ASSERT: scan warning: 'unsafeCanThrow' assumes 'Class-MyUnchecked', which is unchecked
+ 
+ class MyUnchecked <: UncheckedException {}
+ 
+ func nothingToAssume(): Int64 {
+-    unsafeAssumeHandled<MyUnchecked, Int64>({ => 1 })
++    unsafeCanThrow<MyUnchecked, Int64>({ => 1 })
+ }
+ 
+ main() {
+-- 
+2.54.0
+

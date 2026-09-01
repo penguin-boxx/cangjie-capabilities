@@ -1,0 +1,786 @@
+From 635c3ae72bf10acae0066f87785cac366e30c6c9 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 00:09:55 +0300
+Subject: [PATCH 05/44] feat(chexc): unchecked exceptions and class capturing
+ (proposal 6.4, 3.9)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+6.4 unchecked exceptions:
+- 'captures'/'throws' clause entries and throw sites consult
+  TypeCheckUtil::IsUncheckedExceptionTy (subtype of std.core UncheckedException,
+  tolerant of its absence while bootstrapping core).
+- Single exemption point in CapabilityCheck::Demand covers throw sites and call
+  sites alike, including requirements that instantiate to an unchecked type.
+- Proposal 3.2 rule 5: concrete unchecked types are rejected in clauses; type
+  parameters stay allowed (their instantiation is exempted instead).
+
+3.9 class capturing (pre-Modal semantics per author rulings 10-12):
+- 'captures' EXPERIMENTAL_TOKEN gated by the same flag as 'throws'; clause parsed
+  on class and struct headers, reusing the ThrowsClause node; entries validated
+  like throws entries; primary constructors rejected on capturing declarations.
+- CapabilityCheck: the declaration's own captures supply every member body
+  (methods, property accessors, constructors, field initializers) — never the
+  superclass's (rule 5); constructor calls demand the constructed declaration's
+  captures, instantiated for generic classes, which also covers 'super(...)' and
+  delegating 'this(...)' calls.
+- Visitors completed for the new field: Collector (clause types collected inside
+  the declaration's scope, so they may reference its generic parameters),
+  PartialInstantiation, ASTHasher (part of the type's signature hash — it changes
+  what constructors demand), plus Walker/Clone/PrintNode.
+- ASTKind sizes updated for the six InheritableDecl subtypes.
+
+Gate: CheckedExceptions unchecked 4/4, captures 6/6, parse 11/11, types 10/10,
+scopes 7/7 (inference 2/5 red by design, milestone pending); ctest 49/49;
+Parser/Sema LLT 3934/3934; clang-format clean.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ include/cangjie/AST/ASTKind.inc               | 12 ++--
+ include/cangjie/AST/Node.h                    |  7 ++
+ .../Basic/DiagRefactor/DiagnosticParser.def   |  3 +
+ .../Basic/DiagRefactor/DiagnosticSema.def     |  7 +-
+ include/cangjie/Lex/Tokens.inc                |  1 +
+ include/cangjie/Utils/ConstantsUtils.h        |  1 +
+ src/AST/Clone.cpp                             |  6 ++
+ src/AST/PrintNode.cpp                         | 10 +++
+ src/AST/Walker.cpp                            |  6 ++
+ src/Lex/Lexer.cpp                             |  3 +-
+ src/Parse/ASTHasher.cpp                       |  3 +
+ src/Parse/ParseDecl.cpp                       | 31 +++++++++
+ src/Parse/ParseType.cpp                       | 29 ++++++++
+ src/Parse/ParserImpl.h                        | 12 ++++
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 67 ++++++++++++++++++-
+ src/Sema/Collector.cpp                        | 15 +++++
+ src/Sema/Collector.h                          |  1 +
+ .../PartialInstantiation.cpp                  |  6 ++
+ src/Sema/TypeCheckClassLike.cpp               |  2 +
+ src/Sema/TypeCheckDecl.cpp                    |  2 +
+ src/Sema/TypeCheckUtil.cpp                    | 34 ++++++++++
+ src/Sema/TypeCheckUtil.h                      | 12 ++++
+ src/Sema/TypeChecker.cpp                      | 36 +++++++++-
+ src/Sema/TypeCheckerImpl.h                    | 14 +++-
+ 24 files changed, 304 insertions(+), 16 deletions(-)
+
+diff --git a/include/cangjie/AST/ASTKind.inc b/include/cangjie/AST/ASTKind.inc
+index 365a9a1a..87fb1dc6 100644
+--- a/include/cangjie/AST/ASTKind.inc
++++ b/include/cangjie/AST/ASTKind.inc
+@@ -11,12 +11,12 @@ ASTKIND(DECL, "*decl", Decl, 728) // begin of subtypes of Decl.
+ ASTKIND(MAIN_DECL, "main_decl", MainDecl, 752)
+ ASTKIND(FUNC_DECL, "func_decl", FuncDecl, 824)
+ ASTKIND(MACRO_DECL, "macro_decl", MacroDecl, 744)
+-ASTKIND(CLASS_LIKE_DECL, "class_like_decl", ClassLikeDecl, 824) // begin: subtypes of ClassLikeDecl and InheritableDecl.
+-ASTKIND(CLASS_DECL, "class_decl", ClassDecl, 840)
+-ASTKIND(INTERFACE_DECL, "interface_decl", InterfaceDecl, 832) // end: subtypes of ClassLikeDecl.
+-ASTKIND(EXTEND_DECL, "extend_decl", ExtendDecl, 888)
+-ASTKIND(ENUM_DECL, "enum_decl", EnumDecl, 928)
+-ASTKIND(STRUCT_DECL, "struct_decl", StructDecl, 792) // end of subtypes of InheritableDecl.
++ASTKIND(CLASS_LIKE_DECL, "class_like_decl", ClassLikeDecl, 832) // begin: subtypes of ClassLikeDecl and InheritableDecl.
++ASTKIND(CLASS_DECL, "class_decl", ClassDecl, 848)
++ASTKIND(INTERFACE_DECL, "interface_decl", InterfaceDecl, 840) // end: subtypes of ClassLikeDecl.
++ASTKIND(EXTEND_DECL, "extend_decl", ExtendDecl, 896)
++ASTKIND(ENUM_DECL, "enum_decl", EnumDecl, 936)
++ASTKIND(STRUCT_DECL, "struct_decl", StructDecl, 800) // end of subtypes of InheritableDecl.
+ ASTKIND(TYPE_ALIAS_DECL, "type_alias_decl", TypeAliasDecl, 760)
+ ASTKIND(PRIMARY_CTOR_DECL, "primary_ctor_decl", PrimaryCtorDecl, 744)
+ ASTKIND(BUILTIN_DECL, "builtin_decl", BuiltInDecl, 736)
+diff --git a/include/cangjie/AST/Node.h b/include/cangjie/AST/Node.h
+index 4b3a2a0b..f3f9e780 100644
+--- a/include/cangjie/AST/Node.h
++++ b/include/cangjie/AST/Node.h
+@@ -1115,6 +1115,13 @@ protected:
+ struct InheritableDecl : public Decl {
+     Position upperBoundPos;                     /**< Position of <:. */
+     std::vector<OwnedPtr<Type>> inheritedTypes; /**< Super class or super interfaces. */
++    /**
++     * Checked-exception `captures` clause (experimental, behind `--experimental --enable-chexc`;
++     * proposal 3.9): exception capabilities the class or struct captures at construction for use
++     * in its member bodies. Reuses the ThrowsClause node shape (`captures E1, E2`, bare list
++     * only). Only populated on ClassDecl and StructDecl. Optional, may be null.
++     */
++    OwnedPtr<ThrowsClause> capturesClause;
+     std::set<Ptr<InterfaceTy>> GetSuperInterfaceTys() const;
+     std::vector<Ptr<InterfaceTy>> GetStableSuperInterfaceTys() const;
+     // guarantees sub-types always exist before super-types
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+index f7f6744d..d2a25264 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+@@ -93,6 +93,9 @@ ERROR(parse_ellipsis_in_func_type_throws_clause,
+     "'...' is not allowed in a function type's 'throws' clause", "a function type's capability list is always complete")
+ ERROR(parse_ellipsis_in_throws_clause_unsupported, "'...' in a 'throws' clause is not supported yet")
+ ERROR(parse_duplicate_throws_clause, "duplicate 'throws' clause")
++ERROR(parse_expected_exception_type_after_captures, "expected exception type after 'captures', found %s",
++    "expected exception type here")
++ERROR(parse_duplicate_captures_clause, "duplicate 'captures' clause")
+ ERROR(parse_unexpected_colon_in_range, "unexpected ':' in index access", "unexpected ':' here")
+ ERROR(parse_expected_lsquare_after, "expected '[' after '%s', found %s", "expected '[' here")
+ ERROR(parse_expected_type_argument, "expected type argument")
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index 34db1c64..5e791650 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -412,8 +412,13 @@ WARNING(sema_hide_must_at_end, APILEVEL_CHECK, "annotation '%s' must be placed b
+ WARNING(sema_unused_import, UNUSED, "unused import '%s'", "unused import")
+ 
+ // Checked exceptions (experimental, behind '--experimental --enable-chexc').
+-ERROR(sema_chexc_clause_type_not_exception, "type '%s' in 'throws' clause is not a subtype of class 'Exception'",
++ERROR(sema_chexc_clause_type_not_exception, "type '%s' in '%s' clause is not a subtype of class 'Exception'",
+     "this type must be a subtype of class 'Exception'")
++ERROR(sema_chexc_unchecked_type_in_clause, "unchecked exception type '%s' is not allowed in a '%s' clause",
++    "throwing an unchecked exception never requires a capability")
++ERROR(sema_chexc_primary_ctor_on_capturing,
++    "%s '%s' has a 'captures' clause and cannot declare a primary constructor",
++    "declare an 'init' constructor instead")
+ ERROR(sema_chexc_clause_on_cfunc, "a 'throws' clause is not allowed on %s", "'throws' clause is not allowed here")
+ ERROR(sema_chexc_override_missing_capability,
+     "exception type '%s' in 'throws' clause of '%s' is not covered by the overridden or implemented declaration",
+diff --git a/include/cangjie/Lex/Tokens.inc b/include/cangjie/Lex/Tokens.inc
+index 0cb60b4b..7e4246a7 100644
+--- a/include/cangjie/Lex/Tokens.inc
++++ b/include/cangjie/Lex/Tokens.inc
+@@ -174,6 +174,7 @@ EXPERIMENTAL_TOKEN(RESUME, "resume", "resume", 0)
+ EXPERIMENTAL_TOKEN(THROWING, "throwing", "throwing", 0)
+ EXPERIMENTAL_TOKEN(HANDLE, "handle", "handle", 0)
+ EXPERIMENTAL_TOKEN(THROWS, "throws", "throws", 0)
++EXPERIMENTAL_TOKEN(CAPTURES, "captures", "captures", 0)
+ TOKEN(ILLEGAL, "illegal", "", 0)
+ TOKEN(DOUBLE_COLON, "double_colon", "::", 0)
+ TOKEN(FEATURES, "features", "features", 0)
+diff --git a/include/cangjie/Utils/ConstantsUtils.h b/include/cangjie/Utils/ConstantsUtils.h
+index b358eaaa..7ebb08dd 100644
+--- a/include/cangjie/Utils/ConstantsUtils.h
++++ b/include/cangjie/Utils/ConstantsUtils.h
+@@ -49,6 +49,7 @@ inline const std::string CHIR_READABLE_FILE_EXTENSION = ".chirtxt";
+ 
+ // Built-in type name.
+ inline const std::string CLASS_EXCEPTION = "Exception";
++inline const std::string CLASS_UNCHECKED_EXCEPTION = "UncheckedException";
+ inline const std::string CLASS_ERROR = "Error";
+ inline const std::string CLASS_COMMAND = "Command";
+ inline const std::string CLASS_HANDLER_FRAME = "HandlerFrame";
+diff --git a/src/AST/Clone.cpp b/src/AST/Clone.cpp
+index ece202a4..4198bf33 100644
+--- a/src/AST/Clone.cpp
++++ b/src/AST/Clone.cpp
+@@ -271,6 +271,9 @@ OwnedPtr<Decl> ASTCloner::CloneStructDecl(const StructDecl& sd, const VisitFunc&
+     for (auto& it : sd.inheritedTypes) {
+         ret->inheritedTypes.push_back(CloneType(it.get(), visitor));
+     }
++    if (sd.capturesClause) {
++        ret->capturesClause = CloneThrowsClause(*sd.capturesClause, visitor);
++    }
+     ret->body = CloneNode(sd.body.get(), visitor);
+     if (sd.generic) {
+         ret->generic = CloneGeneric(*sd.generic, visitor);
+@@ -286,6 +289,9 @@ OwnedPtr<Decl> ASTCloner::CloneClassDecl(const ClassDecl& cd, const VisitFunc& v
+     for (auto& it : cd.inheritedTypes) {
+         ret->inheritedTypes.push_back(CloneType(it.get(), visitor));
+     }
++    if (cd.capturesClause) {
++        ret->capturesClause = CloneThrowsClause(*cd.capturesClause, visitor);
++    }
+     ret->body = CloneNode(cd.body.get(), visitor);
+     if (cd.generic) {
+         ret->generic = CloneGeneric(*cd.generic, visitor);
+diff --git a/src/AST/PrintNode.cpp b/src/AST/PrintNode.cpp
+index b3c7b620..1db23348 100644
+--- a/src/AST/PrintNode.cpp
++++ b/src/AST/PrintNode.cpp
+@@ -503,6 +503,11 @@ void PrintClassDecl(unsigned indent, const ClassDecl& classDecl, std::ostream& s
+         }
+         PrintIndent(stream, indent + ONE_INDENT, "]");
+     }
++    if (classDecl.capturesClause) {
++        PrintIndent(stream, indent + ONE_INDENT, "capturesClause [");
++        PrintThrowsClause(indent + TWO_INDENT, *classDecl.capturesClause, stream);
++        PrintIndent(stream, indent + ONE_INDENT, "]");
++    }
+     PrintNode(classDecl.body.get(), indent + ONE_INDENT, "", stream);
+     PrintIndent(stream, indent, "}");
+ }
+@@ -577,6 +582,11 @@ void PrintStructDecl(unsigned indent, const StructDecl& decl, std::ostream& stre
+         }
+         PrintIndent(stream, indent + ONE_INDENT, "]");
+     }
++    if (decl.capturesClause) {
++        PrintIndent(stream, indent + ONE_INDENT, "capturesClause [");
++        PrintThrowsClause(indent + TWO_INDENT, *decl.capturesClause, stream);
++        PrintIndent(stream, indent + ONE_INDENT, "]");
++    }
+     PrintIndent(stream, indent + ONE_INDENT, "StructBody {");
+     PrintNode(decl.body.get(), indent + TWO_INDENT, "", stream);
+     PrintIndent(stream, indent + ONE_INDENT, "}");
+diff --git a/src/AST/Walker.cpp b/src/AST/Walker.cpp
+index 7e9edb70..2a4d291a 100644
+--- a/src/AST/Walker.cpp
++++ b/src/AST/Walker.cpp
+@@ -321,6 +321,9 @@ VisitAction WalkerT<NodeT>::Walk(Ptr<NodeT> curNode) const
+                         return VisitAction::STOP_NOW;
+                     }
+                 }
++                if (Walk(cd->capturesClause.get()) == VisitAction::STOP_NOW) {
++                    return VisitAction::STOP_NOW;
++                }
+                 if (Walk(cd->body.get()) == VisitAction::STOP_NOW) {
+                     return VisitAction::STOP_NOW;
+                 }
+@@ -386,6 +389,9 @@ VisitAction WalkerT<NodeT>::Walk(Ptr<NodeT> curNode) const
+                         return VisitAction::STOP_NOW;
+                     }
+                 }
++                if (Walk(sd->capturesClause.get()) == VisitAction::STOP_NOW) {
++                    return VisitAction::STOP_NOW;
++                }
+                 if (Walk(sd->body.get()) == VisitAction::STOP_NOW) {
+                     return VisitAction::STOP_NOW;
+                 }
+diff --git a/src/Lex/Lexer.cpp b/src/Lex/Lexer.cpp
+index f2d6bfbc..6d539b66 100644
+--- a/src/Lex/Lexer.cpp
++++ b/src/Lex/Lexer.cpp
+@@ -311,6 +311,7 @@ TokenKind LexerImpl::LookupKeyword(const std::string& literal)
+         map[TOKENS[static_cast<unsigned char>(TokenKind::THROWING)]] = TokenKind::THROWING;
+         map[TOKENS[static_cast<unsigned char>(TokenKind::HANDLE)]] = TokenKind::HANDLE;
+         map[TOKENS[static_cast<unsigned char>(TokenKind::THROWS)]] = TokenKind::THROWS;
++        map[TOKENS[static_cast<unsigned char>(TokenKind::CAPTURES)]] = TokenKind::CAPTURES;
+         return map;
+     }();
+     auto it = tokenMap.find(literal);
+@@ -320,7 +321,7 @@ TokenKind LexerImpl::LookupKeyword(const std::string& literal)
+             kind == TokenKind::HANDLE)) {
+         return TokenKind::IDENTIFIER;
+     }
+-    if (!chexcEnabled && kind == TokenKind::THROWS) {
++    if (!chexcEnabled && (kind == TokenKind::THROWS || kind == TokenKind::CAPTURES)) {
+         return TokenKind::IDENTIFIER;
+     }
+     return kind;
+diff --git a/src/Parse/ASTHasher.cpp b/src/Parse/ASTHasher.cpp
+index 1c3d07eb..7a3d23a6 100644
+--- a/src/Parse/ASTHasher.cpp
++++ b/src/Parse/ASTHasher.cpp
+@@ -1215,6 +1215,9 @@ ASTHasher::hash_type ASTHasher::SigHash(const Decl& decl)
+         for (auto& parent : SortParentTypes(*type)) {
+             (void)a.Hash<NON_POSITION>(parent);
+         }
++        // The checked-exception `captures` clause (experimental) changes what every constructor
++        // of the type requires at its call sites, so it is part of the type's signature.
++        a.SUPERHash<NON_POSITION>(type->capturesClause);
+     }
+     return a.value;
+ }
+diff --git a/src/Parse/ParseDecl.cpp b/src/Parse/ParseDecl.cpp
+index 4478eb62..437bd084 100644
+--- a/src/Parse/ParseDecl.cpp
++++ b/src/Parse/ParseDecl.cpp
+@@ -1284,6 +1284,19 @@ void ParserImpl::ParseInheritedTypes(InheritableDecl& decl)
+     }
+ }
+ 
++void ParserImpl::TryParseCapturesClause(InheritableDecl& decl)
++{
++    if (!Seeing(TokenKind::CAPTURES)) {
++        return;
++    }
++    if (decl.capturesClause) {
++        ParseDiagnoseRefactor(DiagKindRefactor::parse_duplicate_captures_clause, lookahead.Begin());
++        (void)ParseCapturesClause(); // Parse and drop the duplicate to recover.
++    } else {
++        decl.capturesClause = ParseCapturesClause();
++    }
++}
++
+ void ParserImpl::ParseInterfaceDeclOrClassDeclGeneric(InheritableDecl& ret)
+ {
+     if (Skip(TokenKind::LT)) {
+@@ -1294,12 +1307,25 @@ void ParserImpl::ParseInterfaceDeclOrClassDeclGeneric(InheritableDecl& ret)
+         ParseDiagnoseRefactor(DiagKindRefactor::parse_expected_lt_brace, lookahead, ConvertToken(lookahead));
+         ConsumeUntilDecl(TokenKind::LCURL);
+     }
++    // Checked exceptions (experimental): a class may declare a `captures` clause; its position
++    // relative to the superclass list and the `where` block is arbitrary (proposal 3.9).
++    // Interfaces cannot capture: on them `captures` follows the natural error path below.
++    bool allowCaptures = ret.astKind == ASTKind::CLASS_DECL;
++    if (allowCaptures) {
++        TryParseCapturesClause(ret);
++    }
+     if (Skip(TokenKind::UPPERBOUND)) {
+         ParseInheritedTypes(ret);
+     }
++    if (allowCaptures) {
++        TryParseCapturesClause(ret);
++    }
+     if (Skip(TokenKind::WHERE)) {
+         ParseConstraints(ret);
+     }
++    if (allowCaptures) {
++        TryParseCapturesClause(ret);
++    }
+ }
+ 
+ void ParserImpl::SetMemberParentInheritableDecl(InheritableDecl& ret, const OwnedPtr<AST::Decl>& decl) const
+@@ -1594,13 +1620,18 @@ OwnedPtr<StructDecl> ParserImpl::ParseStructDecl(
+         ret->generic = ParseGeneric();
+         ret->EnableAttr(Attribute::GENERIC);
+     }
++    // Checked exceptions (experimental): a struct may declare a `captures` clause; its position
++    // relative to the interface list and the `where` block is arbitrary (proposal 3.9).
++    TryParseCapturesClause(*ret);
+     if (Skip(TokenKind::UPPERBOUND)) {
+         ret->upperBoundPos = lastToken.Begin();
+         ParseStructInheritedTypes(*ret);
+     }
++    TryParseCapturesClause(*ret);
+     if (Skip(TokenKind::WHERE)) {
+         ParseConstraints(*ret);
+     }
++    TryParseCapturesClause(*ret);
+     // Used to parse nested structDecl or primary ctor decl.
+     SetPrimaryDecl(ret->identifier, ret->identifier.IsRaw());
+     ret->body = ParseStructBody(*ret);
+diff --git a/src/Parse/ParseType.cpp b/src/Parse/ParseType.cpp
+index 4e9e82a1..fb5ba447 100644
+--- a/src/Parse/ParseType.cpp
++++ b/src/Parse/ParseType.cpp
+@@ -349,6 +349,35 @@ OwnedPtr<AST::ThrowsClause> ParserImpl::ParseThrowsClause(bool isDeclClause)
+     return clause;
+ }
+ 
++OwnedPtr<AST::ThrowsClause> ParserImpl::ParseCapturesClause()
++{
++    // Checked exceptions (proposal 3.9): the `captures` clause of a class or struct header.
++    // Reuses the ThrowsClause node shape; the grammar is the bare comma-separated list only:
++    // `captures E1, E2` (no parenthesized or ellipsis forms).
++    CJC_ASSERT(Seeing(TokenKind::CAPTURES));
++    auto clause = MakeOwned<ThrowsClause>();
++    ChainScope cs(*this, clause.get());
++    Next(); // Consume `captures`.
++    clause->throwsPos = lastToken.Begin();
++    clause->begin = clause->throwsPos;
++    clause->end = lastToken.End();
++    if (!SeeingAny(GetTypeFirst()) && !SeeingContextualKeyword()) {
++        ParseDiagnoseRefactor(
++            DiagKindRefactor::parse_expected_exception_type_after_captures, lookahead, ConvertToken(lookahead));
++        clause->EnableAttr(Attribute::IS_BROKEN);
++        return clause;
++    }
++    while (true) {
++        (void)clause->capTypes.emplace_back(ParseType());
++        if (!Skip(TokenKind::COMMA)) {
++            break;
++        }
++        clause->commaPosVector.emplace_back(lastToken.Begin());
++    }
++    clause->end = clause->capTypes.back()->end;
++    return clause;
++}
++
+ // Parse the syntactic sugar of option types.
+ OwnedPtr<AST::Type> ParserImpl::ParsePrefixType()
+ {
+diff --git a/src/Parse/ParserImpl.h b/src/Parse/ParserImpl.h
+index 3aceebeb..e62127c8 100644
+--- a/src/Parse/ParserImpl.h
++++ b/src/Parse/ParserImpl.h
+@@ -595,6 +595,18 @@ private:
+      * The `...` marker is parsed but rejected with a diagnostic.
+      */
+     OwnedPtr<AST::ThrowsClause> ParseThrowsClause(bool isDeclClause);
++    /**
++     * Parse a checked-exception `captures` clause on a class or struct header (experimental,
++     * requires the CAPTURES token which only exists with '--enable-chexc'; proposal 3.9).
++     * Grammar: `captures T {, T}` (bare list only). Reuses the ThrowsClause node shape.
++     */
++    OwnedPtr<AST::ThrowsClause> ParseCapturesClause();
++    /**
++     * If the lookahead is `captures`, parse the clause into @p decl (diagnosing duplicates).
++     * Called at each admissible clause position of a class/struct header: its position relative
++     * to the superclass list and `where` block is arbitrary (proposal 3.9).
++     */
++    void TryParseCapturesClause(AST::InheritableDecl& decl);
+     OwnedPtr<AST::Type> ParsePrefixType();
+     OwnedPtr<AST::GenericParamDecl> ParseGenericParamDecl();
+     OwnedPtr<AST::Generic> ParseGeneric();
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 322d0f29..a9cef301 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -121,6 +121,11 @@ private:
+ 
+     void CheckMembers(Decl& decl)
+     {
++        // A capturing class or struct stores the listed capabilities at construction, so its own
++        // clause supplies them to every member body (proposal 3.9 rules 3 and 4; until Modal
++        // CangJie lands, every constructor captures and every body is covered). Rule 5: a
++        // subclass does not see its superclass's captures — only the class's own clause counts.
++        classCaptures = TypeCheckUtil::GetDeclCapturesCapTys(decl);
+         // An instance field initializer has no scope of its own: its demands must be satisfiable
+         // in the capability scope of EVERY constructor (proposal 3.3). With no explicit
+         // constructor the implicit one supplies nothing.
+@@ -171,6 +176,7 @@ private:
+                     break;
+             }
+         }
++        classCaptures.clear();
+     }
+ 
+     void CheckCallable(FuncDecl& fd)
+@@ -180,10 +186,13 @@ private:
+         }
+         CJC_ASSERT(supplies.empty());
+         rootSupply = nullptr;
+-        // The FUNC_BODY visit pushes the declaration's clause scope; the walker visits the
+-        // parameter default values before the body, matching "as if it appeared at the
+-        // beginning of the body" (proposal 3.3).
++        // The enclosing class's captured capabilities, if any, are in scope throughout the
++        // member (proposal 3.9); the FUNC_BODY visit then pushes the declaration's own clause
++        // scope. The walker visits parameter default values before the body, matching "as if it
++        // appeared at the beginning of the body" (proposal 3.3).
++        PushClassCaptures();
+         WalkScoped(fd.funcBody.get());
++        PopClassCaptures();
+         CJC_ASSERT(supplies.empty());
+     }
+ 
+@@ -194,11 +203,27 @@ private:
+         }
+         CJC_ASSERT(supplies.empty());
+         rootSupply = std::move(root);
++        PushClassCaptures();
+         WalkScoped(vd.initializer.get());
++        PopClassCaptures();
+         rootSupply = nullptr;
+         CJC_ASSERT(supplies.empty());
+     }
+ 
++    void PushClassCaptures()
++    {
++        if (!classCaptures.empty()) {
++            supplies.emplace_back(classCaptures);
++        }
++    }
++
++    void PopClassCaptures()
++    {
++        if (!classCaptures.empty()) {
++            supplies.pop_back();
++        }
++    }
++
+     void WalkScoped(Ptr<Node> root)
+     {
+         if (!root) {
+@@ -344,6 +369,34 @@ private:
+                 Demand(cap, ce, DescribeCallee(ce));
+             }
+         }
++        DemandConstructedCaptures(ce);
++    }
++
++    void DemandConstructedCaptures(CallExpr& ce)
++    {
++        // Constructing an instance of a capturing class or struct requires its captured
++        // capabilities at the construction site (proposal 3.9 rule 4). This covers 'C(...)',
++        // delegating 'this(...)' calls, and 'super(...)' calls, which resolve to the
++        // superclass constructor and therefore demand the superclass's captures (rule 5).
++        auto ctor = ce.resolvedFunction;
++        if (!ctor || !ctor->TestAttr(Attribute::CONSTRUCTOR) || !ctor->outerDecl) {
++            return;
++        }
++        auto captures = TypeCheckUtil::GetDeclCapturesCapTys(*ctor->outerDecl);
++        if (captures.empty()) {
++            return;
++        }
++        // A generic capturing class captures at the instantiated types: 'C<Int64>()' of
++        // 'class C<T> captures GenericException<T>' requires 'GenericException<Int64>'.
++        auto declaredTy = ctor->outerDecl->GetTy();
++        auto instantiated = Ty::IsTyCorrect(ce.GetTy()) ? ce.GetTy() : declaredTy;
++        auto typeMapping = TypeCheckUtil::GenerateTypeMappingByTy(declaredTy, instantiated);
++        for (auto cap : captures) {
++            auto demanded = typeMapping.empty() ? cap : typeManager.GetInstantiatedTy(cap, typeMapping);
++            if (Ty::IsTyCorrect(demanded)) {
++                Demand(demanded, ce, DescribeCallee(ce));
++            }
++        }
+     }
+ 
+     std::string DescribeCallee(const CallExpr& ce) const
+@@ -369,6 +422,12 @@ private:
+ 
+     void Demand(Ptr<Ty> exceptionTy, const Node& site, const std::string& requiredBy)
+     {
++        // Throwing an unchecked exception never requires a capability (proposal 6.4). Call-site
++        // demands are filtered here too: a capability parameter whose type instantiates to an
++        // unchecked exception type is trivially satisfied (proposal 3.2 rule 5).
++        if (TypeCheckUtil::IsUncheckedExceptionTy(typeManager, importManager, exceptionTy)) {
++            return;
++        }
+         // Scopes are searched from the innermost enclosing one outwards; within one scope the
+         // first suitable entry in textual order supplies the capability (proposal 3.3).
+         for (auto scope = supplies.rbegin(); scope != supplies.rend(); ++scope) {
+@@ -387,6 +446,8 @@ private:
+     Sema::CapabilityMissHandler& missHandler;
+     std::vector<SupplyScope> supplies;
+     RootSupply rootSupply;
++    // Capabilities captured by the class or struct whose members are being checked (proposal 3.9).
++    SupplyScope classCaptures;
+ };
+ } // namespace
+ 
+diff --git a/src/Sema/Collector.cpp b/src/Sema/Collector.cpp
+index 6c6e2614..98ca98de 100644
+--- a/src/Sema/Collector.cpp
++++ b/src/Sema/Collector.cpp
+@@ -130,12 +130,26 @@ void Collector::CollectClassDecl(ASTContext& ctx, ClassDecl& cd, bool buildTrie)
+     for (auto& type : cd.inheritedTypes) {
+         BuildSymbolTable(ctx, type.get(), buildTrie);
+     }
++    CollectCapturesClause(ctx, cd, buildTrie);
+     auto bodyNodeInfo = NodeInfo(*cd.body, "", ctx.currentScopeLevel, scopeManager.CalcScopeGateName(ctx));
+     AddSymbol(ctx, bodyNodeInfo, buildTrie);
+     BuildSymbolTable(ctx, cd.body.get(), buildTrie);
+     scopeManager.FinalizeScope(ctx);
+ }
+ 
++void Collector::CollectCapturesClause(ASTContext& ctx, const InheritableDecl& decl, bool buildTrie)
++{
++    // Checked exceptions (experimental): the 'captures' clause types may reference the
++    // declaration's generic parameters, so they are collected inside its scope, like the
++    // capability types of a 'throws' clause (proposal 3.9).
++    if (!decl.capturesClause) {
++        return;
++    }
++    for (auto& capType : decl.capturesClause->capTypes) {
++        BuildSymbolTable(ctx, capType.get(), buildTrie);
++    }
++}
++
+ void Collector::CollectClassBody(ASTContext& ctx, const ClassBody& cb, bool buildTrie)
+ {
+     scopeManager.InitializeScope(ctx);
+@@ -230,6 +244,7 @@ void Collector::CollectStructDecl(ASTContext& ctx, StructDecl& sd, bool buildTri
+     for (auto& type : sd.inheritedTypes) {
+         BuildSymbolTable(ctx, type.get(), buildTrie);
+     }
++    CollectCapturesClause(ctx, sd, buildTrie);
+     if (sd.body == nullptr) {
+         scopeManager.FinalizeScope(ctx);
+         return;
+diff --git a/src/Sema/Collector.h b/src/Sema/Collector.h
+index 7c0cbe11..506a5c62 100644
+--- a/src/Sema/Collector.h
++++ b/src/Sema/Collector.h
+@@ -64,6 +64,7 @@ private:
+     void CollectAnnotations(ASTContext& ctx, const std::vector<OwnedPtr<AST::Annotation>>& annotations, bool buildTrie);
+     void CollectGeneric(ASTContext& ctx, AST::Decl& outerDecl, const AST::Generic& generic, bool buildTrie);
+     void CollectClassDecl(ASTContext& ctx, AST::ClassDecl& cd, bool buildTrie);
++    void CollectCapturesClause(ASTContext& ctx, const AST::InheritableDecl& decl, bool buildTrie);
+     void CollectClassBody(ASTContext& ctx, const AST::ClassBody& cb, bool buildTrie);
+     void CollectInterfaceDecl(ASTContext& ctx, AST::InterfaceDecl& id, bool buildTrie);
+     void CollectInterfaceBody(ASTContext& ctx, const AST::InterfaceBody& ib, bool buildTrie);
+diff --git a/src/Sema/GenericInstantiation/PartialInstantiation.cpp b/src/Sema/GenericInstantiation/PartialInstantiation.cpp
+index de30f10f..6ec0ca74 100644
+--- a/src/Sema/GenericInstantiation/PartialInstantiation.cpp
++++ b/src/Sema/GenericInstantiation/PartialInstantiation.cpp
+@@ -348,6 +348,9 @@ OwnedPtr<Decl> PartialInstantiation::InstantiateStructDecl(const StructDecl& sd,
+     for (auto& it : sd.inheritedTypes) {
+         ret->inheritedTypes.push_back(InstantiateType(it.get(), visitor));
+     }
++    if (sd.capturesClause) {
++        ret->capturesClause = InstantiateThrowsClause(*sd.capturesClause, visitor);
++    }
+     ret->body = InstantiateNode(sd.body.get(), visitor);
+     if (sd.generic) {
+         ret->generic = InstantiateGeneric(*sd.generic, visitor);
+@@ -363,6 +366,9 @@ OwnedPtr<Decl> PartialInstantiation::InstantiateClassDecl(const ClassDecl& cd, c
+     for (auto& it : cd.inheritedTypes) {
+         ret->inheritedTypes.push_back(InstantiateType(it.get(), visitor));
+     }
++    if (cd.capturesClause) {
++        ret->capturesClause = InstantiateThrowsClause(*cd.capturesClause, visitor);
++    }
+     ret->body = InstantiateNode(cd.body.get(), visitor);
+     if (cd.generic) {
+         ret->generic = InstantiateGeneric(*cd.generic, visitor);
+diff --git a/src/Sema/TypeCheckClassLike.cpp b/src/Sema/TypeCheckClassLike.cpp
+index 7ecf45b2..ad9ca139 100644
+--- a/src/Sema/TypeCheckClassLike.cpp
++++ b/src/Sema/TypeCheckClassLike.cpp
+@@ -128,6 +128,8 @@ void TypeChecker::TypeCheckerImpl::CheckClassDecl(ASTContext& ctx, ClassDecl& cd
+             CheckThreadContextInheritance(cd, *rt);
+         }
+     }
++    // Checked exceptions (experimental): validate the 'captures' clause (proposal 3.9).
++    ChkCapturesClauseOfDecl(ctx, cd);
+     TypeCheckCompositeBody(ctx, cd, cd.body->decls);
+     CheckRecursiveConstructorCall(cd.body->decls);
+     if (cd.IsJavaMirror() || cd.IsJavaImpl()) {
+diff --git a/src/Sema/TypeCheckDecl.cpp b/src/Sema/TypeCheckDecl.cpp
+index 48a18b85..9082a060 100644
+--- a/src/Sema/TypeCheckDecl.cpp
++++ b/src/Sema/TypeCheckDecl.cpp
+@@ -572,6 +572,8 @@ void TypeChecker::TypeCheckerImpl::CheckStructDecl(ASTContext& ctx, StructDecl&
+             diag.DiagnoseRefactor(DiagKindRefactor::sema_cstruct_cannot_impl_interfaces, MakeRange(sd.identifier));
+         }
+     }
++    // Checked exceptions (experimental): validate the 'captures' clause (proposal 3.9).
++    ChkCapturesClauseOfDecl(ctx, sd);
+     CJC_NULLPTR_CHECK(sd.body);
+     TypeCheckCompositeBody(ctx, sd, sd.body->decls);
+     CheckRecursiveConstructorCall(sd.body->decls);
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index f44e68dd..c0ff2917 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -280,6 +280,40 @@ std::vector<Ptr<Ty>> GetFuncBodyCapTys(const FuncBody& fb)
+     return ret;
+ }
+ 
++std::vector<Ptr<Ty>> GetDeclCapturesCapTys(const Decl& decl)
++{
++    // Checked exceptions: the 'captures' clause types of a class or struct declaration
++    // (proposal 3.9), elaborated during type check. Only supply/demand material: entries whose
++    // types failed elaboration are skipped (their errors are reported at the clause).
++    auto inheritable = DynamicCast<const InheritableDecl*>(&decl);
++    if (!inheritable || !inheritable->capturesClause) {
++        return {};
++    }
++    std::vector<Ptr<Ty>> ret;
++    for (auto& capType : inheritable->capturesClause->capTypes) {
++        CJC_NULLPTR_CHECK(capType);
++        if (Ty::IsTyCorrect(capType->GetTy())) {
++            ret.emplace_back(capType->GetTy());
++        }
++    }
++    return ret;
++}
++
++bool IsUncheckedExceptionTy(TypeManager& typeManager, const ImportManager& importManager, Ptr<Ty> ty)
++{
++    // Checked exceptions (proposal 6.4): an exception type is unchecked iff it is a subtype of
++    // the core 'UncheckedException' class. When std.core does not provide the class (compiling
++    // an older or partial core during bootstrap), every exception type is checked.
++    if (!Ty::IsTyCorrect(ty)) {
++        return false;
++    }
++    auto unchecked = importManager.GetCoreDecl<ClassDecl>(CLASS_UNCHECKED_EXCEPTION);
++    if (!unchecked || !Ty::IsTyCorrect(unchecked->GetTy())) {
++        return false;
++    }
++    return typeManager.IsSubtype(ty, unchecked->GetTy());
++}
++
+ // Generate type mapping for src is an override or implement of target.
+ MultiTypeSubst GenerateTypeMappingBetweenFuncs(TypeManager& typeManager, const FuncDecl& src, const FuncDecl& target)
+ {
+diff --git a/src/Sema/TypeCheckUtil.h b/src/Sema/TypeCheckUtil.h
+index 603248eb..856b4699 100644
+--- a/src/Sema/TypeCheckUtil.h
++++ b/src/Sema/TypeCheckUtil.h
+@@ -184,6 +184,18 @@ std::vector<Ptr<AST::Ty>> GetFuncBodyParamTys(const AST::FuncBody& fb);
+  * Empty when there is no clause or the function is foreign/C.
+  */
+ std::vector<Ptr<AST::Ty>> GetFuncBodyCapTys(const AST::FuncBody& fb);
++/**
++ * Checked exceptions: get the exception capability tys of @p decl 's elaborated 'captures'
++ * clause (proposal 3.9). Empty when @p decl is not a class/struct or has no clause; entries
++ * whose types failed elaboration are skipped.
++ */
++std::vector<Ptr<AST::Ty>> GetDeclCapturesCapTys(const AST::Decl& decl);
++/**
++ * Checked exceptions: whether @p ty is an unchecked exception type, i.e. a subtype of the core
++ * 'UncheckedException' class (proposal 6.4). Tolerant of the class's absence (bootstrapping
++ * with an std.core that predates it): every exception type is checked then.
++ */
++bool IsUncheckedExceptionTy(TypeManager& typeManager, const ImportManager& importManager, Ptr<AST::Ty> ty);
+ /**
+  * Check whether src is an override or implementation of target.
+  */
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index 299ce66d..c5ba13c1 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -188,7 +188,8 @@ void TypeChecker::TypeCheckerImpl::ReplaceFuncRetTyWithThis(FuncBody& fb, Ptr<Ty
+     }
+ }
+ 
+-void TypeChecker::TypeCheckerImpl::ChkThrowsClauseTypes(ASTContext& ctx, ThrowsClause& clause)
++void TypeChecker::TypeCheckerImpl::ChkThrowsClauseTypes(
++    ASTContext& ctx, ThrowsClause& clause, const std::string& clauseKeyword)
+ {
+     auto exception = importManager.GetCoreDecl<ClassDecl>(CLASS_EXCEPTION);
+     for (auto& capType : clause.capTypes) {
+@@ -202,7 +203,38 @@ void TypeChecker::TypeCheckerImpl::ChkThrowsClauseTypes(ASTContext& ctx, ThrowsC
+             (capTy->IsClass() || capTy->IsGeneric()) && exception && typeManager.IsSubtype(capTy, exception->GetTy());
+         if (!isExceptionSubtype) {
+             diag.DiagnoseRefactor(
+-                DiagKindRefactor::sema_chexc_clause_type_not_exception, *capType, capType->ToString());
++                DiagKindRefactor::sema_chexc_clause_type_not_exception, *capType, capType->ToString(), clauseKeyword);
++        } else if (!capTy->IsGeneric() && TypeCheckUtil::IsUncheckedExceptionTy(typeManager, importManager, capTy)) {
++            // Proposal 3.2 rule 5: a concrete unchecked exception type never needs a capability,
++            // so listing it is misleading and rejected. Type parameters are exempt: a requirement
++            // instantiating to an unchecked type is trivially satisfied instead (proposal 6.4).
++            diag.DiagnoseRefactor(
++                DiagKindRefactor::sema_chexc_unchecked_type_in_clause, *capType, capType->ToString(), clauseKeyword);
++        }
++    }
++}
++
++void TypeChecker::TypeCheckerImpl::ChkCapturesClauseOfDecl(ASTContext& ctx, InheritableDecl& decl)
++{
++    if (!decl.capturesClause) {
++        return;
++    }
++    // Elaborate the clause's types (collected in the declaration's scope, so they may refer to
++    // its generic parameters), then validate them exactly like 'throws' entries.
++    for (auto& capType : decl.capturesClause->capTypes) {
++        CJC_NULLPTR_CHECK(capType);
++        Synthesize({ctx, SynPos::NONE}, capType.get());
++    }
++    ChkThrowsClauseTypes(ctx, *decl.capturesClause, "captures");
++    // A capturing class/struct cannot use a primary constructor (author ruling, forward
++    // compatible with Modal CangJie where primary constructors are always '~local'); it
++    // declares explicit 'init' constructors instead.
++    for (auto& member : decl.GetMemberDecls()) {
++        CJC_NULLPTR_CHECK(member);
++        if (member->astKind == ASTKind::PRIMARY_CTOR_DECL) {
++            auto typeName = decl.astKind == ASTKind::CLASS_DECL ? "class" : "struct";
++            diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_primary_ctor_on_capturing,
++                MakeRangeForDeclIdentifier(*member), typeName, decl.identifier.Val());
+         }
+     }
+ }
+diff --git a/src/Sema/TypeCheckerImpl.h b/src/Sema/TypeCheckerImpl.h
+index c2fa1ba3..b2678961 100644
+--- a/src/Sema/TypeCheckerImpl.h
++++ b/src/Sema/TypeCheckerImpl.h
+@@ -1303,12 +1303,20 @@ private:
+     bool CheckNormalFuncBody(ASTContext& ctx, AST::FuncBody& fb, std::vector<Ptr<AST::Ty>>& paramTys);
+     bool CheckFuncBody(ASTContext& ctx, AST::FuncBody& fb);
+     /**
+-     * Checked exceptions: validate an elaborated 'throws' clause -- every entry must be a subtype
+-     * of core 'Exception' (type parameters allowed when suitably bounded).
++     * Checked exceptions: validate an elaborated 'throws' or 'captures' clause -- every entry
++     * must be a subtype of core 'Exception' (type parameters allowed when suitably bounded),
++     * and no concrete entry may be an unchecked exception type (proposal 3.2 rule 5).
++     * @p clauseKeyword names the clause in diagnostics ("throws" or "captures").
+      */
+-    void ChkThrowsClauseTypes(ASTContext& ctx, AST::ThrowsClause& clause);
++    void ChkThrowsClauseTypes(ASTContext& ctx, AST::ThrowsClause& clause, const std::string& clauseKeyword = "throws");
+     /** Checked exceptions: diagnose 'throws' clauses on foreign/C functions and CFunc types. */
+     void ChkThrowsClauseOfFuncBody(ASTContext& ctx, AST::FuncBody& fb);
++    /**
++     * Checked exceptions: validate the 'captures' clause of a class or struct declaration
++     * (proposal 3.9) -- elaborate and validate its entries like 'throws' entries and ban
++     * primary constructors on capturing declarations (they cannot capture; author ruling).
++     */
++    void ChkCapturesClauseOfDecl(ASTContext& ctx, AST::InheritableDecl& decl);
+     void AddRetTypeNode(AST::FuncBody& fb) const;
+     bool CheckBodyRetType(ASTContext& ctx, AST::FuncBody& fb);
+     void CheckFuncParamList(ASTContext& ctx, AST::FuncParamList& fpl);
+-- 
+2.54.0
+

@@ -1,0 +1,281 @@
+From d1f462e4bd1b1c14f83c1cbd6e85dda0ca680888 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 22 Aug 2026 00:28:54 +0300
+Subject: [PATCH 22/43] test(chexc): sections 5-6 -- unconditional clauses,
+ effects axis, assumption scope
+
+- parse/flagoff_clause_inert.cj replaces flagoff_clause_rejected.cj: with checking off the
+  clauses parse and impose nothing, which is the rule the old test pinned the opposite of.
+- performs/performs_without_chexc.cj -- a missing handler is an error with only the
+  effect-handler feature enabled, while a 'throws' clause in the same file imposes nothing.
+- performs/performs_dots_neg.cj -- the '...' marker on a 'performs' clause.
+- types/captures_command.cj -- commands in a 'captures' clause: in scope in a receiver body,
+  required at the construction site.
+- types/clause_unchecked_bound_neg.cj -- a type parameter bounded by an unchecked type.
+- assume/assume_package_scope_neg.cj (+ its support file) -- the annotation in one file, the
+  call in another, which is the discriminating case for package versus file scope.
+- assume/assume_empty_neg.cj -- '@AssumeThrows[]'.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../assume/assume_empty_neg.cj                | 13 +++++++
+ .../assume/assume_package_scope_neg.cj        | 18 ++++++++++
+ .../assume/assume_package_scope_other.cj      |  8 +++++
+ .../parse/flagoff_clause_inert.cj             | 31 +++++++++++++++++
+ .../parse/flagoff_clause_rejected.cj          | 15 --------
+ .../performs/performs_dots_neg.cj             | 18 ++++++++++
+ .../performs/performs_without_chexc.cj        | 25 ++++++++++++++
+ .../types/captures_command.cj                 | 34 +++++++++++++++++++
+ .../types/clause_unchecked_bound_neg.cj       | 22 ++++++++++++
+ 9 files changed, 169 insertions(+), 15 deletions(-)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_empty_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_package_scope_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_package_scope_other.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_inert.cj
+ delete mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_rejected.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_dots_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/performs_without_chexc.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/captures_command.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/clause_unchecked_bound_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_empty_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_empty_neg.cj
+new file mode 100644
+index 0000000000..604c1f8ddb
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_empty_neg.cj
+@@ -0,0 +1,13 @@
++// Checked exceptions (assumption imports): the empty list is rejected -- an assumption that assumes
++// nothing is either a mistake or the bare form written the long way, and the bare form already
++// means 'Exception'.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: '@AssumeThrows[]' assumes nothing
++
++@AssumeThrows[]
++import std.collection.*
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_package_scope_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_package_scope_neg.cj
+new file mode 100644
+index 0000000000..53397da0ae
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_package_scope_neg.cj
+@@ -0,0 +1,18 @@
++// Checked exceptions (assumption imports): the claim is package-scoped -- one annotated import binds
++// every call into that dependency from the whole consuming package, whether or not the calling file
++// repeats the annotation. Here the annotation is in this file and the call is in the other one,
++// which pins an empty list, so the assumed requirement has nowhere to go and is reported there.
++
++// DEPENDENCE: legacy_db.cj assume_package_scope_other.cj
++// EXEC: %compiler %cmp_opt %compile_lib_opt legacy_db.cj -o legacy_db.%middle
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions legacy_db.%middle %n.cj assume_package_scope_other.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-SqlException'
++
++@AssumeThrows[SqlException]
++import legacy_db.*
++
++public class SqlException <: Exception {}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_package_scope_other.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_package_scope_other.cj
+new file mode 100644
+index 0000000000..09be70a451
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_package_scope_other.cj
+@@ -0,0 +1,8 @@
++// Support file for assume_package_scope_neg.cj: the same package, a plain import, and a callable
++// that pins an empty capability list. The assumption written in the other file reaches this call.
++
++import legacy_db.*
++
++func inOtherFile(): Int64 throws () {
++    query("select 1")
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_inert.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_inert.cj
+new file mode 100644
+index 0000000000..86f58809a1
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_inert.cj
+@@ -0,0 +1,31 @@
++// Checked exceptions (compatibility): the clause grammar is unconditional -- every clause position
++// is a parse error in the language without them, so recognizing the soft keywords there changes no
++// valid program. What the flag decides is what the clauses mean: with checking off they impose no
++// obligations, so the undeclared throw below is accepted exactly as it is today.
++
++// EXEC: %compiler %cmp_opt %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func declared() throws AException {
++    throw AException()
++}
++
++func undeclared(): Unit { // no clause, and no obligation without checking
++    throw BException()
++}
++
++class Capturing captures AException {
++    init() {}
++    func use(): Unit { declared() }
++}
++
++main() {
++    try {
++        declared()      // no capability needed: checking is off
++        undeclared()
++    } catch (e: Exception) {}
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_rejected.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_rejected.cj
+deleted file mode 100644
+index ba6f5fb413..0000000000
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_rejected.cj
++++ /dev/null
+@@ -1,15 +0,0 @@
+-// Guard: WITHOUT --enable-chexc, `throws`-clause syntax is not available;
+-// a declaration using it must fail to compile.
+-
+-// EXEC-PIPE-1: %compiler %cmp_opt %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error
+-
+-class AException <: Exception {}
+-
+-func f() throws AException {
+-    throw AException()
+-}
+-
+-main() {
+-    return 0
+-}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_dots_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_dots_neg.cj
+new file mode 100644
+index 0000000000..a882daa056
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_dots_neg.cj
+@@ -0,0 +1,18 @@
++// Effect requirements are never inferred -- every 'performs' list is written -- so the '...' marker,
++// which opens an exception list to inference, has nothing to open on a 'performs' clause.
++
++// EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: '...' is not allowed in a 'performs' clause
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++
++func f(): Int64
++performs GetNumber, ... {
++    perform GetNumber()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_without_chexc.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_without_chexc.cj
+new file mode 100644
+index 0000000000..077b05ae33
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_without_chexc.cj
+@@ -0,0 +1,25 @@
++// Effect requirements follow the effect-handler feature, on an axis of its own: wherever that
++// feature is enabled, a 'perform' with no handler is an error at every exception-checking level --
++// there is no migration level for it, since an unhandled 'perform' fails at run time. Exception
++// requirements, in the same compilation, impose nothing while checking is off.
++
++// EXEC-PIPE-1: %compiler %cmp_opt %enableEH %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-GetNumber'
++// ASSERT: scan Handler<Class-GetNumber>
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++class AException <: Exception {}
++
++func undeclared(): Int64 {
++    perform GetNumber() // error: effects are checked whenever handlers are enabled
++}
++
++func mayThrow(): Unit throws AException {
++    throw AException() // fine: exception checking is off, the clause imposes nothing
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/captures_command.cj b/testsuites/LLT/compiler/CheckedExceptions/types/captures_command.cj
+new file mode 100644
+index 0000000000..123e04f117
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/captures_command.cj
+@@ -0,0 +1,34 @@
++// Checked exceptions x effect handlers: a 'captures' clause may name commands as well. An instance
++// captures the handler capabilities its methods need exactly as it captures exception ones, and its
++// constructor requires them at the construction site.
++
++// EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-GetNumber'
++// ASSERT: scan Handler<Class-GetNumber>
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++
++class Holder captures GetNumber {
++    init() {}
++
++    // the captured handler capability is in scope in a receiver body: no clause needed
++    func value(): Int64 {
++        perform GetNumber()
++    }
++}
++
++func makeUnhandled(): Holder {
++    Holder() // error: the construction site must supply the captured handler capability
++}
++
++main() {
++    try {
++        let h = Holder() // ok: the handle clause below supplies it
++        h.value()
++    } handle (_: GetNumber) {
++        resume with 42
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/clause_unchecked_bound_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/clause_unchecked_bound_neg.cj
+new file mode 100644
+index 0000000000..37c5ce1259
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/clause_unchecked_bound_neg.cj
+@@ -0,0 +1,22 @@
++// Checked exceptions (capability list aliases, rule 2): a type parameter is admitted in a clause --
++// a requirement that instantiates to an unchecked type is trivially satisfied instead -- unless its
++// own bound is unchecked, in which case every instantiation of it is, and the entry can never
++// require a capability.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: unchecked exception type 'T' is not allowed in a 'throws' clause
++// ASSERT: scan error: unchecked exception type 'U' is not allowed in a 'throws' clause
++
++class MyUnchecked <: UncheckedException {}
++
++func f<T>(): Unit throws T where T <: MyUnchecked {}
++
++func g<U>(): Unit throws U where U <: UncheckedException {}
++
++func ok<E>(e: E): Unit throws E where E <: Exception { // admitted: may instantiate either way
++    throw e
++}
++
++main() {
++    return 0
++}
+-- 
+2.54.0
+

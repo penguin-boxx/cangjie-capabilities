@@ -1,0 +1,128 @@
+From 7c1c12c06d21316128ddf767f002c12fa135e753 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 15:05:47 +0300
+Subject: [PATCH 34/43] test(chexc): assumptions over any recording package;
+ all misses at a site
+
+'assume_on_warn_dep.cj' now expects the rejection: a 'warn' package records trusted lists, and
+the text rejects assumptions over any package that records its own. 'missing_many.cj' pins the
+batched diagnostic -- a site missing two capabilities names both, a site missing one keeps the
+singular message. The help golden follows the warning group's rename to 'checked-exceptions'.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../assume/assume_on_checked_neg.cj           |  6 ++---
+ .../assume/assume_on_warn_dep.cj              | 15 +++++------
+ .../CheckedExceptions/scopes/missing_many.cj  | 26 +++++++++++++++++++
+ .../Driver/options/help/test_showall.cj       |  4 +--
+ 4 files changed, 38 insertions(+), 13 deletions(-)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/missing_many.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_checked_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_checked_neg.cj
+index 2eb6321266..f367bc0a60 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_checked_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_checked_neg.cj
+@@ -2,13 +2,13 @@
+ // not have. A package whose lists were checked has them, and the two would contradict each other --
+ // the assumption would override what the compiler verified. The package metadata records the level
+ // each package was compiled at, which is what makes this detectable across the package boundary.
+-// Only 'error' counts: a dependency built at 'warn' is mid-migration and an assumption over it is
+-// still meaningful -- 'assume_on_warn_dep.cj' pins that half.
++// A package at 'warn' records trusted lists and is rejected the same way -- 'assume_on_warn_dep.cj'
++// pins that half.
+ 
+ // DEPENDENCE: checked_dep.cj
+ // EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions checked_dep.cj -o checked_dep.%middle
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions checked_dep.%middle %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error: '@AssumeThrows' names package 'checked_dep', whose capability lists are verified
++// ASSERT: scan error: '@AssumeThrows' names package 'checked_dep', whose capability lists are recorded
+ 
+ @AssumeThrows[DepException]
+ import checked_dep.*
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_warn_dep.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_warn_dep.cj
+index 81f9a896e1..bc9f7e2fae 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_warn_dep.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_on_warn_dep.cj
+@@ -1,18 +1,17 @@
+-// Checked exceptions (assumption imports): the mirror of 'assume_on_checked_neg.cj'. A dependency
+-// compiled at 'warn' has lists that are knowingly incomplete -- violations were reported and the
+-// package was built anyway -- so an assumption over it is still the tool for the job and is
+-// accepted. Only a dependency verified at 'error' makes the two contradictory.
++// Checked exceptions (assumption imports): an assumption is rejected over any package that records
++// capability lists of its own -- verified at 'error' or trusted at 'warn'. The two would
++// contradict each other: the assumption would override what the dependency states. Only a package
++// compiled with checking off records nothing, and that is what an assumption is for.
++// This is the 'warn' half; 'assume_on_checked_neg.cj' is the 'error' half.
+ 
+ // DEPENDENCE: checked_dep.cj
+ // EXEC: %compiler %cmp_opt %compile_lib_opt --experimental --enable-checked-exceptions=warn checked_dep.cj -o checked_dep.%middle
+-// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions checked_dep.%middle %n.cj -o %output
+-// EXEC: %run %output
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions checked_dep.%middle %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: '@AssumeThrows' names package 'checked_dep', whose capability lists are recorded
+ 
+ @AssumeThrows[DepException]
+ import checked_dep.*
+ 
+-// The assumption imposes 'DepException' on every call into the package -- it is pessimistic, not a
+-// discharge -- and the 'try' is what handles it.
+ main(): Int64 {
+     try {
+         risky()
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_many.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_many.cj
+new file mode 100644
+index 0000000000..1e2aea3d5b
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_many.cj
+@@ -0,0 +1,26 @@
++// Checked exceptions (diagnostics): a requirement site that misses several capabilities reports
++// all of them, in one diagnostic. The compiler's diagnostic set deduplicates by position and
++// severity alone, so one diagnostic per missing entry would collapse to the first and the next
++// would appear only after that one is fixed -- which is precisely the loop migration cannot
++// afford. Sites that miss exactly one keep the singular message.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: Cannot find capabilities for 'Class-AException', 'Class-BException' (of types 'CanThrow<Class-AException>', 'CanThrow<Class-BException>') in the current scope
++// ASSERT: scan error: Cannot find a capability for 'Class-AException' (of type 'CanThrow<Class-AException>') in the current scope
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func needsBoth(): Unit
++throws AException, BException {}
++
++func needsOne(): Unit
++throws AException {}
++
++public func caller(): Unit
++throws () {
++    needsBoth()
++    needsOne()
++}
++
++main(): Int64 { 0 }
+diff --git a/testsuites/LLT/compiler/Driver/options/help/test_showall.cj b/testsuites/LLT/compiler/Driver/options/help/test_showall.cj
+index 994b23d727..57d2b052a7 100644
+--- a/testsuites/LLT/compiler/Driver/options/help/test_showall.cj
++++ b/testsuites/LLT/compiler/Driver/options/help/test_showall.cj
+@@ -142,7 +142,7 @@ Options:
+     <value>=semantics           
+     <value>=interpreter         
+     <value>=apilevel-check      
+-    <value>=chexc               
++    <value>=checked-exceptions  
+   -Won, --warn-on <value>     Report a specific group of warning
+     <value>=all                 
+     <value>=unused              
+@@ -155,7 +155,7 @@ Options:
+     <value>=semantics           
+     <value>=interpreter         
+     <value>=apilevel-check      
+-    <value>=chexc               
++    <value>=checked-exceptions  
+   --error-count-limit <value> Emit specified <number> of errors only. Available options: all, <number> (8 by default)
+   -V, --verbose               Enable verbose
+   -v, --version               Print compiler version information 
+-- 
+2.54.0
+

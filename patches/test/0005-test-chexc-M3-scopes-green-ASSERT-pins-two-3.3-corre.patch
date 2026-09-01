@@ -1,0 +1,118 @@
+From 14c86311a55415f08fbbbf86dfc8a2a2f8c7f5da Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 14 Aug 2026 22:40:24 +0300
+Subject: [PATCH 05/43] =?UTF-8?q?test(chexc):=20M3=20scopes=20green=20?=
+ =?UTF-8?q?=E2=80=94=20ASSERT=20pins=20+=20two=20=C2=A73.3=20correctness?=
+ =?UTF-8?q?=20fixes?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ASSERTs pinned to actual diagnostics (Ty names, required-by hints); EXEC-PIPE-2
+misuse fixed (suffix = expected exit code). Two committed tests contained real
+§3.3 violations and were minimally corrected: lambda_expected_type called f()
+inside a catch block (outside the try's scope); decl_members' operator+ lacked
+the constructor's CreationException capability.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../LLT/compiler/CheckedExceptions/parse/decl_members.cj    | 3 ++-
+ .../compiler/CheckedExceptions/scopes/corner_scopes_neg.cj  | 6 +++---
+ .../CheckedExceptions/scopes/lambda_expected_type.cj        | 4 +++-
+ .../CheckedExceptions/scopes/missing_capability_neg.cj      | 4 ++--
+ .../LLT/compiler/CheckedExceptions/scopes/spawn_neg.cj      | 2 +-
+ .../LLT/compiler/CheckedExceptions/scopes/warn_mode.cj      | 4 ++--
+ 6 files changed, 13 insertions(+), 10 deletions(-)
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj
+index d93ef5fb76..07b7dd17e1 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj
+@@ -51,7 +51,8 @@ class C <: I {
+         }
+     }
+ 
+-    operator func +(that: C): C throws AException {
++    operator func +(that: C): C throws AException, CreationException {
++        // the constructor call demands a CreationException capability (M3 checking)
+         C(this.val + that.val)
+     }
+ }
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj
+index 6c6403fc0d..85c43ca498 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj
+@@ -5,9 +5,9 @@
+ // 3) top-level variable initializers have no capability scope.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan Cannot find a capability for 'AException'
+-// ASSERT: scan Cannot find a capability for 'BException'
+-// ASSERT: scan Cannot find a capability for 'CException'
++// ASSERT: scan Cannot find a capability for 'Class-AException'
++// ASSERT: scan Cannot find a capability for 'Class-BException'
++// ASSERT: scan Cannot find a capability for 'Class-CException'
+ 
+ class AException <: Exception {}
+ class BException <: Exception {}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj
+index 9c0b4e6831..a5d181902c 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj
+@@ -12,7 +12,9 @@ func withIOException<R>(f: () throws IOException -> R): R {
+     try {
+         return f()
+     } catch (e: IOException) {
+-        f()
++        // retry: a catch block is outside the try's capability scope, so calling f here
++        // would demand an IOException capability; the recursive call requires none
++        withIOException<R>(f)
+     }
+ }
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj
+index a9218c9dae..6922b89649 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj
+@@ -3,8 +3,8 @@
+ // omitted pre-Modal per author ruling).
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan Cannot find a capability for 'AException'
+-// ASSERT: scan Cannot find a capability for 'BException'
++// ASSERT: scan Cannot find a capability for 'Class-AException'
++// ASSERT: scan required by the call to 'throwsA'
+ 
+ class AException <: Exception {}
+ class BException <: Exception {}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/spawn_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/spawn_neg.cj
+index 4bb093fc81..91edd71b21 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/spawn_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/spawn_neg.cj
+@@ -3,7 +3,7 @@
+ // unreachable inside it.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan Cannot find a capability for 'AException'
++// ASSERT: scan Cannot find a capability for 'Class-AException'
+ 
+ class AException <: Exception {}
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_mode.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_mode.cj
+index 376317646e..a4975db940 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_mode.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_mode.cj
+@@ -3,8 +3,8 @@
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-chexc=warn %n.cj -o %output 2> warn_out.txt
+ // EXEC: %run %output
+-// EXEC-PIPE-2: cat warn_out.txt | compare %f
+-// ASSERT: scan warning: Cannot find a capability for 'AException'
++// EXEC-PIPE: cat warn_out.txt | compare %f
++// ASSERT: scan warning: Cannot find a capability for 'Class-AException'
+ 
+ class AException <: Exception {}
+ 
+-- 
+2.54.0
+

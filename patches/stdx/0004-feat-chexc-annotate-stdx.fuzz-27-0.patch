@@ -1,0 +1,522 @@
+From 4eb1cd8c0f34156a57203485b7a8f7f6d47db5b4 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 14:17:42 +0300
+Subject: [PATCH 4/4] feat(chexc): annotate stdx.fuzz (27 -> 0)
+
+Every 'consume*' of 'FuzzDataProvider' declares 'ExhaustedException' -- running out of fuzz input
+is exactly the failure a caller has to handle -- and the debug wrapper's overrides restate it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/stdx/fuzz/data_provider.cj | 168 ++++++++++++++++++++++-----------
+ 1 file changed, 112 insertions(+), 56 deletions(-)
+
+diff --git a/src/stdx/fuzz/data_provider.cj b/src/stdx/fuzz/data_provider.cj
+index 15facb8..453862a 100644
+--- a/src/stdx/fuzz/data_provider.cj
++++ b/src/stdx/fuzz/data_provider.cj
+@@ -57,14 +57,16 @@ public open class FuzzDataProvider {
+     /**
+      * Consume data as bool.
+      */
+-    public open func consumeBool(): Bool {
++    public open func consumeBool(): Bool
++    throws ExhaustedException {
+         return (this.consumeByteInner() & 1) == 1
+     }
+ 
+     /**
+      * Return a Bool Array with `count` items.
+      */
+-    public open func consumeBools(count: Int64): Array<Bool> {
++    public open func consumeBools(count: Int64): Array<Bool>
++    throws ExhaustedException {
+         let tmp = this.consumeBytesInner(count)
+         return Array(count, {i => (tmp[i] & 1) == 1})
+     }
+@@ -72,14 +74,16 @@ public open class FuzzDataProvider {
+     /**
+      * Consume data as byte.
+      */
+-    public open func consumeByte(): Byte {
++    public open func consumeByte(): Byte
++    throws ExhaustedException {
+         return this.consumeByteInner()
+     }
+ 
+     /**
+      * Return a Byte Array with `count` items.
+      */
+-    public open func consumeBytes(count: Int64): Array<Byte> {
++    public open func consumeBytes(count: Int64): Array<Byte>
++    throws ExhaustedException {
+         return this.consumeBytesInner(count)
+     }
+ 
+@@ -134,7 +138,8 @@ public open class FuzzDataProvider {
+     /**
+      * Consume data as UInt8.
+      */
+-    public open func consumeUInt8(): UInt8 {
++    public open func consumeUInt8(): UInt8
++    throws ExhaustedException {
+         return this.consumeByteInner()
+     }
+ 
+@@ -142,7 +147,8 @@ public open class FuzzDataProvider {
+      * Consume data as UInt16.
+      */
+     @OverflowWrapping
+-    public open func consumeUInt16(): UInt16 {
++    public open func consumeUInt16(): UInt16
++    throws ExhaustedException {
+         return UInt16(consumeInteger(Int64(sizeOf<Int16>())))
+     }
+ 
+@@ -150,7 +156,8 @@ public open class FuzzDataProvider {
+      * Consume data as UInt32.
+      */
+     @OverflowWrapping
+-    public open func consumeUInt32(): UInt32 {
++    public open func consumeUInt32(): UInt32
++    throws ExhaustedException {
+         return UInt32(consumeInteger(Int64(sizeOf<Int32>())))
+     }
+ 
+@@ -158,7 +165,8 @@ public open class FuzzDataProvider {
+      * Consume data as UInt64.
+      */
+     @OverflowWrapping
+-    public open func consumeUInt64(): UInt64 {
++    public open func consumeUInt64(): UInt64
++    throws ExhaustedException {
+         return UInt64(consumeInteger(Int64(sizeOf<Int64>())))
+     }
+ 
+@@ -166,7 +174,8 @@ public open class FuzzDataProvider {
+      * Consume data as Int8.
+      */
+     @OverflowWrapping
+-    public open func consumeInt8(): Int8 {
++    public open func consumeInt8(): Int8
++    throws ExhaustedException {
+         return Int8(this.consumeByteInner())
+     }
+ 
+@@ -174,7 +183,8 @@ public open class FuzzDataProvider {
+      * Consume data as Int16.
+      */
+     @OverflowWrapping
+-    public open func consumeInt16(): Int16 {
++    public open func consumeInt16(): Int16
++    throws ExhaustedException {
+         return Int16(consumeInteger(Int64(sizeOf<Int16>())))
+     }
+ 
+@@ -182,7 +192,8 @@ public open class FuzzDataProvider {
+      * Consume data as Int32.
+      */
+     @OverflowWrapping
+-    public open func consumeInt32(): Int32 {
++    public open func consumeInt32(): Int32
++    throws ExhaustedException {
+         return Int32(consumeInteger(Int64(sizeOf<Int32>())))
+     }
+ 
+@@ -190,14 +201,16 @@ public open class FuzzDataProvider {
+      * Consume data as Int64.
+      */
+     @OverflowWrapping
+-    public open func consumeInt64(): Int64 {
++    public open func consumeInt64(): Int64
++    throws ExhaustedException {
+         return Int64(consumeInteger(Int64(sizeOf<Int64>())))
+     }
+ 
+     /**
+      * Return an UInt8 Array with `count` items.
+      */
+-    public open func consumeUInt8s(count: Int64): Array<UInt8> {
++    public open func consumeUInt8s(count: Int64): Array<UInt8>
++    throws ExhaustedException {
+         return this.consumeBytesInner(count)
+     }
+ 
+@@ -205,7 +218,8 @@ public open class FuzzDataProvider {
+      * Return an UInt16 Array with `count` items.
+      */
+     @OverflowWrapping
+-    public open func consumeUInt16s(count: Int64): Array<UInt16> {
++    public open func consumeUInt16s(count: Int64): Array<UInt16>
++    throws ExhaustedException {
+         let ret = Array<UInt16>(count, repeat: 0)
+         unsafe {
+             let dstHandler = acquireArrayRawData(ret)
+@@ -222,7 +236,8 @@ public open class FuzzDataProvider {
+      * Return an UInt32 Array with `count` items.
+      */
+     @OverflowWrapping
+-    public open func consumeUInt32s(count: Int64): Array<UInt32> {
++    public open func consumeUInt32s(count: Int64): Array<UInt32>
++    throws ExhaustedException {
+         let ret = Array<UInt32>(count, repeat: 0)
+         unsafe {
+             let dstHandler = acquireArrayRawData(ret)
+@@ -239,7 +254,8 @@ public open class FuzzDataProvider {
+      * Return an UInt64 Array with `count` items.
+      */
+     @OverflowWrapping
+-    public open func consumeUInt64s(count: Int64): Array<UInt64> {
++    public open func consumeUInt64s(count: Int64): Array<UInt64>
++    throws ExhaustedException {
+         let ret = Array<UInt64>(count, repeat: 0)
+         unsafe {
+             let dstHandler = acquireArrayRawData(ret)
+@@ -255,7 +271,8 @@ public open class FuzzDataProvider {
+     /**
+      * Return an Int8 Array with `count` items.
+      */
+-    public open func consumeInt8s(count: Int64): Array<Int8> {
++    public open func consumeInt8s(count: Int64): Array<Int8>
++    throws ExhaustedException {
+         let ret = Array<Int8>(count, repeat: 0)
+         unsafe {
+             let dstHandler = acquireArrayRawData(ret)
+@@ -272,7 +289,8 @@ public open class FuzzDataProvider {
+      * Return an Int16 Array with `count` items.
+      */
+     @OverflowWrapping
+-    public open func consumeInt16s(count: Int64): Array<Int16> {
++    public open func consumeInt16s(count: Int64): Array<Int16>
++    throws ExhaustedException {
+         let ret = Array<Int16>(count, repeat: 0)
+         unsafe {
+             let dstHandler = acquireArrayRawData(ret)
+@@ -289,7 +307,8 @@ public open class FuzzDataProvider {
+      * Return an Int32 Array with `count` items.
+      */
+     @OverflowWrapping
+-    public open func consumeInt32s(count: Int64): Array<Int32> {
++    public open func consumeInt32s(count: Int64): Array<Int32>
++    throws ExhaustedException {
+         let ret = Array<Int32>(count, repeat: 0)
+         unsafe {
+             let dstHandler = acquireArrayRawData(ret)
+@@ -306,7 +325,8 @@ public open class FuzzDataProvider {
+      * Return an Int64 Array with `count` items.
+      */
+     @OverflowWrapping
+-    public open func consumeInt64s(count: Int64): Array<Int64> {
++    public open func consumeInt64s(count: Int64): Array<Int64>
++    throws ExhaustedException {
+         let ret = Array<Int64>(count, repeat: 0)
+         unsafe {
+             let dstHandler = acquireArrayRawData(ret)
+@@ -322,14 +342,16 @@ public open class FuzzDataProvider {
+     /**
+      * Consume data as Float32.
+      */
+-    public open func consumeFloat32(): Float32 {
++    public open func consumeFloat32(): Float32
++    throws ExhaustedException {
+         Float32.fromBits(UInt32(consumeInteger(Int64(sizeOf<Int32>()))))
+     }
+ 
+     /**
+      * Consume data as Float64.
+      */
+-    public open func consumeFloat64(): Float64 {
++    public open func consumeFloat64(): Float64
++    throws ExhaustedException {
+         Float64.fromBits(UInt64(consumeInteger(Int64(sizeOf<Int64>()))))
+     }
+ 
+@@ -338,7 +360,8 @@ public open class FuzzDataProvider {
+      * Cangjie Rune range: [0x0000, 0xD7FF], [0xE000, 0x10FFFF].
+      */
+     @OverflowWrapping
+-    public open func consumeRune(): Rune {
++    public open func consumeRune(): Rune
++    throws ExhaustedException {
+         // The data in range [0x110000, 0xFFFFFFFF] will be chunked, this will
+         // cause waste of random information.
+         let r = UInt32(this.consumeInteger(Int64(sizeOf<Int32>()))) % (0x10FFFF + 1)
+@@ -357,7 +380,8 @@ public open class FuzzDataProvider {
+      *
+      * @param maxLength max count (in codepoint) of string
+      */
+-    public open func consumeAsciiString(maxLength: Int64): String {
++    public open func consumeAsciiString(maxLength: Int64): String
++    throws ExhaustedException {
+         if (maxLength < 0) {
+             throw IllegalArgumentException("Negative count.")
+         }
+@@ -379,7 +403,8 @@ public open class FuzzDataProvider {
+      *
+      * @param maxLength max count in codepoint of string
+      */
+-    public open func consumeString(maxLength: Int64): String {
++    public open func consumeString(maxLength: Int64): String
++    throws ExhaustedException {
+         // Cangjie Rune range: [0x0000, 0xD7FF], [0xE000, 0x10FFFF], occupying 1 to 4 UTF8.
+         if (maxLength < 0) {
+             throw IllegalArgumentException("Negative count.")
+@@ -409,7 +434,8 @@ public open class FuzzDataProvider {
+     /**
+      * Consume all remaining data as Array<UInt8>
+      */
+-    public open func consumeAll(): Array<UInt8> {
++    public open func consumeAll(): Array<UInt8>
++    throws ExhaustedException {
+         return this.consumeBytesInner(this.remainingBytes)
+     }
+ 
+@@ -417,7 +443,8 @@ public open class FuzzDataProvider {
+      * Consume all remaining data as ascii string.
+      */
+     @OverflowWrapping
+-    public open func consumeAllAsAscii(): String {
++    public open func consumeAllAsAscii(): String
++    throws ExhaustedException {
+         let ret = this.consumeBytesInner(this.remainingBytes)
+         for (i in 0..remainingBytes) {
+             ret[i] &= 0x7F
+@@ -429,7 +456,8 @@ public open class FuzzDataProvider {
+      * Consume all remaining data as utf string. Some trailing bytes will not be consumed.
+      */
+     @OverflowWrapping
+-    public open func consumeAllAsString(): String {
++    public open func consumeAllAsString(): String
++    throws ExhaustedException {
+         let ret = this.consumeBytesInner(this.remainingBytes)
+         var consumeCount = 0
+         unsafe {
+@@ -454,169 +482,197 @@ public class DebugDataProvider <: FuzzDataProvider {
+         return DebugDataProvider(dp.data)
+     }
+ 
+-    public override func consumeBool(): Bool {
++    public override func consumeBool(): Bool
++    throws ExhaustedException {
+         let ret = super.consumeBool()
+         println("[DEBUG] consumeBool return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeBools(count: Int64): Array<Bool> {
++    public override func consumeBools(count: Int64): Array<Bool>
++    throws ExhaustedException {
+         let ret = super.consumeBools(count)
+         println("[DEBUG] consumeBools return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeByte(): Byte {
++    public override func consumeByte(): Byte
++    throws ExhaustedException {
+         let ret = super.consumeByte()
+         println("[DEBUG] consumeByte return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeBytes(count: Int64): Array<Byte> {
++    public override func consumeBytes(count: Int64): Array<Byte>
++    throws ExhaustedException {
+         let ret = super.consumeBytes(count)
+         println("[DEBUG] consumeBytes return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeUInt8(): UInt8 {
++    public override func consumeUInt8(): UInt8
++    throws ExhaustedException {
+         let ret = super.consumeUInt8()
+         println("[DEBUG] consumeUInt8 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeUInt16(): UInt16 {
++    public override func consumeUInt16(): UInt16
++    throws ExhaustedException {
+         let ret = super.consumeUInt16()
+         println("[DEBUG] consumeUInt16 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeUInt32(): UInt32 {
++    public override func consumeUInt32(): UInt32
++    throws ExhaustedException {
+         let ret = super.consumeUInt32()
+         println("[DEBUG] consumeUInt32 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeUInt64(): UInt64 {
++    public override func consumeUInt64(): UInt64
++    throws ExhaustedException {
+         let ret = super.consumeUInt64()
+         println("[DEBUG] consumeUInt64 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeInt8(): Int8 {
++    public override func consumeInt8(): Int8
++    throws ExhaustedException {
+         let ret = super.consumeInt8()
+         println("[DEBUG] consumeInt8 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeInt16(): Int16 {
++    public override func consumeInt16(): Int16
++    throws ExhaustedException {
+         let ret = super.consumeInt16()
+         println("[DEBUG] consumeInt16 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeInt32(): Int32 {
++    public override func consumeInt32(): Int32
++    throws ExhaustedException {
+         let ret = super.consumeInt32()
+         println("[DEBUG] consumeInt32 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeInt64(): Int64 {
++    public override func consumeInt64(): Int64
++    throws ExhaustedException {
+         let ret = super.consumeInt64()
+         println("[DEBUG] consumeInt64 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeUInt8s(count: Int64): Array<UInt8> {
++    public override func consumeUInt8s(count: Int64): Array<UInt8>
++    throws ExhaustedException {
+         let ret = super.consumeUInt8s(count)
+         println("[DEBUG] consumeUInt8s return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeUInt16s(count: Int64): Array<UInt16> {
++    public override func consumeUInt16s(count: Int64): Array<UInt16>
++    throws ExhaustedException {
+         let ret = super.consumeUInt16s(count)
+         println("[DEBUG] consumeUInt16s return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeUInt32s(count: Int64): Array<UInt32> {
++    public override func consumeUInt32s(count: Int64): Array<UInt32>
++    throws ExhaustedException {
+         let ret = super.consumeUInt32s(count)
+         println("[DEBUG] consumeUInt32s return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeUInt64s(count: Int64): Array<UInt64> {
++    public override func consumeUInt64s(count: Int64): Array<UInt64>
++    throws ExhaustedException {
+         let ret = super.consumeUInt64s(count)
+         println("[DEBUG] consumeUInt64s return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeInt8s(count: Int64): Array<Int8> {
++    public override func consumeInt8s(count: Int64): Array<Int8>
++    throws ExhaustedException {
+         let ret = super.consumeInt8s(count)
+         println("[DEBUG] consumeInt8s return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeInt16s(count: Int64): Array<Int16> {
++    public override func consumeInt16s(count: Int64): Array<Int16>
++    throws ExhaustedException {
+         let ret = super.consumeInt16s(count)
+         println("[DEBUG] consumeInt16s return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeInt32s(count: Int64): Array<Int32> {
++    public override func consumeInt32s(count: Int64): Array<Int32>
++    throws ExhaustedException {
+         let ret = super.consumeInt32s(count)
+         println("[DEBUG] consumeInt32s return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeInt64s(count: Int64): Array<Int64> {
++    public override func consumeInt64s(count: Int64): Array<Int64>
++    throws ExhaustedException {
+         let ret = super.consumeInt64s(count)
+         println("[DEBUG] consumeInt64s return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeFloat32(): Float32 {
++    public override func consumeFloat32(): Float32
++    throws ExhaustedException {
+         let ret = super.consumeFloat32()
+         println("[DEBUG] consumeFloat32 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeFloat64(): Float64 {
++    public override func consumeFloat64(): Float64
++    throws ExhaustedException {
+         let ret = super.consumeFloat64()
+         println("[DEBUG] consumeFloat64 return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeRune(): Rune {
++    public override func consumeRune(): Rune
++    throws ExhaustedException {
+         let ret = super.consumeRune()
+         println("[DEBUG] consumeRune return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeAsciiString(maxLength: Int64): String {
++    public override func consumeAsciiString(maxLength: Int64): String
++    throws ExhaustedException {
+         let ret = super.consumeAsciiString(maxLength)
+         println("[DEBUG] consumeAsciiString return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeString(maxLength: Int64): String {
++    public override func consumeString(maxLength: Int64): String
++    throws ExhaustedException {
+         let ret = super.consumeString(maxLength)
+         println("[DEBUG] consumeString return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeAll(): Array<UInt8> {
++    public override func consumeAll(): Array<UInt8>
++    throws ExhaustedException {
+         let ret = super.consumeAll()
+         println("[DEBUG] consumeAll return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeAllAsAscii(): String {
++    public override func consumeAllAsAscii(): String
++    throws ExhaustedException {
+         let ret = super.consumeAllAsAscii()
+         println("[DEBUG] consumeAllAsAscii return ${ret}")
+         return ret
+     }
+ 
+-    public override func consumeAllAsString(): String {
++    public override func consumeAllAsString(): String
++    throws ExhaustedException {
+         let ret = super.consumeAllAsString()
+         println("[DEBUG] consumeAllAsString return ${ret}")
+         return ret
+-- 
+2.54.0
+

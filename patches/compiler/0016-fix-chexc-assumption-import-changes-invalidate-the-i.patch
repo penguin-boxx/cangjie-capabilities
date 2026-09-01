@@ -1,0 +1,60 @@
+From 75b042a3b966ea87588419bf38e27f437b7718e1 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 18:29:20 +0300
+Subject: [PATCH 16/44] fix(chexc): assumption-import changes invalidate the
+ incremental cache (E3)
+
+'HashImportSpec' hashed the import's kind, paths, identifier and alias but not
+its annotations, so editing an '@AssumeThrows' list changed no hash: the
+declarations kept their obligations from the previous build and were never
+re-checked. A file whose assumed list shrank kept compiling as though the old
+assumptions still held.
+
+Import-spec changes roll the package back to a full compilation
+(IncrementalScopeAnalysis.cpp: "package or import specs changed"), so hashing
+the annotations there inherits exactly that granularity -- coarse, but
+over-approximate in the safe direction and independent of how proposal 5.2.2's
+per-file vs per-package scoping is eventually ruled (author-questions Q1).
+
+Test-validity note, because the first attempt got this wrong: incr_assume's
+two versions must differ ONLY in the annotation token. The first draft added
+explanatory comments to the .new file, which shifted every declaration's
+position, re-checked the file for unrelated reasons, and PASSED against the
+unfixed compiler -- a false negative that would have retired a real ledger
+entry. The .cached decision log exposed it ('run' and 'main' both marked
+changed, when a pure annotation edit should mark nothing). The corrected pair
+differs on line 1 alone and is red against the unfixed compiler: zero
+diagnostics, nothing spread.
+
+Tests: CheckedExceptions + IncrementalCompilation 2027/2027; ctest 49/49.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/Parse/ASTHasher.cpp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/Parse/ASTHasher.cpp b/src/Parse/ASTHasher.cpp
+index 7ac637b5..aa9a8bb7 100644
+--- a/src/Parse/ASTHasher.cpp
++++ b/src/Parse/ASTHasher.cpp
+@@ -380,6 +380,17 @@ struct ASTHasherImpl {
+             }
+         }
+         SUPERHash<whatTypeToHash>(im.hasDoubleColon);
++        // Checked exceptions (proposal 5.2.2, ledger E3): an '@AssumeThrows' annotation imposes
++        // obligations on every call into the imported package, so changing its list changes what
++        // the file's declarations must supply -- exactly like changing the import itself. Without
++        // this the declarations keep their hashes and an incremental build never re-checks them,
++        // leaving the stale obligations in place. Import-spec changes roll the package back to a
++        // full compilation, which is coarse but the granularity this hash already has.
++        for (auto& anno : is.annotations) {
++            if (anno && anno->assumeThrows) {
++                SUPERHash<whatTypeToHash>(anno->assumeThrows);
++            }
++        }
+     }
+     template <int whatTypeToHash> void HashPackageSpec(const PackageSpec& ps)
+     {
+-- 
+2.54.0
+

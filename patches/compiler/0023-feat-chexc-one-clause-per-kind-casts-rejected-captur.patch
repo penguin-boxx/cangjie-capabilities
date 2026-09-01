@@ -1,0 +1,564 @@
+From fc075ad98448fa8b1936a0c1527f4711c66b7767 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 01:08:39 +0300
+Subject: [PATCH 23/44] feat(chexc): one clause per kind, casts rejected,
+ capturing subclasses restate coverage
+
+Follows the revision that narrowed three rules the prototype had implemented from
+earlier drafts, and added one:
+
+- One clause of each kind per declaration, like one 'where'; a second is an error
+  again. The union of several clauses is gone, and with it the 'throws () throws A'
+  error and the '...' repeat rule. A macro that adds requirements merges entries into
+  the existing clause, which also preserves the list's inference status.
+
+- A cast or type-pattern target containing a function type is rejected in ANY
+  position -- the target itself, a result, a parameter, a tuple component, a type
+  argument. Erasure leaves no capability list to check, so a permissive reading would
+  launder the requirements of whatever value the cast accepts; the polarity-based
+  pessimistic reading shipped yesterday is now an extension, not the base design.
+  A parameter-typed target ('x as Box<T>') stays accepted: rejecting it would break
+  ordinary generic code, and an instantiation with a function type is an unchecked
+  boundary instead. CFunc targets are exempt -- they carry no capabilities.
+
+- Every subclass of a capturing class is itself capturing and its 'captures' list
+  must cover the superclass's, each entry covered by an own entry of the same kind.
+  This reverses the previous rule (a subclass saw nothing and acquired the
+  requirement at the 'super' call); restating keeps the instance's whole handler
+  dependency readable in one header and keeps checking local.
+
+- A 'captures' clause takes the entry grammar of a 'throws' clause, so 'captures ()'
+  and nested lists parse; a statically empty list means the type is not capturing.
+  A capturing type has no implicit default constructor: it must declare an 'init',
+  since every constructor carries the captured requirements to its call sites.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../Basic/DiagRefactor/DiagnosticParser.def   | 15 +++--
+ .../Basic/DiagRefactor/DiagnosticSema.def     | 18 +++--
+ src/Parse/ParseDecl.cpp                       | 61 +++++------------
+ src/Parse/ParseType.cpp                       | 33 +++-------
+ src/Parse/ParserImpl.h                        |  8 +--
+ src/Sema/TypeCheckExpr/IsAsExprs.cpp          | 33 +++-------
+ src/Sema/TypeCheckUtil.cpp                    | 63 ++++--------------
+ src/Sema/TypeCheckUtil.h                      | 26 ++------
+ src/Sema/TypeChecker.cpp                      | 65 +++++++++++++++----
+ src/Sema/TypeCheckerImpl.h                    |  2 +
+ 10 files changed, 131 insertions(+), 193 deletions(-)
+
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+index c8f84a65..78593be2 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+@@ -92,18 +92,19 @@ ERROR(parse_expected_arrow_after_throws_clause, "expected '->' after 'throws' cl
+ ERROR(parse_ellipsis_in_func_type_throws_clause,
+     "'...' is not allowed in a function type's 'throws' clause", "a function type's capability list is always complete")
+ ERROR(parse_ellipsis_in_throws_clause_unsupported, "'...' in a 'throws' clause is not supported yet")
+-ERROR(parse_empty_capability_clause_combined,
+-    "an empty '%s' clause cannot be combined with another clause of the same kind",
+-    "the empty clause pins the list as empty")
+ ERROR(parse_empty_capability_list_not_alone, "'()' is only allowed as the whole capability list",
+     "remove '()', or the entries it is mixed with")
+ ERROR(parse_empty_assume_throws_list, "'@AssumeThrows[]' assumes nothing",
+     "drop the brackets to assume 'Exception', or list the exception types to assume")
+-ERROR(parse_ellipsis_in_performs_clause, "'...' is not allowed in a 'performs' clause",
+-    "effect requirements are never inferred: every 'performs' list is written")
++ERROR(parse_ellipsis_in_clause, "'...' is not allowed in a '%s' clause",
++    "only an inferable 'throws' list can be opened to inference")
++ERROR(parse_duplicate_throws_clause, "duplicate 'throws' clause",
++    "a declaration carries at most one, like one 'where' clause")
++ERROR(parse_duplicate_performs_clause, "duplicate 'performs' clause",
++    "a declaration carries at most one, like one 'where' clause")
++ERROR(parse_duplicate_captures_clause, "duplicate 'captures' clause",
++    "a class carries at most one, like one 'where' clause")
+ ERROR(parse_performs_clause_after_throws, "a 'performs' clause must precede the 'throws' clause")
+-ERROR(parse_expected_exception_type_after_captures, "expected exception type after 'captures', found %s",
+-    "expected exception type here")
+ ERROR(parse_unexpected_colon_in_range, "unexpected ':' in index access", "unexpected ':' here")
+ ERROR(parse_expected_lsquare_after, "expected '[' after '%s', found %s", "expected '[' here")
+ ERROR(parse_expected_type_argument, "expected type argument")
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index 384c797c..e1688d34 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -448,12 +448,18 @@ ERROR(sema_chexc_ellipsis_on_exported,
+     "'...' is not allowed in the 'throws' clause of an exported declaration",
+     "an exported capability list must not depend on inference")
+ 
+-ERROR(sema_chexc_cast_target_invariant_func,
+-    "'%s' cannot be a runtime cast target: it has a function type in an invariant position",
+-    "a cast cannot see capability lists, and a type argument can be neither widened nor narrowed")
+-ERROR(sema_chexc_clause_in_cast_target,
+-    "a capability clause is not allowed in a runtime cast target",
+-    "the target is written without clauses and read as requiring 'throws Exception'")
++ERROR(sema_chexc_cast_target_func,
++    "'%s' cannot be a runtime cast target: it contains a function type",
++    "erasure leaves no capability list to check, so such a cast would launder the requirements of "
++    "the value it accepts")
++ERROR(sema_chexc_subclass_captures_missing,
++    "'%s' must capture '%s': every subclass of a capturing class captures at least what its "
++    "superclass does",
++    "add it to the 'captures' clause, or a type that covers it")
++ERROR(sema_chexc_capturing_needs_ctor,
++    "%s '%s' has a 'captures' clause and must declare an 'init' constructor",
++    "a capturing type has no implicit default constructor: its constructors require the captured "
++    "capabilities at their call sites")
+ 
+ ERROR(sema_chexc_polymorphic_recursion,
+     "Cannot infer capability parameters for '%s': the recursion re-enters it at the growing "
+diff --git a/src/Parse/ParseDecl.cpp b/src/Parse/ParseDecl.cpp
+index 844883f1..28a7d849 100644
+--- a/src/Parse/ParseDecl.cpp
++++ b/src/Parse/ParseDecl.cpp
+@@ -1286,13 +1286,15 @@ void ParserImpl::ParseInheritedTypes(InheritableDecl& decl)
+ 
+ void ParserImpl::TryParseCapturesClause(InheritableDecl& decl)
+ {
+-    // Several `captures` clauses union their entries, exactly as several `throws` clauses do.
++    // A class carries at most one `captures` clause, like one `where`; a second is diagnosed and
++    // dropped so the rest of the header still parses.
+     while (SeeingChexcClause("captures")) {
++        auto clausePos = lookahead.Begin();
+         auto clause = ParseCapturesClause();
+         if (!decl.capturesClause) {
+             decl.capturesClause = std::move(clause);
+         } else {
+-            MergeCapabilityClause(*decl.capturesClause, *clause);
++            ParseDiagnoseRefactor(DiagKindRefactor::parse_duplicate_captures_clause, clausePos);
+         }
+     }
+ }
+@@ -2374,38 +2376,11 @@ void ParserImpl::ParseFuncParameters(const ScopeKind& scopeKind, FuncBody& fb)
+     }
+ }
+ 
+-bool ParserImpl::IsPinnedEmptyClause(const ThrowsClause& clause)
+-{
+-    // The only spelling that yields no entries and no marker is `throws ()`: a bare `throws`
+-    // with nothing after it is diagnosed as a missing type and marked broken.
+-    return clause.capTypes.empty() && !clause.hasEllipsis && !clause.TestAttr(Attribute::IS_BROKEN);
+-}
+-
+-void ParserImpl::MergeCapabilityClause(ThrowsClause& into, ThrowsClause& extra)
+-{
+-    for (auto& capType : extra.capTypes) {
+-        (void)into.capTypes.emplace_back(std::move(capType));
+-    }
+-    extra.capTypes.clear();
+-    for (auto& commaPos : extra.commaPosVector) {
+-        (void)into.commaPosVector.emplace_back(commaPos);
+-    }
+-    // Any occurrence of the marker opens the combined list to inference, idempotently.
+-    into.hasEllipsis = into.hasEllipsis || extra.hasEllipsis;
+-    if (extra.TestAttr(Attribute::IS_BROKEN)) {
+-        into.EnableAttr(Attribute::IS_BROKEN);
+-    }
+-    if (into.end < extra.end) {
+-        into.end = extra.end;
+-    }
+-}
+-
+ /**
+  * Checked exceptions and effects: parse the capability clauses of a function body, in the fixed
+  * order 'performs' then 'throws'. Called on both sides of the generic constraints, which may
+- * precede or follow the clauses. A declaration may carry several clauses of one kind -- generated
+- * code appends a clause instead of merging into an existing one, and conditional compilation emits
+- * one per branch -- so their entries union into one list.
++ * precede or follow the clauses. A declaration carries at most one clause of each kind, like
++ * 'where'; a second is diagnosed and dropped so the rest of the declaration still parses.
+  */
+ void ParserImpl::ParseCapabilityClauses(FuncBody& fb)
+ {
+@@ -2418,24 +2393,20 @@ void ParserImpl::ParseCapabilityClauses(FuncBody& fb)
+         if (isPerforms && fb.throwsClause) {
+             ParseDiagnoseRefactor(DiagKindRefactor::parse_performs_clause_after_throws, clausePos);
+         }
+-        auto clause = ParseThrowsClause(true);
+-        if (isPerforms && clause->hasEllipsis) {
+-            // Effect requirements are never inferred, so there is nothing for the marker to open.
+-            ParseDiagnoseRefactor(DiagKindRefactor::parse_ellipsis_in_performs_clause, clausePos);
+-            clause->hasEllipsis = false;
+-        }
+         auto& slot = isPerforms ? fb.performsClause : fb.throwsClause;
+-        if (!slot) {
+-            slot = std::move(clause);
++        if (slot) {
++            ParseDiagnoseRefactor(isPerforms ? DiagKindRefactor::parse_duplicate_performs_clause
++                                             : DiagKindRefactor::parse_duplicate_throws_clause,
++                clausePos);
++            (void)ParseThrowsClause(true); // Parse and drop the duplicate to recover.
+             continue;
+         }
+-        // `throws ()` asserts that the callable requires nothing, pinning the list against future
+-        // edits; combining it with another clause contradicts the pin.
+-        if (IsPinnedEmptyClause(*slot) || IsPinnedEmptyClause(*clause)) {
+-            ParseDiagnoseRefactor(DiagKindRefactor::parse_empty_capability_clause_combined, clausePos,
+-                isPerforms ? "performs" : "throws");
++        slot = ParseThrowsClause(true);
++        if (isPerforms && slot->hasEllipsis) {
++            // Effect requirements are never inferred, so there is nothing for the marker to open.
++            ParseDiagnoseRefactor(DiagKindRefactor::parse_ellipsis_in_clause, clausePos, "performs");
++            slot->hasEllipsis = false;
+         }
+-        MergeCapabilityClause(*slot, *clause);
+     }
+ }
+ 
+diff --git a/src/Parse/ParseType.cpp b/src/Parse/ParseType.cpp
+index 4b5f35c0..15948ba5 100644
+--- a/src/Parse/ParseType.cpp
++++ b/src/Parse/ParseType.cpp
+@@ -293,7 +293,7 @@ OwnedPtr<FuncType> ParserImpl::ParseFuncType(
+ 
+ OwnedPtr<AST::ThrowsClause> ParserImpl::ParseThrowsClause(bool isDeclClause)
+ {
+-    CJC_ASSERT(SeeingChexcClause("throws") || SeeingChexcClause("performs"));
++    CJC_ASSERT(SeeingChexcClause("throws") || SeeingChexcClause("performs") || SeeingChexcClause("captures"));
+     auto clause = MakeOwned<ThrowsClause>();
+     ChainScope cs(*this, clause.get());
+     Next(); // Consume `throws`.
+@@ -395,30 +395,17 @@ OwnedPtr<AST::ThrowsClause> ParserImpl::ParseThrowsClause(bool isDeclClause)
+ 
+ OwnedPtr<AST::ThrowsClause> ParserImpl::ParseCapturesClause()
+ {
+-    // Checked exceptions: the `captures` clause of a class or struct header.
+-    // Reuses the ThrowsClause node shape; the grammar is the bare comma-separated list only:
+-    // `captures E1, E2` (no parenthesized or ellipsis forms).
++    // Checked exceptions: the `captures` clause of a class or struct header. Its entries are those
++    // of a declaration `throws` clause -- nested lists, aliases, and `()` for the empty list, which
++    // is equivalent to omitting the clause. Only the `...` marker has no meaning here: a capture
++    // set is never inferred.
+     CJC_ASSERT(SeeingChexcClause("captures"));
+-    auto clause = MakeOwned<ThrowsClause>();
+-    ChainScope cs(*this, clause.get());
+-    Next(); // Consume `captures`.
+-    clause->throwsPos = lastToken.Begin();
+-    clause->begin = clause->throwsPos;
+-    clause->end = lastToken.End();
+-    if (!SeeingAny(GetTypeFirst()) && !SeeingContextualKeyword()) {
+-        ParseDiagnoseRefactor(
+-            DiagKindRefactor::parse_expected_exception_type_after_captures, lookahead, ConvertToken(lookahead));
+-        clause->EnableAttr(Attribute::IS_BROKEN);
+-        return clause;
+-    }
+-    while (true) {
+-        (void)clause->capTypes.emplace_back(ParseType());
+-        if (!Skip(TokenKind::COMMA)) {
+-            break;
+-        }
+-        clause->commaPosVector.emplace_back(lastToken.Begin());
++    auto clausePos = lookahead.Begin();
++    auto clause = ParseThrowsClause(true);
++    if (clause->hasEllipsis) {
++        ParseDiagnoseRefactor(DiagKindRefactor::parse_ellipsis_in_clause, clausePos, "captures");
++        clause->hasEllipsis = false;
+     }
+-    clause->end = clause->capTypes.back()->end;
+     return clause;
+ }
+ 
+diff --git a/src/Parse/ParserImpl.h b/src/Parse/ParserImpl.h
+index 34e08b14..14cc7c60 100644
+--- a/src/Parse/ParserImpl.h
++++ b/src/Parse/ParserImpl.h
+@@ -539,12 +539,8 @@ private:
+     void ParsePropBody(const std::set<AST::Modifier>& modifiers, AST::PropDecl& propDecl);
+     OwnedPtr<AST::FuncDecl> ParsePropMemberDecl(const std::set<AST::Modifier>& modifiers);
+     /// Parse the 'performs' and 'throws' clauses of a function body, in that fixed order.
+-    /// Several clauses of one kind are allowed; their entries union into one list.
++    /// At most one clause of each kind, like 'where'.
+     void ParseCapabilityClauses(AST::FuncBody& fb);
+-    /// Union the entries of a second capability clause into the first; @p extra is left empty.
+-    static void MergeCapabilityClause(AST::ThrowsClause& into, AST::ThrowsClause& extra);
+-    /// True for a clause that pins an empty list -- `throws ()`, written with no entries and no `...`.
+-    static bool IsPinnedEmptyClause(const AST::ThrowsClause& clause);
+     void ParseFuncGenericConstraints(const AST::FuncBody& fb);
+     void ParsePropMemberBody(const ScopeKind& scopeKind, AST::FuncBody& fb);
+     void ParseFuncParameters(const ScopeKind& scopeKind, AST::FuncBody& fb);
+@@ -621,7 +617,7 @@ private:
+      */
+     OwnedPtr<AST::ThrowsClause> ParseCapturesClause();
+     /**
+-     * Parse every `captures` clause the lookahead offers into @p decl, unioning their entries.
++     * Parse the `captures` clause of @p decl, diagnosing a second one.
+      * Called at each admissible clause position of a class/struct header: its position relative
+      * to the superclass list and `where` block is arbitrary.
+      */
+diff --git a/src/Sema/TypeCheckExpr/IsAsExprs.cpp b/src/Sema/TypeCheckExpr/IsAsExprs.cpp
+index 0b7506a2..ec04dc71 100644
+--- a/src/Sema/TypeCheckExpr/IsAsExprs.cpp
++++ b/src/Sema/TypeCheckExpr/IsAsExprs.cpp
+@@ -17,34 +17,21 @@ using namespace Sema;
+ 
+ Ptr<Ty> TypeChecker::TypeCheckerImpl::CastTargetTy(Type& target)
+ {
+-    // Checked exceptions: a runtime type test cannot see capability lists, so the target is read
+-    // pessimistically -- otherwise the cast would launder a '() throws E -> R' value into a
+-    // clause-free '() -> R'. An 'is' test binds nothing and is left alone. Off with the feature,
+-    // the written type is the type.
++    // Checked exceptions: a runtime type test sees the erased shape, so nothing verifies a
++    // capability list -- reading a function type in a cast target as clause-free would launder a
++    // '() throws E -> R' value into a '() -> R' one. The base design therefore rejects any target
++    // containing a function type, in any position; relaxations that make such casts usable are an
++    // extension. A parameter-typed target ('x as Box<T>') is accepted: rejecting it would break
++    // ordinary generic code, and an instantiation with a function type is an unchecked boundary.
++    // Off with the feature, the written type is the type.
+     auto targetTy = target.GetTy();
+     if (!ci->invocation.globalOptions.enableChexc || !Ty::IsTyCorrect(targetTy)) {
+         return targetTy;
+     }
+-    auto exception = importManager.GetCoreDecl<ClassDecl>(CLASS_EXCEPTION);
+-    if (!exception) {
+-        return targetTy;
+-    }
+-    // The target is written without clauses: the reading below decides them, so a written one would
+-    // be silently overwritten.
+-    Walker(&target, [this](Ptr<Node> node) {
+-        auto funcType = DynamicCast<FuncType*>(node.get());
+-        if (funcType && (funcType->throwsClause || funcType->performsClause)) {
+-            auto& clause = funcType->throwsClause ? *funcType->throwsClause : *funcType->performsClause;
+-            diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_clause_in_cast_target, clause);
+-        }
+-        return VisitAction::WALK_CHILDREN;
+-    }).Walk();
+-    auto pessimistic = TypeCheckUtil::ReadCastTargetPessimistically(typeManager, exception->GetTy(), targetTy);
+-    if (pessimistic.rejected) {
+-        diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_cast_target_invariant_func, target, Ty::ToString(targetTy));
+-        return targetTy;
++    if (TypeCheckUtil::ContainsFuncTy(targetTy)) {
++        diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_cast_target_func, target, Ty::ToString(targetTy));
+     }
+-    return pessimistic.ty;
++    return targetTy;
+ }
+ 
+ Ptr<Ty> TypeChecker::TypeCheckerImpl::SynIsExpr(ASTContext& ctx, IsExpr& ie)
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index 75487515..b5c60521 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -301,70 +301,31 @@ void ExpandCapabilityEntry(Ptr<Ty> ty, std::vector<Ptr<Ty>>& out, std::unordered
+     out.emplace_back(ty);
+ }
+ 
+-bool ContainsFuncTy(Ptr<const Ty> ty, std::unordered_set<Ptr<const Ty>>& seen)
++bool ContainsFuncTyImpl(Ptr<const Ty> ty, std::unordered_set<Ptr<const Ty>>& seen)
+ {
+     if (!ty || !seen.emplace(ty).second) {
+         return false;
+     }
+-    if (ty->IsFunc()) {
++    if (auto alias = DynamicCast<const TypeAliasTy*>(ty); alias && alias->declPtr && alias->declPtr->type) {
++        // An alias is transparent here: what it names is what the cast would test.
++        return ContainsFuncTyImpl(alias->declPtr->type->GetTy(), seen);
++    }
++    if (auto funcTy = DynamicCast<const FuncTy*>(ty); funcTy && !funcTy->isC) {
+         return true;
+     }
+     return std::any_of(
+-        ty->typeArgs.begin(), ty->typeArgs.end(), [&seen](auto arg) { return ContainsFuncTy(arg, seen); });
+-}
+-
+-Ptr<Ty> ReadPessimistically(TypeManager& tyMgr, Ptr<Ty> exceptionTy, Ptr<Ty> ty, bool covariant, bool& rejected)
+-{
+-    if (!Ty::IsTyCorrect(ty)) {
+-        return ty;
+-    }
+-    if (auto alias = DynamicCast<TypeAliasTy*>(ty); alias && alias->declPtr && alias->declPtr->type) {
+-        // An alias is transparent here: what it names is what the cast tests.
+-        return ReadPessimistically(tyMgr, exceptionTy, alias->declPtr->type->GetTy(), covariant, rejected);
+-    }
+-    if (auto funcTy = DynamicCast<FuncTy*>(ty); funcTy && !funcTy->isC) {
+-        // A result keeps the enclosing polarity, a parameter flips it.
+-        auto retTy = ReadPessimistically(tyMgr, exceptionTy, funcTy->retTy, covariant, rejected);
+-        std::vector<Ptr<Ty>> paramTys;
+-        for (auto paramTy : funcTy->paramTys) {
+-            (void)paramTys.emplace_back(ReadPessimistically(tyMgr, exceptionTy, paramTy, !covariant, rejected));
+-        }
+-        FuncTy::Config cfg{funcTy->isC, funcTy->isClosureTy, funcTy->hasVariableLenArg, funcTy->noCast};
+-        std::vector<Ptr<Ty>> capTys;
+-        if (covariant) {
+-            (void)capTys.emplace_back(exceptionTy);
+-        }
+-        return tyMgr.GetFunctionTy(paramTys, retTy, cfg, capTys);
+-    }
+-    if (auto tupleTy = DynamicCast<TupleTy*>(ty)) {
+-        std::vector<Ptr<Ty>> elemTys;
+-        for (auto elemTy : tupleTy->typeArgs) {
+-            (void)elemTys.emplace_back(ReadPessimistically(tyMgr, exceptionTy, elemTy, covariant, rejected));
+-        }
+-        return tyMgr.GetTupleTy(elemTys);
+-    }
+-    // A type argument of a generic type is invariant -- CangJie has no declaration-site variance --
+-    // so a function type inside one can be neither widened nor narrowed: no sound reading exists.
+-    std::unordered_set<Ptr<const Ty>> seen;
+-    for (auto arg : ty->typeArgs) {
+-        if (ContainsFuncTy(arg, seen)) {
+-            rejected = true;
+-            break;
+-        }
+-    }
+-    return ty;
++        ty->typeArgs.begin(), ty->typeArgs.end(), [&seen](auto arg) { return ContainsFuncTyImpl(arg, seen); });
+ }
+ 
+ } // namespace
+ 
+-PessimisticTarget ReadCastTargetPessimistically(TypeManager& tyMgr, Ptr<Ty> exceptionTy, Ptr<Ty> targetTy)
++bool ContainsFuncTy(Ptr<Ty> targetTy)
+ {
+-    if (!Ty::IsTyCorrect(targetTy) || !Ty::IsTyCorrect(exceptionTy)) {
+-        return {targetTy, false};
++    if (!Ty::IsTyCorrect(targetTy)) {
++        return false;
+     }
+-    PessimisticTarget result;
+-    result.ty = ReadPessimistically(tyMgr, exceptionTy, targetTy, true, result.rejected);
+-    return result;
++    std::unordered_set<Ptr<const Ty>> seen;
++    return ContainsFuncTyImpl(targetTy, seen);
+ }
+ 
+ std::vector<Ptr<Ty>> ExpandCapabilityList(const std::vector<OwnedPtr<Type>>& capTypes)
+diff --git a/src/Sema/TypeCheckUtil.h b/src/Sema/TypeCheckUtil.h
+index 059d1434..b51642d4 100644
+--- a/src/Sema/TypeCheckUtil.h
++++ b/src/Sema/TypeCheckUtil.h
+@@ -191,28 +191,14 @@ std::vector<Ptr<AST::Ty>> ExpandCapabilityList(const std::vector<OwnedPtr<AST::T
+ 
+ std::vector<Ptr<AST::Ty>> GetFuncBodyCapTys(const AST::FuncBody& fb);
+ 
+-/** Outcome of reading a runtime-cast target pessimistically. */
+-struct PessimisticTarget {
+-    /** The type the cast or type pattern binds at. */
+-    Ptr<AST::Ty> ty{nullptr};
+-    /** A function type sits in an invariant position of the target, which has no sound reading. */
+-    bool rejected{false};
+-};
+-
+ /**
+- * Checked exceptions: read the target of a runtime cast (`as`) or type pattern pessimistically, by
+- * position. The runtime sees erased shapes, so a cast cannot verify a capability list: read
+- * optimistically it would launder a `() throws E -> R` value into a clause-free `() -> R`.
+- * A function type in a COVARIANT position therefore receives `throws Exception` -- the least type
+- * among those erasing to the written one, so the cast is sound whatever the value's clauses were --
+- * while one in a CONTRAVARIANT position keeps the empty list it spells. The target itself is
+- * covariant; a function type's result and a tuple's components keep the enclosing polarity, a
+- * function type's parameters flip it: in `() -> (() -> R)` the inner type receives the requirement,
+- * in `(() -> R) -> Unit` it stays empty. A type argument of a generic is invariant and has no sound
+- * reading; a function type inside one is reported via PessimisticTarget::rejected. CFunc types
+- * carry no capabilities and are left alone.
++ * Checked exceptions: true when @p targetTy exposes a function type -- itself, or one nested at any
++ * depth in a result, a parameter, a tuple component, or a type argument. Such a type cannot be a
++ * runtime cast or type-pattern target: the runtime sees the erased shape, so nothing verifies a
++ * capability list, and reading the target as clause-free would launder the requirements of whatever
++ * value the cast accepts. `CFunc` types are exempt: they carry no capabilities.
+  */
+-PessimisticTarget ReadCastTargetPessimistically(TypeManager& tyMgr, Ptr<AST::Ty> exceptionTy, Ptr<AST::Ty> targetTy);
++bool ContainsFuncTy(Ptr<AST::Ty> targetTy);
+ 
+ /**
+  * Checked exceptions: the capability list of @p accessor (its elaborated 'throws' clause),
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index 0c07bbb1..56f08a33 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -252,29 +252,70 @@ void TypeChecker::TypeCheckerImpl::ChkThrowsClauseTypes(
+     }
+ }
+ 
++void TypeChecker::TypeCheckerImpl::ChkCapturesSuperclassCoverage(const ClassDecl& cd) const
++{
++    // Every subclass of a capturing class is itself a capturing class: its list must cover the
++    // superclass's, each superclass entry covered by an own entry of the same kind, possibly a more
++    // general one. Restating keeps the instance's whole handler dependency readable in one header
++    // and keeps checking local -- a body is checked against its own class's list, never against the
++    // ancestor chain.
++    auto super = cd.GetSuperClassDecl();
++    if (!super) {
++        return;
++    }
++    auto superCaps = TypeCheckUtil::GetDeclCapturesCapTys(*super);
++    if (superCaps.empty()) {
++        return;
++    }
++    auto ownCaps = TypeCheckUtil::GetDeclCapturesCapTys(cd);
++    for (auto superCap : superCaps) {
++        if (!Ty::IsTyCorrect(superCap) || typeManager.IsCapTysSubsumed({superCap}, ownCaps)) {
++            continue;
++        }
++        auto builder = diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_subclass_captures_missing,
++            MakeRangeForDeclIdentifier(cd), cd.identifier.Val(), Ty::ToString(superCap));
++        builder.AddNote(MakeRangeForDeclIdentifier(*super), "the superclass captures it here");
++    }
++}
++
+ void TypeChecker::TypeCheckerImpl::ChkCapturesClauseOfDecl(ASTContext& ctx, InheritableDecl& decl)
+ {
+-    if (!decl.capturesClause) {
+-        return;
++    if (decl.capturesClause) {
++        // Elaborate the clause's types (collected in the declaration's scope, so they may refer to
++        // its generic parameters), then validate them exactly like 'throws' entries.
++        for (auto& capType : decl.capturesClause->capTypes) {
++            CJC_NULLPTR_CHECK(capType);
++            Synthesize({ctx, SynPos::NONE}, capType.get());
++        }
++        ChkThrowsClauseTypes(ctx, *decl.capturesClause, "captures", true);
+     }
+-    // Elaborate the clause's types (collected in the declaration's scope, so they may refer to
+-    // its generic parameters), then validate them exactly like 'throws' entries.
+-    for (auto& capType : decl.capturesClause->capTypes) {
+-        CJC_NULLPTR_CHECK(capType);
+-        Synthesize({ctx, SynPos::NONE}, capType.get());
++    if (auto cd = DynamicCast<const ClassDecl*>(&decl)) {
++        ChkCapturesSuperclassCoverage(*cd);
+     }
+-    ChkThrowsClauseTypes(ctx, *decl.capturesClause, "captures", true);
+-    // A capturing class/struct cannot use a primary constructor (author ruling, forward
+-    // compatible with Modal CangJie where primary constructors are always '~local'); it
+-    // declares explicit 'init' constructors instead.
++    // A clause that is statically empty -- written '()' or an alias that expands to nothing -- is
++    // equivalent to omitting it: the type is not capturing, and none of the rules below apply.
++    if (TypeCheckUtil::GetDeclCapturesCapTys(decl).empty()) {
++        return;
++    }
++    auto typeName = decl.astKind == ASTKind::CLASS_DECL ? "class" : "struct";
++    // A capturing type has no primary constructor -- always '~local' -- and no implicit default
++    // constructor either: every constructor requires the captured capabilities at its call site,
++    // so there has to be one to carry the requirement.
++    bool hasCtor = false;
+     for (auto& member : decl.GetMemberDecls()) {
+         CJC_NULLPTR_CHECK(member);
+         if (member->astKind == ASTKind::PRIMARY_CTOR_DECL) {
+-            auto typeName = decl.astKind == ASTKind::CLASS_DECL ? "class" : "struct";
+             diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_primary_ctor_on_capturing,
+                 MakeRangeForDeclIdentifier(*member), typeName, decl.identifier.Val());
++            hasCtor = true;
++        } else if (member->TestAttr(Attribute::CONSTRUCTOR) && !member->TestAttr(Attribute::COMPILER_ADD)) {
++            hasCtor = true;
+         }
+     }
++    if (!hasCtor) {
++        diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_capturing_needs_ctor, MakeRangeForDeclIdentifier(decl),
++            typeName, decl.identifier.Val());
++    }
+ }
+ 
+ void TypeChecker::TypeCheckerImpl::ChkAssumeThrowsAnnotations(ASTContext& ctx, Package& pkg)
+diff --git a/src/Sema/TypeCheckerImpl.h b/src/Sema/TypeCheckerImpl.h
+index ef929f05..2ff73c42 100644
+--- a/src/Sema/TypeCheckerImpl.h
++++ b/src/Sema/TypeCheckerImpl.h
+@@ -1331,6 +1331,8 @@ private:
+      * primary constructors on capturing declarations (they cannot capture; author ruling).
+      */
+     void ChkCapturesClauseOfDecl(ASTContext& ctx, AST::InheritableDecl& decl);
++    /// Checked exceptions: a subclass of a capturing class must capture at least what it captures.
++    void ChkCapturesSuperclassCoverage(const AST::ClassDecl& cd) const;
+     void AddRetTypeNode(AST::FuncBody& fb) const;
+     bool CheckBodyRetType(ASTContext& ctx, AST::FuncBody& fb);
+     void CheckFuncParamList(ASTContext& ctx, AST::FuncParamList& fpl);
+-- 
+2.54.0
+

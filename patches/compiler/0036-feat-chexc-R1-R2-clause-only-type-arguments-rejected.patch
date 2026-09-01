@@ -1,0 +1,373 @@
+From 518251639a35ff146725d5358584e25c53722f37 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 30 Aug 2026 16:18:29 +0300
+Subject: [PATCH 36/44] =?UTF-8?q?feat(chexc):=20R1+R2=20=E2=80=94=20clause?=
+ =?UTF-8?q?-only=20type=20arguments=20rejected,=20checking-off=20ignores?=
+ =?UTF-8?q?=20clauses,=20the=20implicit=20close()=20demands=20its=20capabi?=
+ =?UTF-8?q?lities?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three author rulings of 2026-08-30, and the try-with-resources hole they sit next to:
+
+- **Q11/I20.** A call that leaves a clause-only type parameter to inference is rejected. Reading
+  the solver first settled what "the language does in general": 'unable to infer' fires only for a
+  variable with NO constraints, while a 'where T <: Exception' bound seeds the constraint set and
+  the variable is solved AT ITS BOUND -- so 'g(0, f)' compiling was ordinary language behaviour,
+  and the fix has to be a dedicated check, never a solver change. 'CollectClauseOnlyTyVars' is the
+  difference of two walks (capability-aware minus erased); the check runs in 'PostCheckCallExpr',
+  after the candidate is fixed, so overload resolution is untouched. Only type arguments the
+  AUTHOR wrote discharge it -- consulting the solved 'instTys' would consult the very choice the
+  rule rejects. One diagnostic per call, since the diagnostic set deduplicates by position.
+
+- **Q10/I18.** With BOTH capability features off, clauses shape no type: 'capTys' are dropped at
+  the single 'GetFunctionTy' funnel, so '() throws E -> R' IS '() -> R' -- one identity, assignable
+  in every position, absent from the '.cjo'. 'throws' never affected overloading; now it does not
+  affect subtyping either, which is the ruling.
+
+- **Q8 residue.** The implicit 'close()' of try-with-resources demanded nothing at all: the
+  capability pass runs before desugar, where those calls do not exist yet. Each resource's
+  effective close list (declared, instantiated through the resource type, plus what inference gave
+  it) is now demanded inside the try's own scope -- which a probe confirmed is where the
+  desugaring puts the closing. Inert while 'Resource.close()' is clause-free, and that is exactly
+  why it lands before the stdlib gives it one.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../Basic/DiagRefactor/DiagnosticSema.def     |  8 +++
+ include/cangjie/Sema/TypeManager.h            | 12 ++++
+ src/Frontend/CompilerInstance.cpp             |  1 +
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 66 ++++++++++++++++++-
+ src/Sema/TypeCheckCall.cpp                    | 45 +++++++++++++
+ src/Sema/TypeCheckUtil.cpp                    | 46 +++++++++++++
+ src/Sema/TypeCheckUtil.h                      | 14 ++++
+ src/Sema/TypeCheckerImpl.h                    |  2 +
+ src/Sema/TypeManager.cpp                      |  7 ++
+ 9 files changed, 200 insertions(+), 1 deletion(-)
+
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index 04a5f288..340153bf 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -444,6 +444,14 @@ ERROR(sema_chexc_performs_type_not_command, "type '%s' in 'performs' clause is n
+ ERROR(sema_chexc_performs_in_main, "'main' cannot declare a 'performs' clause",
+     "there is no default effect handler, unlike the default exception handler")
+ 
++ERROR(sema_chexc_clause_only_type_argument,
++    "type parameter %s of '%s' occurs only in capability lists, which take no part in "
++    "type-argument inference",
++    "write the type argument explicitly")
++ERROR(sema_chexc_clause_only_type_arguments,
++    "type parameters %s of '%s' occur only in capability lists, which take no part in "
++    "type-argument inference",
++    "write the type arguments explicitly")
+ ERROR(sema_chexc_missing_capabilities,
+     "Cannot find capabilities for %s (of types %s) in the current scope",
+     "%s")
+diff --git a/include/cangjie/Sema/TypeManager.h b/include/cangjie/Sema/TypeManager.h
+index 89fb1325..046d2527 100644
+--- a/include/cangjie/Sema/TypeManager.h
++++ b/include/cangjie/Sema/TypeManager.h
+@@ -113,6 +113,17 @@ public:
+     {
+         uncheckedExceptionTy = ty;
+     }
++    /**
++     * Checked exceptions: when BOTH capability features are off, clauses "impose no obligations
++     * and are not recorded" (author ruling on Q10: an unchecked package ignores 'throws' in every
++     * position, subtyping included). Dropping the list at the one construction funnel makes every
++     * consumer follow -- identity, subtyping, overloading, joins, the '.cjo'. With only the
++     * effect-handler feature on the lists are kept whole, commands being checked there.
++     */
++    void SetCapTysInert(bool inert)
++    {
++        capTysInert = inert;
++    }
+ 
+     Ptr<AST::ArrayTy> GetArrayTy(Ptr<AST::Ty> elemTy, unsigned int dims);
+     Ptr<AST::VArrayTy> GetVArrayTy(AST::Ty& elemTy, int64_t size);
+@@ -421,6 +432,7 @@ private:
+     /// RecordOverride) and consumed after capability parameter inference.
+     std::unordered_map<Ptr<const AST::FuncDecl>, std::vector<Ptr<const AST::FuncDecl>>> overriddenDecls;
+     Ptr<AST::Ty> uncheckedExceptionTy{nullptr};
++    bool capTysInert{false};
+ 
+     friend class TyVarScope;
+     friend class InstCtxScope;
+diff --git a/src/Frontend/CompilerInstance.cpp b/src/Frontend/CompilerInstance.cpp
+index a0a8c9fb..b859aaf0 100644
+--- a/src/Frontend/CompilerInstance.cpp
++++ b/src/Frontend/CompilerInstance.cpp
+@@ -60,6 +60,7 @@ CompilerInstance::CompilerInstance(CompilerInvocation& invocation, DiagnosticEng
+ {
+     // allocate managers in safe order
+     typeManager = new TypeManager();
++    typeManager->SetCapTysInert(!invocation.globalOptions.enableChexc && !invocation.globalOptions.enableEH);
+     importManager = new ImportManager(diag, *typeManager, invocation.globalOptions);
+     packageManager = new PackageManager(*importManager);
+     testManager = new TestManager(*importManager, *typeManager, diag, invocation.globalOptions);
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 10e2837e..e45db10f 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -506,6 +506,67 @@ private:
+         return funcTy ? funcTy->capTys : SupplyScope{};
+     }
+ 
++    /**
++     * Checked exceptions ("Capability scopes" rule 1): try-with-resources closes its resources
++     * implicitly, and that closing is inside the try's own scope -- the desugaring puts it in a
++     * 'finally' INNER to the user's catch clauses, so the same clauses catch it (probed
++     * 2026-08-30). The capability pass runs before desugar, so the implicit calls do not exist as
++     * AST nodes yet and nothing would be demanded for them at all. The requirement is synthesized
++     * here instead, against the try's scope, exactly as an explicit 'r.close()' in the body would
++     * be. Inert while 'Resource.close()' is clause-free, which is why it must land BEFORE the
++     * standard library gives it one.
++     */
++    Ptr<FuncDecl> FindCloseMember(Ptr<Ty> resourceTy) const
++    {
++        if (!Ty::IsTyCorrect(resourceTy)) {
++            return nullptr;
++        }
++        std::vector<Ptr<Ty>> chain{resourceTy};
++        for (auto superTy : typeManager.GetAllSuperTys(*resourceTy)) {
++            chain.emplace_back(superTy);
++        }
++        for (auto ty : chain) {
++            auto decl = Ty::GetDeclOfTy<InheritableDecl>(ty);
++            if (!decl) {
++                continue;
++            }
++            for (auto member : decl->GetMemberDeclPtrs()) {
++                auto fd = DynamicCast<FuncDecl*>(member);
++                if (!fd || fd->identifier != "close" || !fd->funcBody || fd->funcBody->paramLists.empty()) {
++                    continue;
++                }
++                if (fd->funcBody->paramLists[0]->params.empty()) {
++                    return fd; // the 'Resource' protocol's own shape: no parameters
++                }
++            }
++        }
++        return nullptr;
++    }
++
++    void DemandResourceClose(const VarDecl& resource)
++    {
++        auto resourceTy = resource.GetTy();
++        auto closeFd = FindCloseMember(resourceTy);
++        if (!closeFd) {
++            return;
++        }
++        // The declared list, instantiated through the resource's own type (a generic resource
++        // closes at its instantiation), plus the list inference gave 'close' in this package.
++        auto caps = TypeCheckUtil::GetInstantiatedAccessorCapTys(typeManager, *closeFd, resourceTy);
++        if (auto it = inferred.find(Ptr<FuncDecl>(closeFd)); it != inferred.end()) {
++            for (auto cap : it->second) {
++                if (Ty::IsTyCorrect(cap) && !Utils::In(cap, caps)) {
++                    caps.emplace_back(cap);
++                }
++            }
++        }
++        for (auto cap : typeManager.NormalizeCapTys(caps)) {
++            if (Ty::IsTyCorrect(cap)) {
++                Demand(cap, resource, "the implicit 'close()' of this resource");
++            }
++        }
++    }
++
+     void HandleTry(TryExpr& te)
+     {
+         // A 'handle' clause supplies a handler capability for each command type it lists
+@@ -519,8 +580,11 @@ private:
+         supplies.emplace_back(std::move(caps));
+         for (auto& resource : te.resourceSpec) {
+             // Resource initializers of try-with-resources are inside the try's scope: their
+-            // exceptions are caught by the same clauses.
++            // exceptions are caught by the same clauses. So is the implicit closing.
+             WalkScoped(resource.get());
++            if (resource) {
++                DemandResourceClose(*resource);
++            }
+         }
+         // With 'handle' clauses present the parser rebuilds the try block as a lambda, and THAT
+         // copy is the one sema types; the original block keeps untyped nodes, so walking it would
+diff --git a/src/Sema/TypeCheckCall.cpp b/src/Sema/TypeCheckCall.cpp
+index 4504ed3f..ed60e91d 100644
+--- a/src/Sema/TypeCheckCall.cpp
++++ b/src/Sema/TypeCheckCall.cpp
+@@ -2803,6 +2803,50 @@ FunctionMatchingUnit* TypeChecker::TypeCheckerImpl::FindFuncWithMaxChildRetTy(
+     return maxChildFmu;
+ }
+ 
++void TypeChecker::TypeCheckerImpl::ChkClauseOnlyTypeArguments(const CallExpr& ce, const FuncDecl& func) const
++{
++    // Checked exceptions ("Generics"): a type parameter that occurs ONLY in capability lists is
++    // not constrained by the argument that mentions it -- inference ignores those lists on
++    // purpose, to stay out of row unification. The language would still solve such a parameter at
++    // its bound, like any bounded parameter nothing else constrains, which silently picks a list
++    // the author never wrote; the text requires the call to be rejected so the argument is
++    // written. Runs after the candidate is fixed, never during solving: perturbing the solver
++    // would change which overload wins.
++    if (!ci->invocation.globalOptions.enableChexc || !func.TestAttr(Attribute::GENERIC)) {
++        return;
++    }
++    auto clauseOnly = TypeCheckUtil::CollectClauseOnlyTyVars(func.GetTy());
++    if (clauseOnly.empty()) {
++        return;
++    }
++    // Only what the AUTHOR wrote discharges it: 'g<A, B>(0, f)' says what the lists are. The
++    // solved 'instTys' must not be consulted here -- they are exactly the silent choice this rule
++    // rejects (the solver fills them from the bound, since nothing else constrains the parameter).
++    if (!ce.baseFunc || !ce.baseFunc->GetTypeArgs().empty()) {
++        return;
++    }
++    // One diagnostic for the whole call: the diagnostic set deduplicates by position and
++    // severity, so a call with two such parameters would otherwise report only the first.
++    // Names come from the declarations, not from 'Ty::String()', which spells them 'Generics-T'.
++    std::vector<std::string> names;
++    for (auto tyVar : clauseOnly) {
++        if (tyVar && tyVar->decl) {
++            names.emplace_back("'" + tyVar->decl->identifier + "'");
++        }
++    }
++    if (names.empty()) {
++        return;
++    }
++    std::sort(names.begin(), names.end());
++    std::string nameList;
++    for (auto& name : names) {
++        nameList += (nameList.empty() ? "" : ", ") + name;
++    }
++    auto kind = names.size() == 1 ? DiagKindRefactor::sema_chexc_clause_only_type_argument
++                                  : DiagKindRefactor::sema_chexc_clause_only_type_arguments;
++    diag.DiagnoseRefactor(kind, *ce.baseFunc, nameList, func.identifier.Val());
++}
++
+ bool TypeChecker::TypeCheckerImpl::PostCheckCallExpr(
+     const ASTContext& ctx, CallExpr& ce, FuncDecl& func, const SubstPack& typeMapping)
+ {
+@@ -2826,6 +2870,7 @@ bool TypeChecker::TypeCheckerImpl::PostCheckCallExpr(
+         }
+     }
+     ce.resolvedFunction = &func;
++    ChkClauseOnlyTypeArguments(ce, func);
+     UpdateCallTargetsForLSP(ce, func);
+     DynamicBindingThisType(*ce.baseFunc, func, typeMapping);
+     if (!func.TestAttr(Attribute::FOREIGN) && !func.TestAttr(Attribute::C)) {
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index 02bead06..c2465661 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -475,6 +475,52 @@ bool IsCommandTy(TypeManager& typeManager, const ImportManager& importManager, P
+     return false;
+ }
+ 
++namespace {
++/// Collect the generic parameters @p ty reaches, following 'FuncTy::capTys' as well as 'typeArgs'.
++/// Mirrors 'CollectUsedTyVarsInto' of the substitution filter; kept separate because that one is
++/// candidate-filtered and lives in the substitution utilities.
++void CollectTyVarsThroughCaps(Ptr<Ty> ty, std::set<Ptr<GenericsTy>>& found)
++{
++    if (!ty || !ty->HasGeneric()) {
++        return;
++    }
++    if (ty->IsGeneric()) {
++        (void)found.emplace(RawStaticCast<GenericsTy*>(ty.get()));
++        return;
++    }
++    for (auto arg : ty->typeArgs) {
++        CollectTyVarsThroughCaps(arg, found);
++    }
++    if (auto funcTy = DynamicCast<FuncTy*>(ty)) {
++        for (auto cap : funcTy->capTys) {
++            CollectTyVarsThroughCaps(cap, found);
++        }
++    }
++}
++} // namespace
++
++std::set<Ptr<GenericsTy>> CollectClauseOnlyTyVars(Ptr<Ty> declTy)
++{
++    if (!Ty::IsTyCorrect(declTy) || !declTy->HasGeneric()) {
++        return {};
++    }
++    std::set<Ptr<GenericsTy>> throughCaps;
++    CollectTyVarsThroughCaps(declTy, throughCaps);
++    if (throughCaps.empty()) {
++        return {};
++    }
++    // The same candidate-filtered walk inference itself uses, over exactly the parameters the
++    // capability-aware walk found: what it misses is what only a clause mentions.
++    auto visibleToInference = declTy->GetGenericTyArgs(throughCaps);
++    std::set<Ptr<GenericsTy>> clauseOnly;
++    for (auto tyVar : throughCaps) {
++        if (visibleToInference.count(tyVar) == 0) {
++            (void)clauseOnly.emplace(tyVar);
++        }
++    }
++    return clauseOnly;
++}
++
+ bool IsUncheckedExceptionTy(TypeManager& typeManager, const ImportManager& importManager, Ptr<Ty> ty)
+ {
+     // Checked exceptions: an exception type is unchecked iff it is a subtype of
+diff --git a/src/Sema/TypeCheckUtil.h b/src/Sema/TypeCheckUtil.h
+index 5522e8fb..90336aea 100644
+--- a/src/Sema/TypeCheckUtil.h
++++ b/src/Sema/TypeCheckUtil.h
+@@ -227,6 +227,20 @@ bool IsCapturingTy(Ptr<AST::Ty> ty);
+  * kinds of entry in one capability list apart. False when the effect package is absent.
+  */
+ bool IsCommandTy(TypeManager& typeManager, const ImportManager& importManager, Ptr<AST::Ty> ty);
++
++/**
++ * Checked exceptions ("Generics"): the type parameters of @p declTy that occur ONLY inside
++ * capability lists. Type-argument inference deliberately ignores those lists, so such a parameter
++ * is never constrained by the argument that mentions it; the language would still solve it at its
++ * bound like any other unconstrained bounded parameter, which silently picks a list the author
++ * never wrote. The text requires the call to be rejected instead, so the caller must have written
++ * the argument explicitly.
++ *
++ * "Only" is the difference of two walks: the capability-aware one (typeArgs plus 'FuncTy::capTys',
++ * the shape the substitution filter uses) minus the erased one ('Ty::GetGenericTyArgs', typeArgs
++ * alone, which is exactly what inference sees).
++ */
++std::set<Ptr<AST::GenericsTy>> CollectClauseOnlyTyVars(Ptr<AST::Ty> declTy);
+ /**
+  * Checked exceptions: whether @p ty is an unchecked exception type, i.e. a subtype of the core
+  * 'UncheckedException' class. Tolerant of the class's absence (bootstrapping
+diff --git a/src/Sema/TypeCheckerImpl.h b/src/Sema/TypeCheckerImpl.h
+index 9d0354ae..8d78d226 100644
+--- a/src/Sema/TypeCheckerImpl.h
++++ b/src/Sema/TypeCheckerImpl.h
+@@ -1327,6 +1327,8 @@ private:
+     void ChkAssumeThrowsAnnotations(ASTContext& ctx, AST::Package& pkg);
+     /// Checked exceptions: validate what the imported packages' capability metadata allows.
+     void ChkImportedCapabilityMetadata(AST::Package& pkg);
++    /// Checked exceptions: reject a call that leaves a clause-only type parameter to inference.
++    void ChkClauseOnlyTypeArguments(const AST::CallExpr& ce, const AST::FuncDecl& func) const;
+     /**
+      * Checked exceptions: validate the 'captures' clause of a class or struct declaration
+      * -- elaborate and validate its entries like 'throws' entries and ban
+diff --git a/src/Sema/TypeManager.cpp b/src/Sema/TypeManager.cpp
+index 97ffae95..dfc09f83 100644
+--- a/src/Sema/TypeManager.cpp
++++ b/src/Sema/TypeManager.cpp
+@@ -155,6 +155,13 @@ Ptr<TupleTy> TypeManager::GetTupleTy(const std::vector<Ptr<Ty>>& typeArgs, bool
+ Ptr<FuncTy> TypeManager::GetFunctionTy(
+     const std::vector<Ptr<Ty>>& paramTys, Ptr<Ty> retTy, FuncTy::Config cfg, const std::vector<Ptr<Ty>>& capTys)
+ {
++    // With both capability features off the clause is documentation: it shapes no type, so
++    // '() throws E -> R' IS '() -> R' -- one identity, assignable in every position, absent from
++    // the '.cjo'. Dropped here, at the one funnel every FuncTy passes through (declaration types,
++    // functional type nodes, loaded imports, joins), rather than at each elaboration site.
++    if (capTysInert && !capTys.empty()) {
++        return GetTypeTy<FuncTy>(paramTys, retTy, cfg, std::vector<Ptr<Ty>>{});
++    }
+     return GetTypeTy<FuncTy>(paramTys, retTy, cfg, capTys);
+ }
+ 
+-- 
+2.54.0
+

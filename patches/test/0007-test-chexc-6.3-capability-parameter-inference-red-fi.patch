@@ -1,0 +1,268 @@
+From 8d3a0c1c453a993f9083751b0947ee30b7bb7d3f Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 14 Aug 2026 22:45:36 +0300
+Subject: [PATCH 07/43] =?UTF-8?q?test(chexc):=20=C2=A76.3=20capability=20p?=
+ =?UTF-8?q?arameter=20inference=20red-first=20batch?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+3 positives (red until §6.3): basic inference with transitive propagation and
+local discharge; least-fixpoint recursion incl. self-recursion, mutual cycle
+with PARTIAL discharge (distinguishes fixpoint from naive union), and a mixed
+cycle with one authoritative member; the "throws A, ..." union marker plus
+authoritative "throws ()". 2 negatives: public decls never inferred (already
+green under M3 checking); polymorphic recursion over exception-relevant type
+params rejected (§6.3.4). Note: "..." in decl clauses is currently
+parse-rejected (M1 stub) — §6.3 lifts that for declarations while keeping it
+banned in functional types.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../inference/infer_basic.cj                  | 39 +++++++++
+ .../inference/infer_explicit_dots.cj          | 40 ++++++++++
+ .../inference/infer_poly_recursion_neg.cj     | 28 +++++++
+ .../inference/infer_public_neg.cj             | 16 ++++
+ .../inference/infer_recursion.cj              | 79 +++++++++++++++++++
+ 5 files changed, 202 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_basic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_explicit_dots.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_poly_recursion_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_public_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_recursion.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_basic.cj
+new file mode 100644
+index 0000000000..8b29b4ff20
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_basic.cj
+@@ -0,0 +1,39 @@
++// Checked exceptions (§6.3): non-public callables without a clause get their
++// capability lists inferred from their bodies; discharge removes entries;
++// inferred lists propagate to callers through normal checking.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func g() { // inferred: throws AException
++    throw AException()
++}
++
++func f(): Int64 { // inferred: throws AException, BException
++    g()
++    if (false) {
++        throw BException()
++    }
++    1
++}
++
++func discharged(): Int64 { // inferred: empty — everything handled locally
++    try {
++        f()
++    } catch (e: AException) {
++    } catch (e: BException) {
++    }
++    2
++}
++
++main() {
++    let x = discharged() // callable with empty inferred list: no capability needed
++    try {
++        let _ = f() + x
++    } catch (e: Exception) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_explicit_dots.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_explicit_dots.cj
+new file mode 100644
+index 0000000000..81b258d506
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_explicit_dots.cj
+@@ -0,0 +1,40 @@
++// Checked exceptions (§6.3.5): an explicit clause disables inference (authoritative);
++// `throws A, ...` re-enables it — declared entries union with inferred ones;
++// `throws ()` pins an empty list.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func mixed(n: Int64): Int64 throws AException, ... { // A explicit, B inferred
++    if (n < 0) {
++        throw AException()
++    }
++    if (n == 7) {
++        throw BException()
++    }
++    n
++}
++
++func pinnedEmpty(): Int64 throws () { // authoritative empty: all handled locally
++    try {
++        mixed(7)
++    } catch (e: AException) {
++        0
++    } catch (e: BException) {
++        0
++    }
++}
++
++main() {
++    try {
++        let _ = mixed(1) + pinnedEmpty()
++    } catch (e: AException) {
++        return 1
++    } catch (e: BException) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_poly_recursion_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_poly_recursion_neg.cj
+new file mode 100644
+index 0000000000..02b001deb8
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_poly_recursion_neg.cj
+@@ -0,0 +1,28 @@
++// Checked exceptions (§6.3.4): polymorphic recursion over exception-relevant type
++// parameters makes the candidate universe infinite — inference is rejected with
++// an error naming the growing instantiation; explicit clauses are required.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class Box<T> {}
++class GenericException<T> <: Exception {}
++
++func f<T>(n: Int64): Int64 {
++    if (n < 0) {
++        throw GenericException<T>()
++    }
++    if (n == 0) {
++        0
++    } else {
++        f<Box<T>>(n - 1) // re-enters at a growing instantiation
++    }
++}
++
++main() {
++    try {
++        let _ = f<Int64>(3)
++    } catch (e: Exception) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_public_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_public_neg.cj
+new file mode 100644
+index 0000000000..dbde7bc5a0
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_public_neg.cj
+@@ -0,0 +1,16 @@
++// Checked exceptions (§6.3.1): public declarations are never inferred — their
++// clauses are authoritative (explicit or empty by omission), so an undeclared
++// checked throw in a public function is an error even with inference on.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-AException'
++
++class AException <: Exception {}
++
++public func api() {
++    throw AException() // error: public, no clause, no inference
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_recursion.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_recursion.cj
+new file mode 100644
+index 0000000000..6035648d82
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_recursion.cj
+@@ -0,0 +1,79 @@
++// Checked exceptions (§6.3.4): recursion is inferred via the least fixpoint of
++// the SCC's monotone equations. Covers self-recursion, mutual recursion with
++// PARTIAL discharge inside the cycle (distinguishes fixpoint from naive union),
++// and a mixed cycle with one authoritative explicit member.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++// self-recursion: inferred throws AException
++func countdown(n: Int64): Int64 {
++    if (n < 0) {
++        throw AException()
++    }
++    if (n == 0) {
++        0
++    } else {
++        countdown(n - 1)
++    }
++}
++
++// mutual recursion with partial discharge:
++// pingpong's own B-throw survives; pong discharges A inside the cycle,
++// so the fixpoint gives ping: {A, B}, pong: {B} (naive union would give pong {A, B})
++func ping(n: Int64): Int64 { // inferred: throws AException, BException
++    if (n < 0) {
++        throw AException()
++    }
++    pong(n - 1)
++}
++
++func pong(n: Int64): Int64 { // inferred: throws BException only
++    if (n == 7) {
++        throw BException()
++    }
++    if (n <= 0) {
++        0
++    } else {
++        try {
++            ping(n - 1)
++        } catch (e: AException) {
++            0
++        }
++    }
++}
++
++// mixed cycle: one member carries an authoritative explicit clause
++func loud(n: Int64): Int64 throws AException { // explicit, checked as written
++    quiet(n)
++}
++
++func quiet(n: Int64): Int64 { // inferred: throws AException (from calling loud)
++    if (n <= 0) {
++        0
++    } else {
++        loud(n - 1)
++    }
++}
++
++main() {
++    try {
++        let a = countdown(3)
++        let b = pong(20)
++        let c = quiet(2)
++        if (a + b + c != 0) {
++            return 1
++        }
++    } catch (e: Exception) {
++        return 1
++    }
++    // pong must be callable with only a BException handler (fixpoint, not union)
++    try {
++        let _ = pong(8)
++    } catch (e: BException) {
++    }
++    return 0
++}
+-- 
+2.54.0
+

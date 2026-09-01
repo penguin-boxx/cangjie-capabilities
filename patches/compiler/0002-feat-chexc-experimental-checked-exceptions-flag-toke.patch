@@ -1,0 +1,883 @@
+From 286d87c0c45abb75f7d95517359809e412350880 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 14 Aug 2026 17:43:50 +0300
+Subject: [PATCH 02/44] =?UTF-8?q?feat(chexc):=20experimental=20checked=20e?=
+ =?UTF-8?q?xceptions=20=E2=80=94=20flag,=20token,=20throws-clause=20parsin?=
+ =?UTF-8?q?g=20(M0+M1)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Behind --experimental --enable-chexc (mirrors --enable-eh gating; without the
+flag, 'throws' lexes as an ordinary identifier and the feature is inert):
+
+- Options/Option/OptionAction: --enable-chexc -> GlobalOptions::enableChexc.
+- Lex: EXPERIMENTAL_TOKEN THROWS, gated in the keyword map (chexcEnabled).
+- AST: ThrowsClause node (THROWS_CLAUSE), FuncBody::throwsClause and
+  FuncType::throwsClause; all visitors covered (Walker, Clone, PrintNode,
+  ASTChecker, ASTHasher incl. member-signature hash, Collector,
+  PartialInstantiation); THROWS_CLAUSE ignored by ASTTypeValidator until
+  clause types are elaborated (M2).
+- Parse: decl clauses 'throws E1, E2' / 'throws (E1, E2)' / 'throws ()' on
+  functions, methods, ctors, prop accessors, operators, main; either order
+  with generic constraints; functional types '(A) throws (E1,E2) -> R' with
+  single-type sugar and right associativity; '...' parsed and rejected;
+  5 new parser diagnostics.
+- Sema is untouched semantically: clauses are inert until M2 elaboration.
+
+Tests: cangjie_test LLT compiler/CheckedExceptions/parse 9/9; ctest 49/49;
+LLT compiler/Parser+Sema regression 3934/3934; clang-format clean.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ include/cangjie/AST/ASTKind.inc               |  5 +-
+ include/cangjie/AST/Clone.h                   |  1 +
+ include/cangjie/AST/Node.h                    | 23 ++++-
+ .../Basic/DiagRefactor/DiagnosticParser.def   |  8 ++
+ include/cangjie/Lex/Lexer.h                   |  7 ++
+ include/cangjie/Lex/Tokens.inc                |  1 +
+ include/cangjie/Option/Option.h               |  4 +-
+ include/cangjie/Option/Options.inc            |  7 ++
+ include/cangjie/Parse/Parser.h                |  3 +
+ src/AST/ASTTypeValidator.cpp                  | 12 ++-
+ src/AST/Clone.cpp                             | 21 +++++
+ src/AST/PrintNode.cpp                         | 19 ++++
+ src/AST/Walker.cpp                            | 16 ++++
+ src/Lex/Lexer.cpp                             |  4 +
+ src/Lex/LexerImpl.cpp                         |  5 +
+ src/Lex/LexerImpl.h                           |  9 +-
+ src/Option/OptionAction.cpp                   |  1 +
+ src/Parse/ASTChecker.cpp                      |  7 ++
+ src/Parse/ASTHasher.cpp                       | 13 ++-
+ src/Parse/ParseDecl.cpp                       | 21 +++++
+ src/Parse/ParseType.cpp                       | 92 +++++++++++++++++++
+ src/Parse/ParserImpl.cpp                      | 14 +++
+ src/Parse/ParserImpl.h                        |  9 ++
+ src/Sema/Collector.cpp                        | 12 +++
+ .../PartialInstantiation.cpp                  | 21 +++++
+ .../PartialInstantiation.h                    |  1 +
+ unittests/Utils/CastASTTests.cpp              |  2 +-
+ 27 files changed, 321 insertions(+), 17 deletions(-)
+
+diff --git a/include/cangjie/AST/ASTKind.inc b/include/cangjie/AST/ASTKind.inc
+index fc78c9d4..365a9a1a 100644
+--- a/include/cangjie/AST/ASTKind.inc
++++ b/include/cangjie/AST/ASTKind.inc
+@@ -48,7 +48,7 @@ ASTKIND(CONSTANT_TYPE, "constant_type", ConstantType, 416)
+ ASTKIND(VARRAY_TYPE, "varray_type", VArrayType, 464)
+ ASTKIND(PRIMITIVE_TYPE, "primitive_type", PrimitiveType, 424)
+ ASTKIND(PAREN_TYPE, "paren_type", ParenType, 440)
+-ASTKIND(FUNC_TYPE, "func_type", FuncType, 488)
++ASTKIND(FUNC_TYPE, "func_type", FuncType, 504)
+ ASTKIND(TUPLE_TYPE, "tuple_type", TupleType, 472)
+ ASTKIND(THIS_TYPE, "this_type", ThisType, 384)
+ ASTKIND(INVALID_TYPE, "invalid_type", InvalidType, 384) // end of subtypes of Type.
+@@ -105,7 +105,8 @@ ASTKIND(MATCH_CASE, "match_case", MatchCase, 360)
+ ASTKIND(MATCH_CASE_OTHER, "match_case_other", MatchCaseOther, 296)
+ ASTKIND(FUNC_ARG, "func_arg", FuncArg, 416)
+ ASTKIND(FUNC_PARAM_LIST, "func_param_list", FuncParamList, 344)
+-ASTKIND(FUNC_BODY, " func_body", FuncBody, 448)
++ASTKIND(THROWS_CLAUSE, "throws_clause", ThrowsClause, 368)
++ASTKIND(FUNC_BODY, " func_body", FuncBody, 456)
+ ASTKIND(STRUCT_BODY, "struct_body", StructBody, 328)
+ ASTKIND(CLASS_BODY, "class_body", ClassBody, 328)
+ ASTKIND(INTERFACE_BODY, "interface_body", InterfaceBody, 328)
+diff --git a/include/cangjie/AST/Clone.h b/include/cangjie/AST/Clone.h
+index 050824c3..c0334982 100644
+--- a/include/cangjie/AST/Clone.h
++++ b/include/cangjie/AST/Clone.h
+@@ -68,6 +68,7 @@ private:
+     static OwnedPtr<QualifiedType> CloneQualifiedType(const QualifiedType& node, const VisitFunc& visitor);
+     static OwnedPtr<ParenType> CloneParenType(const ParenType& node, const VisitFunc& visitor);
+     static OwnedPtr<OptionType> CloneOptionType(const OptionType& node, const VisitFunc& visitor);
++    static OwnedPtr<ThrowsClause> CloneThrowsClause(const ThrowsClause& node, const VisitFunc& visitor);
+     static OwnedPtr<FuncType> CloneFuncType(const FuncType& node, const VisitFunc& visitor);
+     static OwnedPtr<TupleType> CloneTupleType(const TupleType& node, const VisitFunc& visitor);
+     static OwnedPtr<ConstantType> CloneConstantType(const ConstantType& node, const VisitFunc& visitor);
+diff --git a/include/cangjie/AST/Node.h b/include/cangjie/AST/Node.h
+index a1c1dd5f..4b3a2a0b 100644
+--- a/include/cangjie/AST/Node.h
++++ b/include/cangjie/AST/Node.h
+@@ -872,6 +872,22 @@ struct VArrayType : public Type {
+     }
+     std::string ToString() const override;
+ };
++/**
++ * A ThrowsClause node represents a checked-exception capability clause (experimental, behind
++ * `--experimental --enable-chexc`): `throws E`, `throws (E1, E2)`, `throws ()`; declarations
++ * additionally allow the bare list form `throws E1, E2`.
++ */
++struct ThrowsClause : Node {
++    Position throwsPos;                   /**< Position of the `throws` keyword. Generated by parser */
++    Position leftParenPos;                /**< Position of '('. Optional, zero for the bare form. */
++    std::vector<OwnedPtr<Type>> capTypes; /**< Capability (exception) types. Generated by parser */
++    std::vector<Position> commaPosVector; /**< Positions of ','. Generated by parser */
++    Position rightParenPos;               /**< Position of ')'. Optional, zero for the bare form. */
++    ThrowsClause() : Node(ASTKind::THROWS_CLAUSE)
++    {
++    }
++};
++
+ /**
+  * A FuncType node represents a function type, example: `(Int32, Int32)->Int32`, @p paramType is (Int32, Int32), @p
+  * retType is Int32.
+@@ -880,6 +896,7 @@ struct FuncType : Type {
+     Position leftParenPos;                  /**< Position of '('. */
+     std::vector<OwnedPtr<Type>> paramTypes; /**< Splitted by comma, type(s) of parameter(s) */
+     Position rightParenPos;                 /**< Position of ')'. */
++    OwnedPtr<ThrowsClause> throwsClause;    /**< Checked-exception clause (experimental). Optional, may be null. */
+     Position arrowPos;                      /**< Position of '->'. */
+     OwnedPtr<Type> retType;                 /**< Split from last "->", take the right parts. */
+     FuncType() : Type(ASTKind::FUNC_TYPE)
+@@ -1288,8 +1305,10 @@ struct FuncBody : Node {
+     Position colonPos;                               /**< Position of ':'. Generated by parser, Optional */
+     OwnedPtr<Type>
+         retType; /**< Return type (node) of the function. ret->retType = ParseType(); Generated by parser, Optional */
+-    OwnedPtr<Block> body;            /**< Body of the function. Generated by parser */
+-    OwnedPtr<Generic> generic;       /**< Generated by parser, Optional */
++    OwnedPtr<ThrowsClause>
++        throwsClause;          /**< Checked-exception `throws` clause (experimental). Generated by parser, Optional */
++    OwnedPtr<Block> body;      /**< Body of the function. Generated by parser */
++    OwnedPtr<Generic> generic; /**< Generated by parser, Optional */
+     Ptr<FuncDecl> funcDecl{nullptr}; /**< Associated function declaration, should be nil for lambda. */
+     std::unordered_set<Ptr<const NameReferenceExpr>> capturedVars; /**< Mutable variables captured by the function. */
+     Ptr<FuncBody> outerFunc{nullptr};                              /**< The pointer to the outer function. */
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+index 1132d42a..f7f6744d 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticParser.def
+@@ -85,6 +85,14 @@ ERROR(parse_expected_lt_paren, "expected '(' or '<', found %s", "expected '(' or
+ ERROR(parse_expected_identifier_lp, "expected ')' or identifier, found %s", "expected ')' or identifier here")
+ ERROR(parse_expected_dot_lparen, "expected ',' or ')', found %s", "expected ',' or ')' here")
+ ERROR(parse_expected_arrow_in_func_type, "expected '->' in function type")
++// Checked exceptions (experimental, behind '--experimental --enable-chexc').
++ERROR(parse_expected_exception_type_after_throws, "expected exception type after 'throws', found %s",
++    "expected exception type here")
++ERROR(parse_expected_arrow_after_throws_clause, "expected '->' after 'throws' clause in function type")
++ERROR(parse_ellipsis_in_func_type_throws_clause,
++    "'...' is not allowed in a function type's 'throws' clause", "a function type's capability list is always complete")
++ERROR(parse_ellipsis_in_throws_clause_unsupported, "'...' in a 'throws' clause is not supported yet")
++ERROR(parse_duplicate_throws_clause, "duplicate 'throws' clause")
+ ERROR(parse_unexpected_colon_in_range, "unexpected ':' in index access", "unexpected ':' here")
+ ERROR(parse_expected_lsquare_after, "expected '[' after '%s', found %s", "expected '[' here")
+ ERROR(parse_expected_type_argument, "expected type argument")
+diff --git a/include/cangjie/Lex/Lexer.h b/include/cangjie/Lex/Lexer.h
+index 2d2909d8..4a8c50f1 100644
+--- a/include/cangjie/Lex/Lexer.h
++++ b/include/cangjie/Lex/Lexer.h
+@@ -140,6 +140,13 @@ public:
+     */
+     void SetEHEnabled(bool enabled) const;
+ 
++    /**
++     * @brief Enable lexing of the checked-exceptions keyword (`throws`)
++     *
++     * @param enabled Whether to enable or disable `throws` lexing
++     */
++    void SetChexcEnabled(bool enabled) const;
++
+     // Parse/Macro.
+     const std::vector<StringPart>& GetStrParts(const Token& t);
+     /// Read all tokens until the END token, excluded. After this, the Lexer cannot yield any more token.
+diff --git a/include/cangjie/Lex/Tokens.inc b/include/cangjie/Lex/Tokens.inc
+index c07f9d3d..0cb60b4b 100644
+--- a/include/cangjie/Lex/Tokens.inc
++++ b/include/cangjie/Lex/Tokens.inc
+@@ -173,6 +173,7 @@ EXPERIMENTAL_TOKEN(PERFORM, "perform", "perform", 0)
+ EXPERIMENTAL_TOKEN(RESUME, "resume", "resume", 0)
+ EXPERIMENTAL_TOKEN(THROWING, "throwing", "throwing", 0)
+ EXPERIMENTAL_TOKEN(HANDLE, "handle", "handle", 0)
++EXPERIMENTAL_TOKEN(THROWS, "throws", "throws", 0)
+ TOKEN(ILLEGAL, "illegal", "", 0)
+ TOKEN(DOUBLE_COLON, "double_colon", "::", 0)
+ TOKEN(FEATURES, "features", "features", 0)
+diff --git a/include/cangjie/Option/Option.h b/include/cangjie/Option/Option.h
+index 96260c06..a16bdd89 100644
+--- a/include/cangjie/Option/Option.h
++++ b/include/cangjie/Option/Option.h
+@@ -27,7 +27,7 @@
+ #include "cangjie/Option/OptionTable.h"
+ #include "cangjie/Utils/FileUtil.h"
+ #include "cangjie/Utils/Utils.h"
+-#include "cangjie/Utils/Semaphore.h"
++#include  "cangjie/Utils/Semaphore.h"
+ 
+ namespace Cangjie {
+ 
+@@ -593,6 +593,8 @@ public:
+ 
+     bool enableEH = false; /** Whether support for effect handlers is enabled */
+ 
++    bool enableChexc = false; /** Whether support for checked exceptions is enabled */
++
+     MockMode mock = MockMode::DEFAULT; /**< Whether enable mocking. */
+ 
+     DiagFormat diagFormat = DiagFormat::DEFAULT; /** Whether output diagnostic with color*/
+diff --git a/include/cangjie/Option/Options.inc b/include/cangjie/Option/Options.inc
+index c3f61ba4..d02ea3c6 100644
+--- a/include/cangjie/Option/Options.inc
++++ b/include/cangjie/Option/Options.inc
+@@ -10,6 +10,9 @@
+  * This file lists the configuration for all cjc options, which is included by headers.
+  */
+ 
++// This file is a hand-laid-out macro table; keep clang-format away from it.
++// clang-format off
++
+ // ------------------------------ A guide to Options.inc ------------------------------
+ // This file lists all compile options `cjc` supports. Each option listed in the file
+ // has a number of properties. Command line argument parser will check properties and
+@@ -346,6 +349,9 @@ OPTION("--enable-eh", ENABLE_EFFECTS, FLAG, { BACKEND(CJNATIVE) },
+     { GROUP(GLOBAL) COMMA GROUP(VISIBLE) }, nullptr, {}, MULTIPLE_OCCURRENCE,
+     "Enables experimental support for effect handlers")
+ #endif
++OPTION("--enable-chexc", ENABLE_CHECKED_EXCEPTIONS, FLAG, { BACKEND(CJNATIVE) },
++    { GROUP(GLOBAL) COMMA GROUP(VISIBLE) }, nullptr, {}, MULTIPLE_OCCURRENCE,
++    "Enables experimental support for checked exceptions")
+ OPTION("--dump-ast", DUMP_AST, FLAG, { BACKEND(ALL) },
+     { GROUP(GLOBAL) COMMA GROUP(STABLE) COMMA GROUP(VISIBLE) }, nullptr, {}, MULTIPLE_OCCURRENCE,
+     "Dump human readable AST when compiling for debug")
+@@ -784,3 +790,4 @@ OPTION("--discard-eh-frame", DISCARD_EH_FRAME, FLAG, { BACKEND(CJNATIVE) },
+ // unless it is a single character option or it is a single character abbreviation.
+ #undef COMMA
+ #endif // OPTION
++// clang-format on
+diff --git a/include/cangjie/Parse/Parser.h b/include/cangjie/Parse/Parser.h
+index 86bd6d56..4bbcfd90 100644
+--- a/include/cangjie/Parse/Parser.h
++++ b/include/cangjie/Parse/Parser.h
+@@ -121,6 +121,9 @@ public:
+     Parser& SetEHEnabled(bool enabled);
+     bool IsEHEnabled() const;
+ 
++    Parser& SetChexcEnabled(bool enabled);
++    bool IsChexcEnabled() const;
++
+     Parser& SetModuleName(const std::string& name);
+     Parser& SetPrimaryDecl(const std::string& decl);
+     Parser& SetForImport(bool isForImport);
+diff --git a/src/AST/ASTTypeValidator.cpp b/src/AST/ASTTypeValidator.cpp
+index b079130f..0373333b 100644
+--- a/src/AST/ASTTypeValidator.cpp
++++ b/src/AST/ASTTypeValidator.cpp
+@@ -126,11 +126,13 @@ private:
+     std::unordered_map<Ptr<const Node>, bool> checkStatus;
+ 
+     // Node kinds who's type and children can be ignored.
+-    inline const static std::unordered_set<ASTKind> ignoreKinds {
+-        ASTKind::GENERIC_PARAM_DECL, ASTKind::GENERIC_CONSTRAINT,
+-        ASTKind::PRIMARY_CTOR_DECL, ASTKind::TYPE_ALIAS_DECL, ASTKind::BUILTIN_DECL, ASTKind::MODIFIER,
+-        ASTKind::ANNOTATION, ASTKind::PACKAGE_SPEC, ASTKind::IMPORT_SPEC, ASTKind::WILDCARD_PATTERN, ASTKind::GENERIC,
+-        ASTKind::MACRO_EXPAND_DECL, ASTKind::MACRO_EXPAND_EXPR, ASTKind::MACRO_EXPAND_PARAM};
++    inline const static std::unordered_set<ASTKind> ignoreKinds{ASTKind::GENERIC_PARAM_DECL,
++        ASTKind::GENERIC_CONSTRAINT, ASTKind::PRIMARY_CTOR_DECL, ASTKind::TYPE_ALIAS_DECL, ASTKind::BUILTIN_DECL,
++        ASTKind::MODIFIER, ASTKind::ANNOTATION, ASTKind::PACKAGE_SPEC, ASTKind::IMPORT_SPEC, ASTKind::WILDCARD_PATTERN,
++        ASTKind::GENERIC, ASTKind::MACRO_EXPAND_DECL, ASTKind::MACRO_EXPAND_EXPR, ASTKind::MACRO_EXPAND_PARAM,
++        // Checked exceptions (experimental): the `throws` clause is semantically inert until its
++        // capability types are elaborated (like GENERIC_CONSTRAINT, its types carry no sema ty yet).
++        ASTKind::THROWS_CLAUSE};
+ 
+     // Node kinds who's sema type can be ignored.
+     inline const static std::unordered_set<ASTKind> noneTyKinds{
+diff --git a/src/AST/Clone.cpp b/src/AST/Clone.cpp
+index 47703b5d..ece202a4 100644
+--- a/src/AST/Clone.cpp
++++ b/src/AST/Clone.cpp
+@@ -385,12 +385,29 @@ OwnedPtr<OptionType> ASTCloner::CloneOptionType(const OptionType& node, const Vi
+     return ret;
+ }
+ 
++OwnedPtr<ThrowsClause> ASTCloner::CloneThrowsClause(const ThrowsClause& node, const VisitFunc& visitor)
++{
++    auto ret = MakeOwned<ThrowsClause>();
++    CopyNodeField(ret.get(), node);
++    ret->throwsPos = node.throwsPos;
++    ret->leftParenPos = node.leftParenPos;
++    ret->rightParenPos = node.rightParenPos;
++    ret->commaPosVector = node.commaPosVector;
++    for (auto& capType : node.capTypes) {
++        ret->capTypes.emplace_back(CloneType(capType.get(), visitor));
++    }
++    return ret;
++}
++
+ OwnedPtr<FuncType> ASTCloner::CloneFuncType(const FuncType& node, const VisitFunc& visitor)
+ {
+     auto ret = MakeOwned<FuncType>();
+     for (auto& paramType : node.paramTypes) {
+         ret->paramTypes.emplace_back(CloneType(paramType.get(), visitor));
+     }
++    if (node.throwsClause) {
++        ret->throwsClause = CloneThrowsClause(*node.throwsClause, visitor);
++    }
+     ret->retType = CloneType(node.retType.get(), visitor);
+     ret->isC = node.isC;
+     ret->leftParenPos = node.leftParenPos;
+@@ -1377,6 +1394,9 @@ OwnedPtr<FuncBody> ASTCloner::CloneFuncBody(const FuncBody& fb, const VisitFunc&
+     ret->doubleArrowPos = fb.doubleArrowPos;
+     ret->colonPos = fb.colonPos;
+     ret->retType = CloneType(fb.retType.get(), visitor);
++    if (fb.throwsClause) {
++        ret->throwsClause = CloneThrowsClause(*fb.throwsClause, visitor);
++    }
+     ret->body = CloneExpr(fb.body.get(), visitor);
+     if (fb.generic) {
+         ret->generic = CloneGeneric(*fb.generic, visitor);
+@@ -1529,6 +1549,7 @@ template <typename NodeT> OwnedPtr<NodeT> ASTCloner::CloneNode(Ptr<NodeT> node,
+         [&visitor](const StructBody& rb) { return OwnedPtr<Node>(CloneStructBody(rb, visitor)); },
+         [&visitor](const InterfaceBody& ib) { return OwnedPtr<Node>(CloneInterfaceBody(ib, visitor)); },
+         [&visitor](const GenericConstraint& gc) { return OwnedPtr<Node>(CloneGenericConstraint(gc, visitor)); },
++        [&visitor](const ThrowsClause& tc) { return OwnedPtr<Node>(CloneThrowsClause(tc, visitor)); },
+         [&visitor](const FuncBody& fb) { return OwnedPtr<Node>(CloneFuncBody(fb, visitor)); },
+         [&visitor](const FuncParamList& fpl) { return OwnedPtr<Node>(CloneFuncParamList(fpl, visitor)); },
+         [&visitor](const FuncArg& fa) { return OwnedPtr<Node>(CloneFuncArg(fa, visitor)); },
+diff --git a/src/AST/PrintNode.cpp b/src/AST/PrintNode.cpp
+index 386b74e7..b3c7b620 100644
+--- a/src/AST/PrintNode.cpp
++++ b/src/AST/PrintNode.cpp
+@@ -385,6 +385,18 @@ void PrintGeneric(unsigned indent, const Generic& generic, std::ostream& stream
+     PrintIndent(stream, indent, "}");
+ }
+ 
++void PrintThrowsClause(unsigned indent, const ThrowsClause& clause, std::ostream& stream = std::cout)
++{
++    PrintIndent(stream, indent, "ThrowsClause {");
++    PrintBasic(indent + ONE_INDENT, clause, stream);
++    PrintIndent(stream, indent + ONE_INDENT, "capTypes [");
++    for (auto& capType : clause.capTypes) {
++        PrintNode(capType.get(), indent + TWO_INDENT, "", stream);
++    }
++    PrintIndent(stream, indent + ONE_INDENT, "]");
++    PrintIndent(stream, indent, "}");
++}
++
+ void PrintFuncBody(unsigned indent, const FuncBody& body, std::ostream& stream = std::cout)
+ {
+     PrintIndent(stream, indent, "FuncBody {");
+@@ -401,6 +413,9 @@ void PrintFuncBody(unsigned indent, const FuncBody& body, std::ostream& stream =
+         PrintIndent(stream, indent + ONE_INDENT, "// return type");
+         PrintNode(body.retType.get(), indent + ONE_INDENT, "", stream);
+     }
++    if (body.throwsClause) {
++        PrintThrowsClause(indent + ONE_INDENT, *body.throwsClause, stream);
++    }
+     PrintNode(body.body.get(), indent + ONE_INDENT, "body", stream);
+     PrintIndent(stream, indent, "}");
+ }
+@@ -1255,6 +1270,9 @@ void PrintFuncType(unsigned indent, const FuncType& type, std::ostream& stream =
+         PrintNode(paramType.get(), indent + TWO_INDENT, "", stream);
+     }
+     PrintIndent(stream, indent + ONE_INDENT, "]");
++    if (type.throwsClause) {
++        PrintThrowsClause(indent + ONE_INDENT, *type.throwsClause, stream);
++    }
+     PrintNode(type.retType.get(), indent + ONE_INDENT, "retType", stream);
+     PrintIndent(stream, indent + ONE_INDENT, "IsCFuncType:", type.isC);
+     PrintIndent(stream, indent, "}");
+@@ -1514,6 +1532,7 @@ void PrintNode(Ptr<const Node> node, unsigned indent, const std::string& additio
+         [&indent, &stream](const FuncDecl& funcDecl) { PrintFuncDecl(indent, funcDecl, stream); },
+         [&indent, &stream](const MacroDecl& macroDecl) { PrintMacroDecl(indent, macroDecl, stream); },
+         [&indent, &stream](const FuncBody& body) { PrintFuncBody(indent, body, stream); },
++        [&indent, &stream](const ThrowsClause& clause) { PrintThrowsClause(indent, clause, stream); },
+         [&indent, &stream](const PropDecl& propDecl) { PrintPropDecl(indent, propDecl, stream); },
+         [&indent, &stream](const MacroExpandDecl& macroExpand) { PrintMacroExpandDecl(indent, macroExpand, stream); },
+         [&indent, &stream](const VarWithPatternDecl& vwpd) { PrintVarWithPatternDecl(indent, vwpd, stream); },
+diff --git a/src/AST/Walker.cpp b/src/AST/Walker.cpp
+index dc2585e1..7e9edb70 100644
+--- a/src/AST/Walker.cpp
++++ b/src/AST/Walker.cpp
+@@ -191,12 +191,25 @@ VisitAction WalkerT<NodeT>::Walk(Ptr<NodeT> curNode) const
+                 if (Walk(fb->retType.get()) == VisitAction::STOP_NOW) {
+                     return VisitAction::STOP_NOW;
+                 }
++                if (Walk(fb->throwsClause.get()) == VisitAction::STOP_NOW) {
++                    return VisitAction::STOP_NOW;
++                }
+                 if (Walk(fb->body.get()) == VisitAction::STOP_NOW) {
+                     return VisitAction::STOP_NOW;
+                 }
+                 action = VisitAction::WALK_CHILDREN;
+                 break;
+             }
++            case ASTKind::THROWS_CLAUSE: {
++                auto tc = StaticAs<ASTKind::THROWS_CLAUSE>(curNode);
++                for (auto& capType : tc->capTypes) {
++                    if (Walk(capType.get()) == VisitAction::STOP_NOW) {
++                        return VisitAction::STOP_NOW;
++                    }
++                }
++                action = VisitAction::WALK_CHILDREN;
++                break;
++            }
+             case ASTKind::FUNC_PARAM_LIST: {
+                 auto fpl = StaticAs<ASTKind::FUNC_PARAM_LIST>(curNode);
+                 for (auto& param : fpl->params) {
+@@ -966,6 +979,9 @@ VisitAction WalkerT<NodeT>::Walk(Ptr<NodeT> curNode) const
+                         return VisitAction::STOP_NOW;
+                     }
+                 }
++                if (Walk(ft->throwsClause.get()) == VisitAction::STOP_NOW) {
++                    return VisitAction::STOP_NOW;
++                }
+                 if (Walk(ft->retType.get()) == VisitAction::STOP_NOW) {
+                     return VisitAction::STOP_NOW;
+                 }
+diff --git a/src/Lex/Lexer.cpp b/src/Lex/Lexer.cpp
+index 64ba94a2..f2d6bfbc 100644
+--- a/src/Lex/Lexer.cpp
++++ b/src/Lex/Lexer.cpp
+@@ -310,6 +310,7 @@ TokenKind LexerImpl::LookupKeyword(const std::string& literal)
+         map[TOKENS[static_cast<unsigned char>(TokenKind::RESUME)]] = TokenKind::RESUME;
+         map[TOKENS[static_cast<unsigned char>(TokenKind::THROWING)]] = TokenKind::THROWING;
+         map[TOKENS[static_cast<unsigned char>(TokenKind::HANDLE)]] = TokenKind::HANDLE;
++        map[TOKENS[static_cast<unsigned char>(TokenKind::THROWS)]] = TokenKind::THROWS;
+         return map;
+     }();
+     auto it = tokenMap.find(literal);
+@@ -319,6 +320,9 @@ TokenKind LexerImpl::LookupKeyword(const std::string& literal)
+             kind == TokenKind::HANDLE)) {
+         return TokenKind::IDENTIFIER;
+     }
++    if (!chexcEnabled && kind == TokenKind::THROWS) {
++        return TokenKind::IDENTIFIER;
++    }
+     return kind;
+ }
+ 
+diff --git a/src/Lex/LexerImpl.cpp b/src/Lex/LexerImpl.cpp
+index 43e3a211..784d056b 100644
+--- a/src/Lex/LexerImpl.cpp
++++ b/src/Lex/LexerImpl.cpp
+@@ -73,6 +73,11 @@ void Lexer::SetEHEnabled(bool enabled) const
+     impl->ehEnabled = enabled;
+ }
+ 
++void Lexer::SetChexcEnabled(bool enabled) const
++{
++    impl->chexcEnabled = enabled;
++}
++
+ const std::vector<StringPart>& Lexer::GetStrParts(const Token& t)
+ {
+     return impl->GetStrParts(t);
+diff --git a/src/Lex/LexerImpl.h b/src/Lex/LexerImpl.h
+index 0a6cd2e1..1868b25c 100644
+--- a/src/Lex/LexerImpl.h
++++ b/src/Lex/LexerImpl.h
+@@ -149,8 +149,9 @@ private:
+     const char* pInputEnd{nullptr}; // point to end of input file
+     const char* pCurrent{nullptr};  // point to the current character
+     const char* pResetCurrent{nullptr};
+-    int32_t currentChar{-1}; // currently processing character
+-    bool ehEnabled{false};   // EH keywords enabled flag (replaces dynamic tokenMap modification)
++    int32_t currentChar{-1};  // currently processing character
++    bool ehEnabled{false};    // EH keywords enabled flag (replaces dynamic tokenMap modification)
++    bool chexcEnabled{false}; // checked-exceptions keyword (`throws`) enabled flag
+     unsigned lineResetOffsetsFromBase{0};
+     TokenKind tokenKind{TokenKind::ILLEGAL};
+     Position pos;
+@@ -190,8 +191,8 @@ private:
+     std::unordered_set<Position, PositionHash32> collectTokensFindCache;
+     std::vector<Token> collectTokens;
+     std::set<Token> tokenStream; // use set because ParseModifiers before import may cause the tokens of the first decl
+-        // to be Scan()'ed multiple times.
+-    mutable bool success{true};                                     /// Used for diagnostic.
++                                 // to be Scan()'ed multiple times.
++    mutable bool success{true};  /// Used for diagnostic.
+     mutable std::vector<std::pair<const char*, bool>> stringStarts; /// Used for diagnostic, string start position.
+     mutable std::vector<const char*> interpolations; /// Used for diagnostic, string interpolation position.
+     /// Get an UTF-8 character, skipping spaces.
+diff --git a/src/Option/OptionAction.cpp b/src/Option/OptionAction.cpp
+index d5c7adfa..eac147fc 100644
+--- a/src/Option/OptionAction.cpp
++++ b/src/Option/OptionAction.cpp
+@@ -1079,6 +1079,7 @@ std::unordered_map<Options::ID, std::function<bool(GlobalOptions&, OptionArgInst
+ #ifndef DISABLE_EFFECT_HANDLERS
+     {Options::ID::ENABLE_EFFECTS, OPTION_TRUE_ACTION(opts.enableEH = true) },
+ #endif
++    {Options::ID::ENABLE_CHECKED_EXCEPTIONS, OPTION_TRUE_ACTION(opts.enableChexc = true) },
+ #endif // CANGJIE_CODEGEN_CJNATIVE_BACKEND
+ };
+ } // namespace
+diff --git a/src/Parse/ASTChecker.cpp b/src/Parse/ASTChecker.cpp
+index 3b6ec191..f57cb3f8 100644
+--- a/src/Parse/ASTChecker.cpp
++++ b/src/Parse/ASTChecker.cpp
+@@ -783,6 +783,13 @@ void ASTChecker::CheckFuncType(Ptr<Node> node)
+     ZERO_POSITION_CHECK(node, ft->arrowPos);
+     AST_NULLPTR_CHECK(node, ft->retType);
+ }
++void ASTChecker::CheckThrowsClause(Ptr<Node> node)
++{
++    auto tc = StaticAs<ASTKind::THROWS_CLAUSE>(node);
++    ZERO_POSITION_CHECK(node, tc->throwsPos);
++    VEC_AST_NULLPTR_CHECK(node, tc->capTypes);
++    VEC_ZERO_POS_CHECK(node, tc->commaPosVector);
++}
+ void ASTChecker::CheckOptionType(Ptr<Node> node)
+ {
+     auto ot = StaticAs<ASTKind::OPTION_TYPE>(node);
+diff --git a/src/Parse/ASTHasher.cpp b/src/Parse/ASTHasher.cpp
+index ed1b681d..1c3d07eb 100644
+--- a/src/Parse/ASTHasher.cpp
++++ b/src/Parse/ASTHasher.cpp
+@@ -337,7 +337,14 @@ struct ASTHasherImpl {
+     template <int whatTypeToHash> void HashFuncBody(const FuncBody& funcBody)
+     {
+         HashNode<whatTypeToHash>(funcBody);
+-        SUPERHash<whatTypeToHash>(funcBody.paramLists, funcBody.retType, funcBody.body, funcBody.generic);
++        SUPERHash<whatTypeToHash>(
++            funcBody.paramLists, funcBody.retType, funcBody.throwsClause, funcBody.body, funcBody.generic);
++    }
++
++    template <int whatTypeToHash> void HashThrowsClause(const ThrowsClause& tc)
++    {
++        HashNode<whatTypeToHash>(tc);
++        SUPERHash<whatTypeToHash>(tc.throwsPos, tc.capTypes);
+     }
+ 
+     template <int whatTypeToHash> void HashFuncParamList(const FuncParamList& fpl)
+@@ -653,7 +660,7 @@ struct ASTHasherImpl {
+     template <int whatTypeToHash> void HashFuncType(const FuncType& ft)
+     {
+         HashType<whatTypeToHash>(ft);
+-        SUPERHash<whatTypeToHash>(ft.paramTypes, ft.retType, ft.isC);
++        SUPERHash<whatTypeToHash>(ft.paramTypes, ft.throwsClause, ft.retType, ft.isC);
+     }
+     template <int whatTypeToHash> void HashOptionType(const OptionType& ot)
+     {
+@@ -1091,6 +1098,8 @@ struct ASTHasherImpl {
+         SUPERHash<NON_POSITION>(decl.generic);
+         if (auto func = DynamicCast<FuncDecl*>(&decl)) {
+             SUPERHash<NON_POSITION>(func->funcBody->paramLists[0]->params);
++            // The checked-exception `throws` clause (experimental) is part of the API surface.
++            SUPERHash<NON_POSITION>(func->funcBody->throwsClause);
+             if (func->funcBody->retType) {
+                 SUPERHash<NON_POSITION>(func->funcBody->retType);
+             } else {
+diff --git a/src/Parse/ParseDecl.cpp b/src/Parse/ParseDecl.cpp
+index 060fc7ea..4478eb62 100644
+--- a/src/Parse/ParseDecl.cpp
++++ b/src/Parse/ParseDecl.cpp
+@@ -2246,6 +2246,11 @@ void ParserImpl::ParsePropMemberBody(const ScopeKind& scopeKind, FuncBody& fb)
+             DiagGetOrSetCannotBeGeneric("setter", *fb.generic);
+         }
+     }
++    // Checked exceptions (experimental): property accessors may carry a `throws` clause,
++    // e.g. `get() throws GException { ... }` (proposal rule: clauses on all callables).
++    if (Seeing(TokenKind::THROWS)) {
++        fb.throwsClause = ParseThrowsClause(true);
++    }
+     if (!Seeing(TokenKind::LCURL)) {
+         ParseDiagnoseRefactor(DiagKindRefactor::parse_expected_left_brace, lookahead, ConvertToken(lookahead));
+         ConsumeUntilDecl(TokenKind::LCURL);
+@@ -2293,7 +2298,20 @@ OwnedPtr<FuncBody> ParserImpl::ParseFuncBody(ScopeKind scopeKind)
+             enableThis = false;
+         }
+     }
++    // Checked exceptions (experimental): a `throws` clause and generic constraints may appear
++    // in either order after the return type (proposal §3.2 rule 4).
++    if (Seeing(TokenKind::THROWS)) {
++        ret->throwsClause = ParseThrowsClause(true);
++    }
+     ParseFuncGenericConstraints(*ret);
++    if (Seeing(TokenKind::THROWS)) {
++        if (ret->throwsClause) {
++            ParseDiagnoseRefactor(DiagKindRefactor::parse_duplicate_throws_clause, lookahead.Begin());
++            (void)ParseThrowsClause(true); // Parse and drop the duplicate to recover.
++        } else {
++            ret->throwsClause = ParseThrowsClause(true);
++        }
++    }
+     if (Seeing(TokenKind::LCURL)) {
+         ret->body = ParseBlock(ScopeKind::FUNC_BODY);
+         ret->end = ret->body->end;
+@@ -2303,6 +2321,9 @@ OwnedPtr<FuncBody> ParserImpl::ParseFuncBody(ScopeKind scopeKind)
+     } else {
+         ret->end = ret->retType ? ret->retType->end : paramsEndToken.End();
+     }
++    if (!ret->body && ret->throwsClause && ret->end < ret->throwsClause->end) {
++        ret->end = ret->throwsClause->end;
++    }
+     return ret;
+ }
+ 
+diff --git a/src/Parse/ParseType.cpp b/src/Parse/ParseType.cpp
+index 2591dc44..4e9e82a1 100644
+--- a/src/Parse/ParseType.cpp
++++ b/src/Parse/ParseType.cpp
+@@ -211,6 +211,20 @@ OwnedPtr<AST::Type> ParserImpl::ParseTypeWithParen()
+     if (Skip(TokenKind::ARROW)) {
+         return ParseFuncType(std::move(types), lParenPos, rParenPos);
+     }
++    // Checked exceptions (experimental): a contextual `throws` after ')' also selects the
++    // function-type path, e.g. `(A) throws (E1, E2) -> R`. The clause must be followed by '->'.
++    if (Seeing(TokenKind::THROWS)) {
++        auto throwsClause = ParseThrowsClause(false);
++        if (!Skip(TokenKind::ARROW)) {
++            ParseDiagnoseRefactor(DiagKindRefactor::parse_expected_arrow_after_throws_clause, lookahead.Begin());
++            auto invalid = MakeOwned<InvalidType>(lookahead.Begin());
++            invalid->EnableAttr(Attribute::IS_BROKEN);
++            return invalid;
++        }
++        auto ft = ParseFuncType(std::move(types), lParenPos, rParenPos);
++        ft->throwsClause = std::move(throwsClause);
++        return ft;
++    }
+     // This is a paren type.
+     if (types.size() == 1) {
+         return ParseParenType(lParenPos, rParenPos, std::move(types[0]));
+@@ -257,6 +271,84 @@ OwnedPtr<FuncType> ParserImpl::ParseFuncType(
+     return ft;
+ }
+ 
++OwnedPtr<AST::ThrowsClause> ParserImpl::ParseThrowsClause(bool isDeclClause)
++{
++    CJC_ASSERT(Seeing(TokenKind::THROWS));
++    auto clause = MakeOwned<ThrowsClause>();
++    ChainScope cs(*this, clause.get());
++    Next(); // Consume `throws`.
++    clause->throwsPos = lastToken.Begin();
++    clause->begin = clause->throwsPos;
++    clause->end = lastToken.End();
++    auto diagnoseEllipsis = [this, isDeclClause]() {
++        // `...` (proposal §6.3.5) is parsed but rejected: never legal in function types, not
++        // supported yet on declarations.
++        ParseDiagnoseRefactor(isDeclClause ? DiagKindRefactor::parse_ellipsis_in_throws_clause_unsupported
++                                           : DiagKindRefactor::parse_ellipsis_in_func_type_throws_clause,
++            MakeRange(lookahead.Begin(), lookahead.End()));
++        Next(); // Consume `...` and continue parsing.
++    };
++    if (Skip(TokenKind::LPAREN)) {
++        // Parenthesized (possibly empty) capability list: `throws (T {, T})` or `throws ()`.
++        // After `throws`, '(' always opens the list, never a paren/tuple/function type.
++        clause->leftParenPos = lastToken.Begin();
++        ParseZeroOrMoreSepTrailing(
++            [&clause](const Position& commaPos) { clause->commaPosVector.emplace_back(commaPos); },
++            [this, &clause, &diagnoseEllipsis]() {
++                while (Skip(TokenKind::NL)) {
++                }
++                if (Seeing(TokenKind::RPAREN) && !clause->capTypes.empty()) {
++                    return;
++                }
++                if (Seeing(TokenKind::ELLIPSIS)) {
++                    diagnoseEllipsis();
++                    return;
++                }
++                (void)clause->capTypes.emplace_back(ParseType());
++            },
++            TokenKind::RPAREN);
++        if (!Skip(TokenKind::RPAREN)) {
++            DiagExpectedRightDelimiter("(", clause->leftParenPos);
++            clause->EnableAttr(Attribute::IS_BROKEN);
++            return clause;
++        }
++        clause->rightParenPos = lastToken.Begin();
++        clause->end = lastToken.End();
++        return clause;
++    }
++    if (Seeing(TokenKind::ELLIPSIS)) {
++        diagnoseEllipsis();
++        clause->end = lastToken.End();
++        return clause;
++    }
++    if (!SeeingAny(GetTypeFirst()) && !SeeingContextualKeyword()) {
++        ParseDiagnoseRefactor(
++            DiagKindRefactor::parse_expected_exception_type_after_throws, lookahead, ConvertToken(lookahead));
++        clause->EnableAttr(Attribute::IS_BROKEN);
++        return clause;
++    }
++    if (isDeclClause) {
++        // Bare comma-separated list on declarations: `throws E1, E2`.
++        while (true) {
++            if (Seeing(TokenKind::ELLIPSIS)) {
++                diagnoseEllipsis();
++            } else {
++                (void)clause->capTypes.emplace_back(ParseType());
++            }
++            if (!Skip(TokenKind::COMMA)) {
++                break;
++            }
++            clause->commaPosVector.emplace_back(lastToken.Begin());
++        }
++    } else {
++        // Single-type sugar in function types: `throws E -> R`. Commas belong to the
++        // enclosing construct, and the type must stop before the function type's '->'.
++        (void)clause->capTypes.emplace_back(ParsePrefixType());
++    }
++    clause->end = clause->capTypes.empty() ? lastToken.End() : clause->capTypes.back()->end;
++    return clause;
++}
++
+ // Parse the syntactic sugar of option types.
+ OwnedPtr<AST::Type> ParserImpl::ParsePrefixType()
+ {
+diff --git a/src/Parse/ParserImpl.cpp b/src/Parse/ParserImpl.cpp
+index 5d74c82e..c0f7c4eb 100644
+--- a/src/Parse/ParserImpl.cpp
++++ b/src/Parse/ParserImpl.cpp
+@@ -110,6 +110,18 @@ bool Parser::IsEHEnabled() const
+     return impl->enableEH;
+ }
+ 
++Parser& Parser::SetChexcEnabled(bool enabled)
++{
++    impl->enableChexc = enabled;
++    impl->lexer->SetChexcEnabled(enabled);
++    return *this;
++}
++
++bool Parser::IsChexcEnabled() const
++{
++    return impl->enableChexc;
++}
++
+ TokenVecMap Parser::GetCommentsMap() const
+ {
+     return impl->commentsMap;
+@@ -126,6 +138,8 @@ void Parser::SetCompileOptions(const GlobalOptions& opts)
+     // keywords, so we disable them from the parser unless the user
+     // explicitly asks to compile with effect handler support
+     SetEHEnabled(opts.enableEH);
++    // Same for the checked-exceptions `throws` keyword.
++    SetChexcEnabled(opts.enableChexc);
+ }
+ 
+ bool Parser::Skip(TokenKind kind)
+diff --git a/src/Parse/ParserImpl.h b/src/Parse/ParserImpl.h
+index 5d962aac..3aceebeb 100644
+--- a/src/Parse/ParserImpl.h
++++ b/src/Parse/ParserImpl.h
+@@ -241,6 +241,7 @@ private:
+     bool parseDeclFile{false};
+ 
+     bool enableEH{false};
++    bool enableChexc{false};
+     Triple::BackendType backend{Triple::BackendType::CJNATIVE};
+     bool calculateLineNum{false};
+     // we store line number info from all tokens
+@@ -586,6 +587,14 @@ private:
+         const Position& lParenPos, const Position& rParenPos, OwnedPtr<AST::Type> type);
+     OwnedPtr<AST::FuncType> ParseFuncType(
+         std::vector<OwnedPtr<AST::Type>> types, const Position& lParenPos, const Position& rParenPos);
++    /**
++     * Parse a checked-exception `throws` clause (experimental, requires the THROWS token which only
++     * exists with '--enable-chexc'). Grammar:
++     *   declarations (@p isDeclClause true): `throws (T {, T})` | `throws ()` | `throws T {, T}`
++     *   function types (@p isDeclClause false): `throws (T {, T})` | `throws ()` | `throws T`
++     * The `...` marker is parsed but rejected with a diagnostic.
++     */
++    OwnedPtr<AST::ThrowsClause> ParseThrowsClause(bool isDeclClause);
+     OwnedPtr<AST::Type> ParsePrefixType();
+     OwnedPtr<AST::GenericParamDecl> ParseGenericParamDecl();
+     OwnedPtr<AST::Generic> ParseGeneric();
+diff --git a/src/Sema/Collector.cpp b/src/Sema/Collector.cpp
+index 1bfb7d10..6c6e2614 100644
+--- a/src/Sema/Collector.cpp
++++ b/src/Sema/Collector.cpp
+@@ -333,6 +333,13 @@ void Collector::CollectFuncBody(ASTContext& ctx, FuncBody& fb, bool buildTrie)
+         BuildSymbolTable(ctx, funcParamList.get(), buildTrie);
+     }
+     BuildSymbolTable(ctx, fb.retType.get(), buildTrie);
++    if (fb.throwsClause) {
++        // Checked exceptions (experimental): capability types may reference the function's
++        // generic parameters, so they are collected inside the function's scope.
++        for (auto& capType : fb.throwsClause->capTypes) {
++            BuildSymbolTable(ctx, capType.get(), buildTrie);
++        }
++    }
+     if (fb.body != nullptr) {
+         for (auto& n : fb.body->body) {
+             BuildSymbolTable(ctx, n.get(), buildTrie);
+@@ -1311,6 +1318,11 @@ void Collector::BuildSymbolTable(ASTContext& ctx, Ptr<Node> node, bool buildTrie
+             for (auto& paramType : ft->paramTypes) {
+                 BuildSymbolTable(ctx, paramType.get(), buildTrie);
+             }
++            if (ft->throwsClause) {
++                for (auto& capType : ft->throwsClause->capTypes) {
++                    BuildSymbolTable(ctx, capType.get(), buildTrie);
++                }
++            }
+             BuildSymbolTable(ctx, ft->retType.get(), buildTrie);
+             break;
+         }
+diff --git a/src/Sema/GenericInstantiation/PartialInstantiation.cpp b/src/Sema/GenericInstantiation/PartialInstantiation.cpp
+index 7ca82764..de30f10f 100644
+--- a/src/Sema/GenericInstantiation/PartialInstantiation.cpp
++++ b/src/Sema/GenericInstantiation/PartialInstantiation.cpp
+@@ -467,12 +467,29 @@ OwnedPtr<OptionType> PartialInstantiation::InstantiateOptionType(const OptionTyp
+     return ret;
+ }
+ 
++OwnedPtr<ThrowsClause> PartialInstantiation::InstantiateThrowsClause(const ThrowsClause& node, const VisitFunc& visitor)
++{
++    auto ret = MakeOwned<ThrowsClause>();
++    CopyNodeField(ret.get(), node);
++    ret->throwsPos = node.throwsPos;
++    ret->leftParenPos = node.leftParenPos;
++    ret->rightParenPos = node.rightParenPos;
++    ret->commaPosVector = node.commaPosVector;
++    for (auto& capType : node.capTypes) {
++        ret->capTypes.emplace_back(InstantiateType(capType.get(), visitor));
++    }
++    return ret;
++}
++
+ OwnedPtr<FuncType> PartialInstantiation::InstantiateFuncType(const FuncType& node, const VisitFunc& visitor)
+ {
+     auto ret = MakeOwned<FuncType>();
+     for (auto& paramType : node.paramTypes) {
+         ret->paramTypes.emplace_back(InstantiateType(paramType.get(), visitor));
+     }
++    if (node.throwsClause) {
++        ret->throwsClause = InstantiateThrowsClause(*node.throwsClause, visitor);
++    }
+     ret->retType = InstantiateType(node.retType.get(), visitor);
+     ret->isC = node.isC;
+     ret->leftParenPos = node.leftParenPos;
+@@ -1422,6 +1439,9 @@ OwnedPtr<FuncBody> PartialInstantiation::InstantiateFuncBody(const FuncBody& fb,
+     ret->doubleArrowPos = fb.doubleArrowPos;
+     ret->colonPos = fb.colonPos;
+     ret->retType = InstantiateType(fb.retType.get(), visitor);
++    if (fb.throwsClause) {
++        ret->throwsClause = InstantiateThrowsClause(*fb.throwsClause, visitor);
++    }
+     ret->body = InstantiateExpr(fb.body.get(), visitor);
+     if (fb.generic) {
+         ret->generic = InstantiateGeneric(*fb.generic, visitor);
+@@ -1577,6 +1597,7 @@ OwnedPtr<NodeT> PartialInstantiation::InstantiateNode(Ptr<NodeT> node, const Vis
+         [&visitor](const StructBody& rb) { return OwnedPtr<Node>(InstantiateStructBody(rb, visitor)); },
+         [&visitor](const InterfaceBody& ib) { return OwnedPtr<Node>(InstantiateInterfaceBody(ib, visitor)); },
+         [&visitor](const GenericConstraint& gc) { return OwnedPtr<Node>(InstantiateGenericConstraint(gc, visitor)); },
++        [&visitor](const ThrowsClause& tc) { return OwnedPtr<Node>(InstantiateThrowsClause(tc, visitor)); },
+         [&visitor](const FuncBody& fb) { return OwnedPtr<Node>(InstantiateFuncBody(fb, visitor)); },
+         [&visitor](const FuncParamList& fpl) { return OwnedPtr<Node>(InstantiateFuncParamList(fpl, visitor)); },
+         [&visitor](const FuncArg& fa) { return OwnedPtr<Node>(InstantiateFuncArg(fa, visitor)); },
+diff --git a/src/Sema/GenericInstantiation/PartialInstantiation.h b/src/Sema/GenericInstantiation/PartialInstantiation.h
+index f8d5b451..312d2b60 100644
+--- a/src/Sema/GenericInstantiation/PartialInstantiation.h
++++ b/src/Sema/GenericInstantiation/PartialInstantiation.h
+@@ -91,6 +91,7 @@ private:
+         const AST::QualifiedType& node, const VisitFunc& visitor);
+     static OwnedPtr<AST::ParenType> InstantiateParenType(const AST::ParenType& node, const VisitFunc& visitor);
+     static OwnedPtr<AST::OptionType> InstantiateOptionType(const AST::OptionType& node, const VisitFunc& visitor);
++    static OwnedPtr<AST::ThrowsClause> InstantiateThrowsClause(const AST::ThrowsClause& node, const VisitFunc& visitor);
+     static OwnedPtr<AST::FuncType> InstantiateFuncType(const AST::FuncType& node, const VisitFunc& visitor);
+     static OwnedPtr<AST::TupleType> InstantiateTupleType(const AST::TupleType& node, const VisitFunc& visitor);
+     static OwnedPtr<AST::ConstantType> InstantiateConstantType(const AST::ConstantType& node, const VisitFunc& visitor);
+diff --git a/unittests/Utils/CastASTTests.cpp b/unittests/Utils/CastASTTests.cpp
+index 93f8626d..f9ce8ca6 100644
+--- a/unittests/Utils/CastASTTests.cpp
++++ b/unittests/Utils/CastASTTests.cpp
+@@ -103,7 +103,7 @@ TEST_F(CastASTTests, VerifyCastingCount)
+     size_t totalCount = static_cast<uint8_t>(AST::ASTKind::NODE) + 1;
+     EXPECT_TRUE(totalCount > ignoredKind.size());
+     size_t size = totalCount - ignoredKind.size();
+-    EXPECT_EQ(size, 107);
++    EXPECT_EQ(size, 108);
+     EXPECT_EQ(astPool.size(), size);
+ 
+     // Added node's kind should same with key.
+-- 
+2.54.0
+

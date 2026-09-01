@@ -1,0 +1,670 @@
+From 98621ee5422704ce0af3545a027967516eff4e50 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 14 Aug 2026 17:44:05 +0300
+Subject: [PATCH 01/43] =?UTF-8?q?test(chexc):=20LLT=20cases=20for=20checke?=
+ =?UTF-8?q?d=20exceptions=20=E2=80=94=20parse=20(M1)=20and=20types=20(M2,?=
+ =?UTF-8?q?=20red)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+compiler/CheckedExceptions/parse: throws clauses on decls (functions, members,
+ctors, prop accessors, main), functional types incl. single-type sugar and
+nesting, negative cases pinned to the new diagnostics, and flag-off guards
+(throws stays an identifier; clause syntax rejected).
+
+compiler/CheckedExceptions/types: red-first cases for M2 — §3.4 set-based
+functional subtyping, §3.7 overload duplicates, §3.8 override subsumption,
+§3.6 generics (explicit args positive; no inference from capability lists).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../CheckedExceptions/parse/decl_functions.cj | 54 +++++++++++++
+ .../CheckedExceptions/parse/decl_main.cj      | 14 ++++
+ .../CheckedExceptions/parse/decl_members.cj   | 79 +++++++++++++++++++
+ .../parse/flagoff_clause_rejected.cj          | 15 ++++
+ .../parse/flagoff_identifier.cj               | 22 ++++++
+ .../parse/neg_bad_positions.cj                | 13 +++
+ .../parse/neg_ellipsis_in_type.cj             | 13 +++
+ .../parse/neg_missing_arrow.cj                | 13 +++
+ .../parse/type_functional.cj                  | 51 ++++++++++++
+ .../types/generics_explicit.cj                | 29 +++++++
+ .../types/generics_no_inference.cj            | 25 ++++++
+ .../CheckedExceptions/types/overload_dup.cj   | 20 +++++
+ .../types/overload_functype_dup.cj            | 22 ++++++
+ .../CheckedExceptions/types/override_neg.cj   | 25 ++++++
+ .../types/override_positive.cj                | 55 +++++++++++++
+ .../CheckedExceptions/types/subtype_neg.cj    | 22 ++++++
+ .../types/subtype_positive.cj                 | 36 +++++++++
+ 17 files changed, 508 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/decl_functions.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/decl_main.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_rejected.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_identifier.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_bad_positions.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_in_type.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_arrow.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/type_functional.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/generics_explicit.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/override_positive.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/subtype_positive.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_functions.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_functions.cj
+new file mode 100644
+index 0000000000..68377a87d0
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_functions.cj
+@@ -0,0 +1,54 @@
++// Checked exceptions (§3.2): `throws` clauses on top-level function declarations.
++// Positive: all forms parse and the program compiles and runs.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++// single entry
++func f1() throws AException {
++    throw AException()
++}
++
++// multiple entries
++func f2() throws AException, BException {
++    f1()
++    throw BException()
++}
++
++// empty clause: requires no capabilities from call sites
++func f3() throws () {
++    try {
++        f1()
++    } catch (e: AException) {
++    }
++}
++
++// throws before where
++func g1<T>(x: T): Unit throws AException where T <: ToString {
++    throw AException()
++}
++
++// where before throws
++func g2<T>(x: T): Unit where T <: ToString throws AException {
++    throw AException()
++}
++
++// generic exception type in the clause
++func gThrow<E>(e: E): Nothing where E <: Exception throws E {
++    throw e
++}
++
++main() {
++    try {
++        f2()
++        g1<Int64>(1)
++        g2<Int64>(2)
++        gThrow<AException>(AException())
++    } catch (e: Exception) {
++    }
++    f3()
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_main.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_main.cj
+new file mode 100644
+index 0000000000..f288638a56
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_main.cj
+@@ -0,0 +1,14 @@
++// Checked exceptions (§3.2): `main` may carry a `throws` clause — the listed
++// exceptions are handled by the default exception handler.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class QException <: Exception {}
++
++main() throws QException {
++    if (false) {
++        throw QException()
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj
+new file mode 100644
+index 0000000000..d93ef5fb76
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj
+@@ -0,0 +1,79 @@
++// Checked exceptions (§3.2): `throws` clauses on members — methods, static methods,
++// constructors, property accessors, operators, interface methods, extension methods.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class MException <: Exception {}
++class CreationException <: Exception {}
++class GException <: Exception {}
++class SException <: Exception {}
++
++interface I {
++    func m(): Int64 throws MException
++}
++
++class C <: I {
++    var val: Int64 = 0
++
++    init() throws CreationException {
++        this.val = 1
++    }
++
++    init(x: Int64) throws CreationException {
++        this.val = x
++    }
++
++    public func m(): Int64 throws MException {
++        if (val < 0) {
++            throw MException()
++        }
++        val
++    }
++
++    static func sm(): Unit throws AException {
++        throw AException()
++    }
++
++    prop p: Int64 {
++        get() throws GException {
++            val
++        }
++    }
++
++    mut prop q: Int64 {
++        get() throws GException {
++            val
++        }
++        set(v) throws SException {
++            val = v
++        }
++    }
++
++    operator func +(that: C): C throws AException {
++        C(this.val + that.val)
++    }
++}
++
++extend C {
++    func extMethod(): Int64 throws AException {
++        if (val > 100) {
++            throw AException()
++        }
++        val
++    }
++}
++
++main() {
++    try {
++        let c = C(41)
++        let d = C(1)
++        let s = c + d
++        let x = s.m() + s.p + s.extMethod()
++        s.q = x
++        C.sm()
++    } catch (e: Exception) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_rejected.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_rejected.cj
+new file mode 100644
+index 0000000000..ba6f5fb413
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_clause_rejected.cj
+@@ -0,0 +1,15 @@
++// Guard: WITHOUT --enable-chexc, `throws`-clause syntax is not available;
++// a declaration using it must fail to compile.
++
++// EXEC-PIPE-1: %compiler %cmp_opt %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class AException <: Exception {}
++
++func f() throws AException {
++    throw AException()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_identifier.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_identifier.cj
+new file mode 100644
+index 0000000000..745f3327c7
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/flagoff_identifier.cj
+@@ -0,0 +1,22 @@
++// Guard: WITHOUT --enable-chexc, `throws` remains an ordinary identifier —
++// existing code that uses it as a name must keep compiling unchanged.
++
++// EXEC: %compiler %cmp_opt %n.cj -o %output
++// EXEC: %run %output
++
++func throws(x: Int64): Int64 {
++    x + 1
++}
++
++class C {
++    var throws: Int64 = 0
++}
++
++main() {
++    let c = C()
++    c.throws = throws(41)
++    if (c.throws != 42) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_bad_positions.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_bad_positions.cj
+new file mode 100644
+index 0000000000..9bad959a53
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_bad_positions.cj
+@@ -0,0 +1,13 @@
++// Checked exceptions (§3.2): `throws` clauses are only legal on callables —
++// not on variable declarations.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: expected ';' or '<NL>', found 'throws'
++
++class AException <: Exception {}
++
++var x: Int64 throws AException = 0
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_in_type.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_in_type.cj
+new file mode 100644
+index 0000000000..75814c02b9
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_in_type.cj
+@@ -0,0 +1,13 @@
++// Checked exceptions (§3.4/§6.3.5): the `...` marker never appears in functional
++// types — a functional type's capability list is always complete.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: '...' is not allowed in a function type's 'throws' clause
++
++class AException <: Exception {}
++
++var f: () throws (AException, ...) -> Unit = { => () }
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_arrow.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_arrow.cj
+new file mode 100644
+index 0000000000..c066183b01
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_arrow.cj
+@@ -0,0 +1,13 @@
++// Checked exceptions (§3.4): a functional type's `throws` clause must be followed
++// by `->`; `(A) throws (E)` without an arrow is a parse error.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: expected '->' after 'throws' clause in function type
++
++class AException <: Exception {}
++
++var f: (Int64) throws (AException) = 0
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/type_functional.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/type_functional.cj
+new file mode 100644
+index 0000000000..80d5317e4a
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/type_functional.cj
+@@ -0,0 +1,51 @@
++// Checked exceptions (§3.4): `throws` clauses in functional types.
++// Forms: parenthesised list, single-type sugar, empty list, right-associative nesting.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++class TimeoutException <: Exception {}
++
++func mayThrowA() throws AException {
++    throw AException()
++}
++
++func mayThrowAB() throws AException, BException {
++    throw BException()
++}
++
++// parenthesised list
++var f1: () throws (AException, BException) -> Unit = mayThrowAB
++
++// single capability: parens optional
++var f2: () throws AException -> Unit = mayThrowA
++
++// empty capability list: same type as omitting the clause
++var f3: () throws () -> Unit = { => () }
++var f4: () -> Unit = { => () }
++
++// clause in a parameter's type
++func caller(g: () throws AException -> Unit): Unit throws AException {
++    g()
++}
++
++// right-associative nesting: function returning a throwing function
++func mk(): () throws TimeoutException -> Unit throws () {
++    { => throw TimeoutException() }
++}
++
++main() {
++    try {
++        caller(mayThrowA)
++        f1()
++        f2()
++        let h: () throws TimeoutException -> Unit = mk()
++        h()
++    } catch (e: Exception) {
++    }
++    f3()
++    f4()
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_explicit.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_explicit.cj
+new file mode 100644
+index 0000000000..c832958536
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_explicit.cj
+@@ -0,0 +1,29 @@
++// Checked exceptions (§3.6): clause types may be/contain type parameters; capability
++// argument inference follows type-argument inference (explicit args work).
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++
++func safeThrow<E>(e: E): Nothing where E <: Exception throws E {
++    throw e
++}
++
++func eqOrThrow<T, E>(x: T, y: T, mkE: () -> E): Unit
++where T <: Equatable<T>, E <: Exception
++throws E {
++    if (x != y) {
++        throw mkE()
++    }
++}
++
++main() {
++    try {
++        eqOrThrow<Int64, AException>(1, 1, { => AException() })
++        safeThrow<AException>(AException())
++    } catch (e: AException) {
++        return 0
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
+new file mode 100644
+index 0000000000..114f472e0d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
+@@ -0,0 +1,25 @@
++// Checked exceptions (§3.6): capability parameters of argument functions are NOT
++// considered in type-argument inference (no row unification).
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class AException <: Exception {}
++
++func f() throws AException {
++    throw AException()
++}
++
++func g<T, G>(x: Int64, block: () throws (T, G) -> Unit)
++where T <: Exception, G <: Exception {
++    try {
++        block()
++    } catch (e: Exception) {
++    }
++}
++
++main() {
++    // T and G cannot be inferred from f's capability list
++    g(0, f)
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj b/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj
+new file mode 100644
+index 0000000000..69b1e5974d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj
+@@ -0,0 +1,20 @@
++// Checked exceptions (§3.7): signatures that coincide after removing capability
++// lists are duplicate declarations.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func f(x: Int64) throws AException {
++    throw AException()
++}
++
++func f(x: Int64) throws BException {
++    throw BException()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj b/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj
+new file mode 100644
+index 0000000000..f7f2ad3d9d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj
+@@ -0,0 +1,22 @@
++// Checked exceptions (§3.7): parameter function types differing only in capability
++// lists are the same type for overload purposes — such overloads are duplicates.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class AException <: Exception {}
++
++func h(block: () throws AException -> Unit) {
++    try {
++        block()
++    } catch (e: AException) {
++    }
++}
++
++func h(block: () -> Unit) {
++    block()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj
+new file mode 100644
+index 0000000000..fbf5721a0a
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj
+@@ -0,0 +1,25 @@
++// Checked exceptions (§3.8): an override may not require capabilities the
++// original does not provide for.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++open class P {
++    public open func m(): Unit throws AException {
++        throw AException()
++    }
++}
++
++class C1 <: P {
++    // BException is not a subtype of any entry in P.m's list
++    public override func m(): Unit throws AException, BException {
++        throw BException()
++    }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/override_positive.cj b/testsuites/LLT/compiler/CheckedExceptions/types/override_positive.cj
+new file mode 100644
+index 0000000000..2452d57968
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/override_positive.cj
+@@ -0,0 +1,55 @@
++// Checked exceptions (§3.8): an override's throws list must be pointwise subsumed
++// by the original's — subsets and subtype entries are legal.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++open class BaseException <: Exception {}
++class AException <: BaseException {}
++class BException <: Exception {}
++class CException <: Exception {}
++
++interface I {
++    func f(): Unit throws BException, CException
++    func g(): Unit throws BaseException
++}
++
++open class P {
++    public open func m(): Unit throws BaseException, BException {
++        throw BaseException()
++    }
++}
++
++class C1 <: P & I {
++    // subset of the interface's list
++    public func f(): Unit throws BException {
++        throw BException()
++    }
++    // subtype entry: AException <: BaseException
++    public func g(): Unit throws AException {
++        throw AException()
++    }
++    // override with a subset
++    public override func m(): Unit throws BException {
++        throw BException()
++    }
++}
++
++main() {
++    let c = C1()
++    let i: I = c
++    let p: P = c
++    try {
++        i.f()
++    } catch (e: Exception) {
++    }
++    try {
++        i.g()
++    } catch (e: Exception) {
++    }
++    try {
++        p.m()
++    } catch (e: Exception) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj
+new file mode 100644
+index 0000000000..8bf83ce528
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj
+@@ -0,0 +1,22 @@
++// Checked exceptions (§3.4): narrowing a capability list is NOT a subtype —
++// the target type must cover every capability the source function requires.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func f() throws AException, BException {
++    throw AException()
++}
++
++main() {
++    // f requires a BException capability; the target type provides only AException
++    let g: () throws AException -> Unit = f
++    try {
++        g()
++    } catch (e: Exception) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/subtype_positive.cj b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_positive.cj
+new file mode 100644
+index 0000000000..ffb436ff54
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_positive.cj
+@@ -0,0 +1,36 @@
++// Checked exceptions (§3.4): functional-type subtyping — capability lists compare
++// as sets: permutations, adding requirements, and pointwise widening are all legal.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++open class BaseException <: Exception {}
++class AException <: BaseException {}
++class BException <: Exception {}
++class CException <: Exception {}
++
++func f() throws AException, BException {
++    throw AException()
++}
++
++main() {
++    // permutation: capability lists are sets
++    let f1: () throws (BException, AException) -> Unit = f
++    // adding requirements is ok — call sites just provide more
++    let f2: () throws (AException, BException, CException) -> Unit = f
++    // pointwise widening: CanThrow<BaseException> is suitable for CanThrow<AException>
++    let f3: () throws (BaseException, BException) -> Unit = f
++    try {
++        f1()
++    } catch (e: Exception) {
++    }
++    try {
++        f2()
++    } catch (e: Exception) {
++    }
++    try {
++        f3()
++    } catch (e: Exception) {
++    }
++    return 0
++}
+-- 
+2.54.0
+

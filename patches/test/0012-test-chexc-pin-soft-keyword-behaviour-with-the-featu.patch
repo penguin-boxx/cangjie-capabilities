@@ -1,0 +1,79 @@
+From 982f4a29d285e04da060e35c5e4ac8cb346a5ce9 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 03:44:26 +0300
+Subject: [PATCH 12/43] test(chexc): pin soft-keyword behaviour with the
+ feature enabled
+
+flagon_identifier.cj: 'throws' and 'captures' remain usable as variable, field
+and method names while --enable-checked-exceptions is on, alongside real clauses
+in clause position (proposal 10, audit MF11).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../parse/flagon_identifier.cj                | 54 +++++++++++++++++++
+ 1 file changed, 54 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/flagon_identifier.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/flagon_identifier.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/flagon_identifier.cj
+new file mode 100644
+index 0000000000..5e1cc83751
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/flagon_identifier.cj
+@@ -0,0 +1,54 @@
++// Checked exceptions (§10): `throws` and `captures` are recognised by spelling only where a
++// clause may start; everywhere else they stay ordinary identifiers, EVEN WITH THE FEATURE
++// ENABLED. Reserving them would break existing code — `std.unittest.mock` exports a public
++// `throws` function used at hundreds of call sites.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++
++func throws(x: Int64): Int64 {
++    x + 1
++}
++
++class C {
++    var captures: Int64 = 0
++
++    func throws(): Int64 {
++        captures
++    }
++}
++
++// the same spellings still work as clauses in clause position
++func real(): Unit throws AException {
++    throw AException()
++}
++
++class Holder
++captures AException {
++    init() {
++    }
++
++    func run(): Unit {
++        throw AException()
++    }
++}
++
++main() {
++    let captures = 41
++    let c = C()
++    c.captures = throws(captures)
++    if (c.captures != 42 || c.throws() != 42) {
++        return 1
++    }
++    try {
++        real()
++    } catch (e: AException) {
++    }
++    try {
++        Holder().run()
++    } catch (e: AException) {
++    }
++    return 0
++}
+-- 
+2.54.0
+

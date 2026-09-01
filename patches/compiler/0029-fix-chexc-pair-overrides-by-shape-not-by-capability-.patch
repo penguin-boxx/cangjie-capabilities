@@ -1,0 +1,80 @@
+From 39ac1dc423822660e9351cdf6f2a18dd482ea27c Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 09:08:06 +0300
+Subject: [PATCH 29/44] fix(chexc): pair overrides by shape, not by capability
+ coverage
+
+The first std build to get past compilation at 'warn' failed at link, with ~116 undefined
+references to erased interface members ('_CNaf14PlatformSocketIG_E5write...'). The cause was
+'IsFuncTySubType', which is not a subtype test in the ordinary sense but the predicate that
+PAIRS a declaration with the one it implements -- for generic instantiation, for the override
+map, for the common type of a mocked parameter. With coverage folded into pairing, an override
+that violates coverage stops being recognized as an override at all: at 'error' level the
+program is rejected before that matters, but at 'warn' it is accepted, the call through the
+type parameter stays on the abstract interface member, and that member has no body to link
+against. std.net is where it bit, since it deliberately routes calls through an F-bounded type
+parameter to avoid virtual dispatch, and its implementations infer 'SocketException' over
+clause-free interface members.
+
+Two functions never differ in capability list alone -- a list takes no part in overload
+resolution -- so pairing is a question about shape, and coverage is a separate rule reported by
+the override checks. Those checks now carry the level split the rest of the pass has: at 'warn'
+a declared list that exceeds what it overrides is a warning, as an inferred one already was.
+An effect entry is never downgraded, and with exception checking off the rule stays the
+ordinary type-compatibility error it has always been.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../InheritanceChecker/StructInheritanceChecker.cpp | 13 +++++++++++--
+ src/Sema/TypeManager.cpp                            | 11 ++++++++---
+ 2 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp b/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
+index 1d1b8223..59fa1b8d 100644
+--- a/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
++++ b/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
+@@ -1398,8 +1398,17 @@ void StructInheritanceChecker::CheckThrowsClauseCompatible(const AST::FuncDecl&
+         if (typeManager.IsCapTysSubsumed({capTy}, parentTy.capTys)) {
+             continue;
+         }
+-        auto builder = diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_override_missing_capability,
+-            MakeRangeForDeclIdentifier(childFunc), Ty::ToString(capTy), childFunc.identifier.Val());
++        // The level applies to this rule as it does to every other capability diagnostic: at 'warn'
++        // the program is still built, so the violating override has to stay an override -- pairing
++        // is blind to capability lists precisely so that it can. An effect entry is never
++        // downgraded: effect requirements are checked on their own axis, at one severity. With
++        // exception checking off the rule is ordinary type compatibility, so it stays an error.
++        bool asWarning = opts.enableChexc && opts.chexcSeverity == GlobalOptions::ChexcSeverity::CS_WARN &&
++            !TypeCheckUtil::IsCommandTy(typeManager, importManager, capTy);
++        auto kind = asWarning ? DiagKindRefactor::sema_chexc_override_missing_capability_warn
++                              : DiagKindRefactor::sema_chexc_override_missing_capability;
++        auto builder = diag.DiagnoseRefactor(
++            kind, MakeRangeForDeclIdentifier(childFunc), Ty::ToString(capTy), childFunc.identifier.Val());
+         builder.AddMainHintArguments(Ty::ToString(capTy));
+         builder.AddNote(MakeRangeForDeclIdentifier(parentFunc),
+             parentTy.capTys.empty() ? "the overridden or implemented declaration has no 'throws' clause"
+diff --git a/src/Sema/TypeManager.cpp b/src/Sema/TypeManager.cpp
+index 92c64e2b..1bf4e7b8 100644
+--- a/src/Sema/TypeManager.cpp
++++ b/src/Sema/TypeManager.cpp
+@@ -2081,9 +2081,14 @@ bool TypeManager::IsFuncDeclSubType(const AST::FuncDecl& decl, const AST::FuncDe
+ 
+ bool TypeManager::IsFuncTySubType(const AST::FuncTy& type1, const AST::FuncTy& type2)
+ {
+-    // Checked exceptions: capability lists compare by set subsumption.
+-    return IsFuncParameterTypesIdentical(type1.paramTys, type2.paramTys) && IsSubtype(type1.retTy, type2.retTy) &&
+-        IsCapTysSubsumed(type1.capTys, type2.capTys);
++    // Deliberately blind to capability lists. This predicate PAIRS a declaration with the one it
++    // implements -- for instantiation, for the override map, for the common type of a mocked
++    // parameter -- and pairing is a question about shape: two functions never differ in capability
++    // list alone, since a list takes no part in overload resolution. Whether the pairing then
++    // satisfies coverage is a separate rule, reported by the override checks; when that rule is
++    // relaxed to a warning, the violating override must still resolve to its implementation, or
++    // the call is left on an abstract declaration that has no body to link against.
++    return IsFuncParameterTypesIdentical(type1.paramTys, type2.paramTys) && IsSubtype(type1.retTy, type2.retTy);
+ }
+ #endif
+ 
+-- 
+2.54.0
+

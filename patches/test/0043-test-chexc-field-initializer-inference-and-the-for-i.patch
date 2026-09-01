@@ -1,0 +1,171 @@
+From 0e131d8ac4be80d530c51cea1b09d78558456084 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Mon, 31 Aug 2026 15:53:38 +0300
+Subject: [PATCH 43/43] test(chexc): field-initializer inference and the for-in
+ protocol
+
+'infer_field_initializer.cj' runs both shapes -- a clause-free constructor that infers what its
+field needs, and one that declares it. The for-in pair pins both halves; both narrow the
+iterator's return type, since through the interface's clause-free 'next' nothing is demanded --
+that is Q-STD-9's question, not this rule's.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../inference/infer_field_initializer.cj      | 43 ++++++++++++++++
+ .../scopes/forin_protocol.cj                  | 51 +++++++++++++++++++
+ .../scopes/forin_protocol_neg.cj              | 35 +++++++++++++
+ 3 files changed, 129 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_field_initializer.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/forin_protocol.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/forin_protocol_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_field_initializer.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_field_initializer.cj
+new file mode 100644
+index 0000000000..38a3d56b9f
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_field_initializer.cj
+@@ -0,0 +1,43 @@
++// Checked exceptions (What is inferred, point 3): an instance field initializer has no capability
++// scope of its own, so "it contributes to every inference-eligible constructor that evaluates it".
++// A clause-free constructor therefore INFERS what its fields need, and the requirement lands on
++// the construction site — where a 'try' can discharge it — instead of being reported at the
++// initializer, which is what happened before: the initializer was checked against the
++// constructors' written clauses alone, so a class with a throwing field and a clause-free 'init'
++// could not be written at all.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class FE <: Exception {}
++
++func mayThrow(): Int64 {
++    throw FE()
++}
++
++class Holder {
++    let value = mayThrow()   // contributes FE to every constructor below
++    init() {}
++    init(unused: Int64) {}   // a second constructor infers it too
++}
++
++// A constructor that declares the list discharges its fields' requirement itself.
++class Declared {
++    let value = mayThrow()
++    init()
++    throws FE {}
++}
++
++main(): Int64 {
++    try {
++        let h = Holder()          // requires FE, supplied by this try
++        return 1
++    } catch (e: FE) {
++        try {
++            let d = Declared()    // requires FE through the declared clause
++            return 1
++        } catch (e2: FE) {
++            return 0
++        }
++    }
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/forin_protocol.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/forin_protocol.cj
+new file mode 100644
+index 0000000000..c863278328
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/forin_protocol.cj
+@@ -0,0 +1,51 @@
++// Checked exceptions (What is inferred, point 2): "implicit invocations include ... the iterator
++// protocol of 'for-in'". The capability pass runs before desugar, so the calls to 'iterator()'
++// and 'next()' do not exist as nodes yet — they are synthesized as requirement sites, exactly as
++// the implicit 'close()' of try-with-resources is. Without this a 'throws ()' function could
++// iterate a throwing iterator and demand nothing at all.
++//
++// Here the loop's requirement is discharged by the enclosing 'try'; 'forin_protocol_neg.cj' is
++// the half where it is not.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc=warn %n.cj -o %output 2> warn_out.txt
++// EXEC: %run %output
++// EXEC-PIPE: cat warn_out.txt | compare %f
++// ASSERT: scan-not the 'next()' of this 'for-in'
++
++class IterExc <: Exception {}
++
++class ThrowingIter <: Iterator<Int64> {
++    private var produced = 0
++    public func next(): ?Int64
++    throws IterExc {
++        produced++
++        if (produced > 2) {
++            throw IterExc()
++        }
++        return Some(produced)
++    }
++}
++
++class ThrowingSeq <: Iterable<Int64> {
++    // The return type is narrowed to the concrete iterator, so the loop sees the clause its
++    // 'next()' declares. Through the interface's own clause-free 'next' nothing would be
++    // demanded -- the SPI question of Q-STD-9, not this rule.
++    public func iterator(): ThrowingIter {
++        return ThrowingIter()
++    }
++}
++
++main(): Int64 {
++    var seen = 0
++    try {
++        for (x in ThrowingSeq()) {
++            seen++
++        }
++        return 1
++    } catch (e: IterExc) {
++        if (seen != 2) {
++            return 1
++        }
++        return 0
++    }
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/forin_protocol_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/forin_protocol_neg.cj
+new file mode 100644
+index 0000000000..d3d834bb69
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/forin_protocol_neg.cj
+@@ -0,0 +1,35 @@
++// Checked exceptions (What is inferred, point 2): the discriminating half of
++// 'forin_protocol.cj'. A function with an authoritative empty clause iterating a sequence whose
++// 'next()' throws must be rejected at the loop — before the rule, nothing was demanded for the
++// iterator protocol at all, so this compiled silently and failed at run time.
++
++// EXEC-PIPE: %compiler %cmp_opt --experimental --enable-chexc=warn %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan warning: Cannot find a capability for 'Class-IterExc'
++// ASSERT: scan required by the 'next()' of this 'for-in'
++
++class IterExc <: Exception {}
++
++class ThrowingIter <: Iterator<Int64> {
++    public func next(): ?Int64
++    throws IterExc {
++        throw IterExc()
++    }
++}
++
++class ThrowingSeq <: Iterable<Int64> {
++    // The return type is narrowed to the concrete iterator, so the loop sees the clause its
++    // 'next()' declares. Through the interface's own clause-free 'next' nothing would be
++    // demanded -- the SPI question of Q-STD-9, not this rule.
++    public func iterator(): ThrowingIter {
++        return ThrowingIter()
++    }
++}
++
++public func iterate(): Unit
++throws () {
++    for (x in ThrowingSeq()) {
++        ()
++    }
++}
++
++main(): Int64 { 0 }
+-- 
+2.54.0
+

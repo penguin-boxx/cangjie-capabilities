@@ -1,0 +1,311 @@
+From 26d45f50fcc945e0d87b4a0491c2cb629c3de3e9 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 14 Aug 2026 21:15:06 +0300
+Subject: [PATCH 03/43] =?UTF-8?q?test(chexc):=20M3=20red-first=20scopes=20?=
+ =?UTF-8?q?batch=20=E2=80=94=20capability=20checking=20(=C2=A73.3,=20?=
+ =?UTF-8?q?=C2=A73.5)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+4 negatives (red until M3): missing capability at throw/call sites; catch/
+finally/top-level-initializer outside scopes; spawn's empty scope stack;
+--enable-chexc=warn downgrade. 3 positives (green, over-restriction guards):
+discharge via try/clauses incl. E1|E2 and contravariant handler, lambda caps
+from expected type with capture, default-param scope + function-value call +
+main throws. Escape-analysis cases deliberately absent per author ruling
+(none before Modal lands).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../scopes/corner_scopes_neg.cj               | 46 +++++++++++++++++++
+ .../scopes/default_param_and_funcvalue.cj     | 31 +++++++++++++
+ .../scopes/discharge_positive.cj              | 45 ++++++++++++++++++
+ .../scopes/lambda_expected_type.cj            | 40 ++++++++++++++++
+ .../scopes/missing_capability_neg.cj          | 26 +++++++++++
+ .../CheckedExceptions/scopes/spawn_neg.cj     | 22 +++++++++
+ .../CheckedExceptions/scopes/warn_mode.cj     | 20 ++++++++
+ 7 files changed, 230 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/default_param_and_funcvalue.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/discharge_positive.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/spawn_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/warn_mode.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj
+new file mode 100644
+index 0000000000..6c6403fc0d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj
+@@ -0,0 +1,46 @@
++// Checked exceptions (§3.3, scope corner cases):
++// 1) a catch block is NOT inside its try's capability scope (bare rethrow of a
++//    checked exception needs an enclosing capability);
++// 2) a finally block is outside the scope too;
++// 3) top-level variable initializers have no capability scope.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'AException'
++// ASSERT: scan Cannot find a capability for 'BException'
++// ASSERT: scan Cannot find a capability for 'CException'
++
++class AException <: Exception {}
++class BException <: Exception {}
++class CException <: Exception {}
++
++func mkOrThrow(): Int64 throws CException {
++    throw CException()
++}
++
++// 3) no scope encloses a top-level initializer
++var g: Int64 = mkOrThrow()
++
++func catchNotInScope() {
++    try {
++        throw AException()
++    } catch (e: AException) {
++        throw AException() // 1) error: the try's capability is gone here
++    }
++}
++
++func finallyNotInScope() {
++    try {
++        throw BException()
++    } catch (e: BException) {
++    } finally {
++        if (false) {
++            throw BException() // 2) error: finally is outside the scope
++        }
++    }
++}
++
++main() {
++    catchNotInScope()
++    finallyNotInScope()
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/default_param_and_funcvalue.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/default_param_and_funcvalue.cj
+new file mode 100644
+index 0000000000..9f08dfdd73
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/default_param_and_funcvalue.cj
+@@ -0,0 +1,31 @@
++// Checked exceptions (§3.3): a default parameter value is checked against the
++// callable's own capability scope; calling a function VALUE demands its type's
++// capabilities; main() throws is covered by the default handler.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class QException <: Exception {}
++
++func mk(): Int64 throws AException {
++    throw AException()
++}
++
++// default value expression may use the callable's own clause capability
++func withDefault(x!: Int64 = mk()): Int64 throws AException {
++    x
++}
++
++main() throws QException {
++    try {
++        let f: () throws AException -> Int64 = { => mk() }
++        let _ = f() // function-value call demands AException from the try's scope
++        let _ = withDefault()
++    } catch (e: AException) {
++    }
++    if (false) {
++        throw QException() // discharged by main's clause (default handler)
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/discharge_positive.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/discharge_positive.cj
+new file mode 100644
+index 0000000000..231c56fb72
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/discharge_positive.cj
+@@ -0,0 +1,45 @@
++// Checked exceptions (§3.3): capability scopes — try-catch introduces one capability
++// per catch-pattern type (E1|E2 introduces two); declared clauses cover bodies;
++// contravariance: a base-type handler discharges subtype throws; catch/finally
++// blocks are OUTSIDE the try's scope; try-with-resources initializers are inside.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++open class BaseException <: Exception {}
++class AException <: BaseException {}
++class BException <: Exception {}
++
++func throwsA() throws AException {
++    throw AException()
++}
++
++func propagate() throws AException, BException {
++    throwsA() // discharged by the declared clause
++    if (false) {
++        throw BException()
++    }
++}
++
++main() {
++    // one capability per catch pattern; E1|E2 introduces two
++    try {
++        propagate()
++    } catch (e: AException | BException) {
++    }
++    // contravariance: base handler covers subtype throw
++    try {
++        throwsA()
++    } catch (e: BaseException) {
++    }
++    // rethrow from catch uses the OUTER scope, not the closed try's
++    try {
++        try {
++            throwsA()
++        } catch (e: AException) {
++            throw AException() // needs the enclosing try's capability
++        }
++    } catch (e: AException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj
+new file mode 100644
+index 0000000000..9c0b4e6831
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj
+@@ -0,0 +1,40 @@
++// Checked exceptions (§3.5): a literal's capability list comes from the expected
++// type only; inside such a literal those capabilities are in scope. A literal with
++// no expected type has no capability parameters (its demands need enclosing scopes).
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class IOException <: Exception {}
++class SomeException <: Exception {}
++
++func withIOException<R>(f: () throws IOException -> R): R {
++    try {
++        return f()
++    } catch (e: IOException) {
++        f()
++    }
++}
++
++func throwsSome() throws SomeException {
++    throw SomeException()
++}
++
++func test() throws SomeException {
++    // expected type gives the literal a CanThrow<IOException> capability;
++    // the enclosing clause covers the throwsSome() call inside it (capture)
++    withIOException<Unit> {
++        =>
++        throwsSome()
++        throw IOException()
++    }
++}
++
++main() {
++    try {
++        test()
++    } catch (e: SomeException) {
++        return 0
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj
+new file mode 100644
+index 0000000000..a9218c9dae
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj
+@@ -0,0 +1,26 @@
++// Checked exceptions (§3.3): a throw (or call requiring a capability) with no
++// suitable capability in scope is an error, with the proposal's wording (mode
++// omitted pre-Modal per author ruling).
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'AException'
++// ASSERT: scan Cannot find a capability for 'BException'
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func throwsA() throws AException {
++    throw AException()
++}
++
++func noClause() {
++    throw AException() // error: no capability in scope
++}
++
++func wrongClause() throws BException {
++    throwsA() // error: only BException capability available
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/spawn_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/spawn_neg.cj
+new file mode 100644
+index 0000000000..4bb093fc81
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/spawn_neg.cj
+@@ -0,0 +1,22 @@
++// Checked exceptions (author ruling on spawn): a spawn body starts with an EMPTY
++// capability scope stack — enclosing try-catch and clause capabilities are
++// unreachable inside it.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'AException'
++
++class AException <: Exception {}
++
++func f() throws AException {
++    spawn {
++        throw AException() // error: the clause capability does not reach spawn bodies
++    }
++}
++
++main() {
++    try {
++        f()
++    } catch (e: AException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_mode.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_mode.cj
+new file mode 100644
+index 0000000000..376317646e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_mode.cj
+@@ -0,0 +1,20 @@
++// Checked exceptions (author ruling): --enable-chexc=warn downgrades capability
++// diagnostics to warnings — the program still compiles and runs.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc=warn %n.cj -o %output 2> warn_out.txt
++// EXEC: %run %output
++// EXEC-PIPE-2: cat warn_out.txt | compare %f
++// ASSERT: scan warning: Cannot find a capability for 'AException'
++
++class AException <: Exception {}
++
++func noClause() {
++    if (false) {
++        throw AException() // warning in warn mode, not an error
++    }
++}
++
++main() {
++    noClause()
++    return 0
++}
+-- 
+2.54.0
+

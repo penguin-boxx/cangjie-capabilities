@@ -1,0 +1,159 @@
+From 21d99727f0cefac9709e0da8c8fa582d804790db Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 14 Aug 2026 22:42:41 +0300
+Subject: [PATCH 06/43] =?UTF-8?q?test(chexc):=20=C2=A76.4=20unchecked-exce?=
+ =?UTF-8?q?ptions=20red-first=20batch?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+3 positives (red until §6.4: UncheckedException absent from std.core): exempt
+throw + catchability; generic instantiation exemption; checked/unchecked
+coexistence with hierarchy. 1 negative: concrete unchecked type in a throws
+clause (§3.2 rule 5).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../unchecked/unchecked_generic_ok.cj         | 29 +++++++++++++++
+ .../unchecked/unchecked_in_clause_neg.cj      | 16 +++++++++
+ .../unchecked/unchecked_mixed.cj              | 35 +++++++++++++++++++
+ .../unchecked/unchecked_throw.cj              | 26 ++++++++++++++
+ 4 files changed, 106 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_generic_ok.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_in_clause_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_mixed.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_throw.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_generic_ok.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_generic_ok.cj
+new file mode 100644
+index 0000000000..fb575b6ea8
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_generic_ok.cj
+@@ -0,0 +1,29 @@
++// Checked exceptions (§3.2 rule 5, exemption): type parameters may appear in
++// clauses; a capability requirement whose type INSTANTIATES to an unchecked
++// exception type is trivially satisfied at the call site.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class RequestException <: UncheckedException {}
++class AException <: Exception {}
++
++func safeThrow<E>(e: E): Nothing where E <: Exception throws E {
++    throw e
++}
++
++main() {
++    // no capability in scope: the requirement instantiates to an unchecked type
++    try {
++        safeThrow<RequestException>(RequestException())
++        return 1
++    } catch (e: RequestException) {
++    }
++    // the checked instantiation still demands a capability (provided here by try)
++    try {
++        safeThrow<AException>(AException())
++        return 1
++    } catch (e: AException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_in_clause_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_in_clause_neg.cj
+new file mode 100644
+index 0000000000..014631fb6e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_in_clause_neg.cj
+@@ -0,0 +1,16 @@
++// Checked exceptions (§3.2 rule 5): a concrete unchecked exception type in a
++// `throws` list is misleading (throwing it never needs a capability) and is
++// rejected with a dedicated diagnostic.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class RequestException <: UncheckedException {}
++
++func f() throws RequestException {
++    throw RequestException()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_mixed.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_mixed.cj
+new file mode 100644
+index 0000000000..8a534b54da
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_mixed.cj
+@@ -0,0 +1,35 @@
++// Checked exceptions (§6.4): checked and unchecked coexist — checked throws still
++// demand capabilities in the same body where unchecked throws demand none; an
++// unchecked base with checked-looking usage stays exempt through subtyping.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++open class AppError <: UncheckedException {}
++class DbError <: AppError {}
++class ParseException <: Exception {}
++
++func work(flag: Bool): Int64 throws ParseException {
++    if (flag) {
++        throw ParseException() // checked: needs the clause capability
++    }
++    throw DbError() // unchecked subtype: exempt, no capability
++}
++
++main() {
++    try {
++        let _ = work(true)
++        return 1
++    } catch (e: ParseException) {
++    } catch (e: AppError) {
++        return 1
++    }
++    try {
++        let _ = work(false)
++        return 1
++    } catch (e: ParseException) {
++        return 1
++    } catch (e: AppError) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_throw.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_throw.cj
+new file mode 100644
+index 0000000000..379762d9ce
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_throw.cj
+@@ -0,0 +1,26 @@
++// Checked exceptions (§6.4): throwing an UncheckedException subtype requires no
++// capability; unchecked exceptions remain catchable like any exception.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class RequestException <: UncheckedException {}
++
++func noClause() {
++    throw RequestException() // no capability needed
++}
++
++main() {
++    try {
++        noClause()
++        return 1
++    } catch (e: RequestException) {
++    }
++    // catching via the base class works too
++    try {
++        noClause()
++        return 1
++    } catch (e: UncheckedException) {
++    }
++    return 0
++}
+-- 
+2.54.0
+

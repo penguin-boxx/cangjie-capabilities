@@ -1,0 +1,335 @@
+From ccb5dad88e22c29da38f68cc5fb6de6995d38a12 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 13:34:40 +0300
+Subject: [PATCH 12/44] feat(chexc): capability lists cross package boundaries
+ (proposal 3.10.2)
+
+Closes ledger C1-C3. Until now a 'throws' clause stopped at the package edge:
+imported declarations arrived capability-free, so cross-package checking was
+silently absent rather than merely incomplete.
+
+- C1: FuncTyInfo gains 'capTypes', written beside typeArgs (which holds the
+  parameter types) and restored into GetFunctionTy on load. Keeping the list out
+  of typeArgs mirrors the in-memory invariant: capabilities are erased for
+  codegen and must never be mistaken for type arguments. Nested functional types
+  ride along for free, so a clause inside a signature -- '(cb: () throws E -> R)'
+  -- crosses too.
+- C2: the incremental cache goes through the same SemaTy path, verified by an
+  old/new test where the unchanged callee is served from cache and its
+  requirement is still demanded at the call site.
+- C3: NormalizeCapTys puts the exported list in canonical form -- entries
+  subsumed by another dropped, remainder ordered by type name. Sound because a
+  demand is per entry and discharged by subtyping: with 'A <: B' present, any
+  supply discharging B discharges A, so {A,B} and {B} impose the same
+  obligation. Reordering a clause is therefore no longer an ABI change; two
+  orderings now produce byte-identical .cjo.
+
+Also carries the 'captures' clause (3.9) across the boundary, which C1-C3 do not
+cover but the guarantee needs: constructing an imported capturing class must
+demand its captures. Imported declarations are rebuilt from the .cjo without
+clause nodes, so ClassInfo/StructInfo store the list and the loader rebuilds the
+clause from it.
+
+Both schema fields are appended last, so a .cjo written before this change still
+loads -- the vectors read as empty, which is exactly the pre-feature meaning.
+
+One fix outside serialization: GetInstantiatedAccessorCapTys read the AST clause
+only, so an imported PROPERTY ACCESSOR lost its list. It now falls back to the
+functional type when the accessor is IMPORTED -- gated on that attribute, since
+for source declarations the FuncTy also holds inference results, which must not
+be re-read as declared entries.
+
+Tests: compiler/CheckedExceptions/serialization, 10 cases across every boundary
+shape (function, method, property accessor, generic both directions, functional
+type, captures, canonical form, incremental). LLT Parser+Sema+CheckedExceptions
++IncrementalCompilation 5949/5954 (the 5 are the red-by-design conversions and
+adapt groups); ctest 49/49.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ include/cangjie/Sema/CapabilityCheck.h        | 10 ++++
+ schema/ModuleFormat.fbs                       | 10 ++++
+ src/Modules/ASTSerialization/ASTLoader.cpp    | 31 ++++++++++++
+ src/Modules/ASTSerialization/ASTWriter.cpp    | 15 +++++-
+ src/Modules/ASTSerialization/ASTWriterImpl.h  | 47 +++++++++++++++++++
+ .../ASTSerialization/ReferenceLoader.cpp      | 12 ++++-
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  |  5 ++
+ src/Sema/TypeCheckUtil.cpp                    | 11 ++++-
+ 8 files changed, 137 insertions(+), 4 deletions(-)
+
+diff --git a/include/cangjie/Sema/CapabilityCheck.h b/include/cangjie/Sema/CapabilityCheck.h
+index f7d8c5b3..9bec7169 100644
+--- a/include/cangjie/Sema/CapabilityCheck.h
++++ b/include/cangjie/Sema/CapabilityCheck.h
+@@ -101,6 +101,16 @@ void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCap
+  */
+ void CheckCapabilities(TypeManager& typeManager, const ImportManager& importManager, AST::Package& pkg,
+     CapabilityMissHandler& missHandler, const InferredCapabilities& inferred = {});
++
++/**
++ * The capability list of @p decl's 'captures' clause (proposal 3.9), with capability list aliases
++ * already spliced in (proposal 6.1); empty for a declaration that captures nothing.
++ *
++ * Exposed here for package serialization, which must write the clause into the .cjo so that
++ * construction sites in other packages demand it (proposal 3.10.2). The elaborated clause lives
++ * on the AST, which serialization cannot reach through the Sema-private headers.
++ */
++std::vector<Ptr<AST::Ty>> GetCapturesCapTys(const AST::Decl& decl);
+ } // namespace Sema
+ } // namespace Cangjie
+ 
+diff --git a/schema/ModuleFormat.fbs b/schema/ModuleFormat.fbs
+index fb261830..d7445f5b 100644
+--- a/schema/ModuleFormat.fbs
++++ b/schema/ModuleFormat.fbs
+@@ -135,6 +135,9 @@ table ClassInfo {
+   annoTargets:uint8;   // available if current class is custom annotation
+   runtimeVisible:bool;
+   annoTargets2:uint8;
++  // Checked exceptions (proposal 3.9 with 3.10.2): the 'captures' clause, demanded at every
++  // construction site. Appended last, so a .cjo written before this feature still loads.
++  capturesTypes:[uint32];
+ }
+ table InterfaceInfo {
+   inheritedTypes:[uint32];
+@@ -144,6 +147,8 @@ table StructInfo {
+   inheritedTypes:[uint32];
+   body:[uint32];
+   adInfo:AutoDiffInfo;
++  // Checked exceptions (proposal 3.9 with 3.10.2): see ClassInfo.capturesTypes.
++  capturesTypes:[uint32];
+ }
+ table EnumInfo {
+   inheritedTypes:[uint32];
+@@ -592,6 +597,11 @@ table FuncTyInfo {
+   retType:uint32; // Func return type
+   isC:bool;       // CFunc or @C func type.
+   hasVariableLenArg:bool;
++  // Checked exceptions (proposal 3.10.2): the capability list of the functional type, i.e. the
++  // exception types of its 'throws' clause. Kept OUT of typeArgs, which holds the parameter
++  // types: capabilities are erased for codegen and must not be mistaken for type arguments.
++  // Appended last, so a .cjo written before this feature still loads (the field reads as empty).
++  capTypes:[uint32];
+ }
+ table CompositeTyInfo {
+   declPtr:FullId;
+diff --git a/src/Modules/ASTSerialization/ASTLoader.cpp b/src/Modules/ASTSerialization/ASTLoader.cpp
+index e32438ee..15a25da9 100644
+--- a/src/Modules/ASTSerialization/ASTLoader.cpp
++++ b/src/Modules/ASTSerialization/ASTLoader.cpp
+@@ -892,6 +892,37 @@ void ASTLoader::ASTLoaderImpl::LoadInheritableDeclAdvancedInfo(const PackageForm
+             (void)id.annotations.emplace_back(std::move(ann));
+         }
+     }
++    // Checked exceptions (proposal 3.9 with 3.10.2): rebuild the 'captures' clause so that
++    // construction sites in this package demand the declaration's captured capabilities. Only the
++    // types matter downstream, which read them off the clause's nodes.
++    const flatbuffers::Vector<FormattedIndex>* capturesTypes = nullptr;
++    if (id.astKind == ASTKind::CLASS_DECL) {
++        capturesTypes = decl.info_as_ClassInfo()->capturesTypes();
++    } else if (id.astKind == ASTKind::STRUCT_DECL) {
++        capturesTypes = decl.info_as_StructInfo()->capturesTypes();
++    }
++    if (capturesTypes != nullptr && capturesTypes->size() > 0) {
++        auto clause = MakeOwned<ThrowsClause>();
++        for (uoffset_t i = 0; i < capturesTypes->size(); i++) {
++            auto capTy = LoadType(capturesTypes->Get(i));
++            if (!Ty::IsTyCorrect(capTy)) {
++                continue;
++            }
++            // A capability entry is always a class or generic type, and only its 'ty' is read
++            // downstream, so a reference node carrying that type is the whole requirement. The
++            // written list is already expanded, so no alias can appear here.
++            auto capType = MakeOwned<RefType>();
++            capType->SetTy(capTy);
++            capType->ref.identifier = capTy->name;
++            if (auto capDecl = Ty::GetDeclPtrOfTy(capTy)) {
++                capType->ref.target = capDecl;
++                capType->ref.identifier = capDecl->identifier.Val();
++            }
++            capType->EnableAttr(Attribute::IMPORTED, Attribute::COMPILER_ADD, Attribute::IS_CHECK_VISITED);
++            clause->capTypes.emplace_back(std::move(capType));
++        }
++        id.capturesClause = std::move(clause);
++    }
+     auto body = id.astKind == ASTKind::CLASS_DECL ? decl.info_as_ClassInfo()->body()
+         : id.astKind == ASTKind::INTERFACE_DECL   ? decl.info_as_InterfaceInfo()->body()
+         : id.astKind == ASTKind::ENUM_DECL        ? decl.info_as_EnumInfo()->body()
+diff --git a/src/Modules/ASTSerialization/ASTWriter.cpp b/src/Modules/ASTSerialization/ASTWriter.cpp
+index 2bb3e3cf..1290a0a4 100644
+--- a/src/Modules/ASTSerialization/ASTWriter.cpp
++++ b/src/Modules/ASTSerialization/ASTWriter.cpp
+@@ -1109,10 +1109,18 @@ TTypeOffset ASTWriter::ASTWriterImpl::SaveFuncTy(const FuncTy& type)
+         paramTypes.push_back(SaveType(it));
+     }
+     auto vParamTypes = builder.CreateVector<FormattedIndex>(paramTypes);
++    // Checked exceptions (proposal 3.10.2): the capability list travels with the functional type,
++    // separately from the parameter types above, so an imported declaration's requirements are
++    // demanded at call sites in the importing package.
++    std::vector<FormattedIndex> capTypes;
++    for (auto& it : NormalizeCapTys(type.capTys)) {
++        capTypes.push_back(SaveType(it));
++    }
++    auto vCapTypes = builder.CreateVector<FormattedIndex>(capTypes);
+     // SaveType has side effect (it allocates an offset for the type)
+     // DO NOT put it in another expression
+     FormattedIndex retType = SaveType(type.retTy);
+-    auto info = PackageFormat::CreateFuncTyInfo(builder, retType, type.isC, type.hasVariableLenArg);
++    auto info = PackageFormat::CreateFuncTyInfo(builder, retType, type.isC, type.hasVariableLenArg, vCapTypes);
+     PackageFormat::SemaTyBuilder tbuilder(builder);
+     tbuilder.add_kind(GetFormatTypeKind(type.kind));
+     tbuilder.add_typeArgs(vParamTypes);
+@@ -1392,7 +1400,8 @@ TDeclOffset ASTWriter::ASTWriterImpl::SaveStructDecl(const StructDecl& structDec
+     auto vInterfaceTypes = GetVirtualInterfaces(structDecl);
+     auto generic = SaveGeneric(structDecl);
+     auto genericDeclIndex = GetGenericDeclIndex(structDecl);
+-    auto info = PackageFormat::CreateStructInfo(builder, vInterfaceTypes, structBody, 0);
++    auto vcaptures = SaveCapturesCapTys(structDecl);
++    auto info = PackageFormat::CreateStructInfo(builder, vInterfaceTypes, structBody, 0, vcaptures);
+     PackageFormat::DeclBuilder dbuilder(builder);
+     SaveDeclBasicInfo(declInfo, dbuilder);
+     dbuilder.add_kind(PackageFormat::DeclKind_StructDecl);
+@@ -1472,9 +1481,11 @@ TDeclOffset ASTWriter::ASTWriterImpl::SaveClassDecl(const ClassDecl& classDecl,
+     auto vinheritedTypes = GetVirtualInterfaces(classDecl);
+     auto generic = SaveGeneric(classDecl);
+     auto genericDeclIndex = GetGenericDeclIndex(classDecl);
++    auto vcaptures = SaveCapturesCapTys(classDecl);
+     PackageFormat::ClassInfoBuilder ibuilder(builder);
+     ibuilder.add_body(vclassBody);
+     ibuilder.add_inheritedTypes(vinheritedTypes);
++    ibuilder.add_capturesTypes(vcaptures);
+     if (classDecl.TestAttr(Attribute::IS_ANNOTATION)) {
+         ibuilder.add_isAnno(true);
+         for (auto& ann : classDecl.annotations) {
+diff --git a/src/Modules/ASTSerialization/ASTWriterImpl.h b/src/Modules/ASTSerialization/ASTWriterImpl.h
+index ca6fab12..8cb9f16a 100644
+--- a/src/Modules/ASTSerialization/ASTWriterImpl.h
++++ b/src/Modules/ASTSerialization/ASTWriterImpl.h
+@@ -19,6 +19,7 @@
+ 
+ #include "cangjie/AST/ASTCasting.h"
+ #include "cangjie/Modules/ASTSerialization.h"
++#include "cangjie/Sema/CapabilityCheck.h"
+ 
+ #include "ASTSerializeUtils.h"
+ 
+@@ -222,6 +223,52 @@ private:
+         }
+         return builder.CreateVector<FormattedIndex>(superInterfaceTypes);
+     }
++    /**
++     * Checked exceptions (proposal 3.10.2 rule 1): the canonical normal form of a capability list
++     * — entries subsumed by another entry dropped, the remainder ordered by type name.
++     *
++     * Sound because a demand is per entry and satisfied by any supply the entry is a subtype of:
++     * with 'A <: B' in one list, any supply discharging B discharges A too, so {A,B} and {B}
++     * impose the same obligation. Normalising here keeps the EXPORTED metadata independent of the
++     * order the clause happened to be written in, so reordering a clause is not an ABI change.
++     * Ordering is by name rather than by pointer, which would vary run to run.
++     */
++    std::vector<Ptr<AST::Ty>> NormalizeCapTys(const std::vector<Ptr<AST::Ty>>& capTys)
++    {
++        std::vector<Ptr<AST::Ty>> kept;
++        for (auto cap : capTys) {
++            if (!AST::Ty::IsTyCorrect(cap)) {
++                continue;
++            }
++            // Keep the maximal entries. An entry equal to one already kept (mutual subtypes)
++            // is dropped by the same test, which is what deduplication needs.
++            bool subsumed = std::any_of(capTys.begin(), capTys.end(), [this, cap](Ptr<AST::Ty> other) {
++                return AST::Ty::IsTyCorrect(other) && other != cap && typeManager.IsSubtype(cap, other);
++            });
++            if (!subsumed && !Utils::In(cap, kept)) {
++                kept.emplace_back(cap);
++            }
++        }
++        std::stable_sort(kept.begin(), kept.end(),
++            [](Ptr<AST::Ty> a, Ptr<AST::Ty> b) { return AST::Ty::ToString(a) < AST::Ty::ToString(b); });
++        return kept;
++    }
++
++    /**
++     * Checked exceptions (proposal 3.9 with 3.10.2): save the 'captures' clause of a class or
++     * struct, which every construction site of the declaration must supply. Read from the
++     * elaborated clause, so a capability list alias (proposal 6.1) is already spliced in.
++     */
++    template <typename T> TVectorOffset<FormattedIndex> SaveCapturesCapTys(const T& decl)
++    {
++        std::vector<FormattedIndex> capTypes;
++        for (auto cap : NormalizeCapTys(Sema::GetCapturesCapTys(decl))) {
++            if (AST::Ty::IsTyCorrect(cap)) {
++                capTypes.push_back(SaveType(cap));
++            }
++        }
++        return builder.CreateVector<FormattedIndex>(capTypes);
++    }
+     void MarkImplicitExportOfImportSpec(AST::Package& package);
+ 
+     NodeInfo PackNodeInfo(const AST::Node& node);
+diff --git a/src/Modules/ASTSerialization/ReferenceLoader.cpp b/src/Modules/ASTSerialization/ReferenceLoader.cpp
+index 35e5ea22..9c57fb3f 100644
+--- a/src/Modules/ASTSerialization/ReferenceLoader.cpp
++++ b/src/Modules/ASTSerialization/ReferenceLoader.cpp
+@@ -367,8 +367,18 @@ void ASTLoader::ASTLoaderImpl::SetTypeTy(FormattedIndex type, const PackageForma
+     } else if constexpr (std::is_same_v<TypeT, FuncTy>) {
+         auto info = typeObj.info_as_FuncTyInfo();
+         CJC_NULLPTR_CHECK(info);
++        // Checked exceptions (proposal 3.10.2): restore the capability list of the functional
++        // type. A .cjo written before the field existed has no vector at all, which loads as an
++        // empty list — exactly the pre-feature reading.
++        std::vector<Ptr<Ty>> capTys;
++        if (auto saved = info->capTypes()) {
++            auto capCount = static_cast<uoffset_t>(saved->size());
++            for (uoffset_t i = 0; i < capCount; i++) {
++                capTys.emplace_back(LoadType(saved->Get(i)));
++            }
++        }
+         ty = typeManager.GetFunctionTy(
+-            LoadTypeArgs(typeObj), LoadType(info->retType()), {info->isC(), false, info->hasVariableLenArg()});
++            LoadTypeArgs(typeObj), LoadType(info->retType()), {info->isC(), false, info->hasVariableLenArg()}, capTys);
+     } else {
+         auto info = typeObj.info_as_CompositeTyInfo();
+         CJC_NULLPTR_CHECK(info);
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 833bec21..b539feca 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -1032,6 +1032,11 @@ void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCap
+     }
+ }
+ 
++std::vector<Ptr<Ty>> GetCapturesCapTys(const AST::Decl& decl)
++{
++    return TypeCheckUtil::GetDeclCapturesCapTys(decl);
++}
++
+ InferredCapabilities InferCapabilities(
+     TypeManager& typeManager, const ImportManager& importManager, AST::Package& pkg, DiagnosticEngine& diag)
+ {
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index 999dce30..16c32ed6 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -336,9 +336,18 @@ std::vector<Ptr<Ty>> GetInstantiatedAccessorCapTys(TypeManager& tyMgr, const Fun
+     // Entries that failed elaboration are dropped rather than forwarded: a FuncTy marks itself
+     // invalid when any capability ty is incorrect, and the desugared callee expressions this
+     // feeds have never carried an invalid ty.
++    // An IMPORTED accessor has no clause node: the loader rebuilds declarations from the .cjo,
++    // where the capability list lives on the functional type (proposal 3.10.2). Fall back to it,
++    // so a 'throws' clause on a property accessor is demanded across a package boundary too.
++    auto declared = GetFuncBodyCapTys(*accessor.funcBody);
++    if (declared.empty() && accessor.TestAttr(Attribute::IMPORTED)) {
++        if (auto funcTy = DynamicCast<FuncTy*>(accessor.GetTy())) {
++            declared = funcTy->capTys;
++        }
++    }
+     std::vector<Ptr<Ty>> caps;
+     bool anyGeneric = false;
+-    for (auto cap : GetFuncBodyCapTys(*accessor.funcBody)) {
++    for (auto cap : declared) {
+         if (!Ty::IsTyCorrect(cap)) {
+             continue;
+         }
+-- 
+2.54.0
+

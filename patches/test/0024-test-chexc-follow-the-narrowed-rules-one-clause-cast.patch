@@ -1,0 +1,539 @@
+From bd0d17098de75137fe1235b2b8ba58306f3f86c3 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 01:08:53 +0300
+Subject: [PATCH 24/43] test(chexc): follow the narrowed rules -- one clause,
+ casts rejected, subclass coverage
+
+- parse/neg_duplicate_clause.cj returns (throws, throws across a 'where', captures);
+  decl_multiple_clauses.cj and neg_empty_clause_combined.cj are gone with the rule
+  they pinned.
+- types/cast_target_neg.cj now covers every position a function type can occupy in a
+  target -- itself, a result, a parameter, a tuple component, a type argument, a type
+  pattern, and one written with a clause -- plus the parameter-typed target that stays
+  accepted. cast_pessimistic{,_neg}.cj are gone: the reading they tested is now an
+  extension.
+- captures/captures_subclass.cj is new and captures_subclass_neg.cj is rewritten: a
+  subclass restates coverage and adds its own, a more general entry covers a narrower
+  superclass one, and both a missing clause and a non-covering one are errors.
+- captures/captures_empty_and_ctor_neg.cj: 'captures ()' is not capturing (a primary
+  constructor is fine there), and a capturing class without an 'init' is an error.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../captures/captures_empty_and_ctor_neg.cj   | 28 +++++++
+ .../captures/captures_subclass.cj             | 65 ++++++++++++++++
+ .../captures/captures_subclass_neg.cj         | 40 ++++------
+ .../parse/decl_multiple_clauses.cj            | 61 ---------------
+ .../parse/neg_duplicate_clause.cj             | 27 +++++++
+ .../parse/neg_empty_clause_combined.cj        | 20 -----
+ .../types/cast_pessimistic.cj                 | 77 -------------------
+ .../types/cast_pessimistic_neg.cj             | 33 --------
+ .../types/cast_target_neg.cj                  | 57 ++++++++------
+ 9 files changed, 171 insertions(+), 237 deletions(-)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/captures/captures_empty_and_ctor_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass.cj
+ delete mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/decl_multiple_clauses.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+ delete mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_clause_combined.cj
+ delete mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic.cj
+ delete mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_empty_and_ctor_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_empty_and_ctor_neg.cj
+new file mode 100644
+index 0000000000..03dfb12a46
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_empty_and_ctor_neg.cj
+@@ -0,0 +1,28 @@
++// Checked exceptions (capability capturing rules 1 and 2): a `captures` clause that is statically
++// empty -- written `()`, or an alias that expands to nothing -- is equivalent to omitting it, so
++// `Empty` below is an ordinary non-capturing class. A capturing type, by contrast, has no implicit
++// default constructor: every constructor requires the captured capabilities at its call site, so
++// there must be one to carry the requirement.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: class 'NoCtor' has a 'captures' clause and must declare an 'init' constructor
++
++class FileException <: Exception {}
++
++// statically empty: not capturing, so the ordinary constructor rules apply
++class Empty
++captures () {
++    Empty(let x: Int64) {} // a primary constructor is fine here
++}
++
++class NoCtor
++captures FileException {
++    public func write(s: String): Unit {
++        throw FileException()
++    }
++}
++
++main() {
++    let e = Empty(1)
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass.cj
+new file mode 100644
+index 0000000000..f00ebfa196
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass.cj
+@@ -0,0 +1,65 @@
++// Checked exceptions (capability capturing rule 4): a subclass restates coverage of the superclass's
++// captured types and adds its own. Its constructor implicitly requires its own list at the call
++// site, and the `super` call resolves the superclass's requirement from the class capture scope like
++// any other call -- so the covering entry serves both. A more general entry covers a narrower one.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++open class FileException <: Exception {}
++class MissingFileException <: FileException {}
++class AuditException <: Exception {}
++
++open class Base
++captures FileException {
++    init() {}
++
++    public open func write(s: String): Unit {
++        throw FileException()
++    }
++}
++
++class Audited <: Base
++captures AuditException, FileException {
++    init() { super() }
++
++    public override func write(s: String): Unit {
++        audit(s)          // the captured AuditException capability
++        super.write(s)    // and the superclass's own business
++    }
++
++    func audit(s: String): Unit {
++        throw AuditException()
++    }
++}
++
++// a more general entry covers the superclass's narrower one
++open class Narrow
++captures MissingFileException {
++    init() {}
++}
++
++class Wider <: Narrow
++captures FileException {
++    init() { super() }
++}
++
++main(): Int64 {
++    var caught = 0
++    try {
++        let a = Audited()   // requires AuditException and FileException here
++        a.write("x")
++    } catch (e: AuditException) {
++        caught++
++    } catch (e: FileException) {
++        caught++
++    }
++    try {
++        let w = Wider()     // requires FileException, which covers MissingFileException
++        if (caught == 0) {
++            return 1
++        }
++    } catch (e: FileException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
+index 87d33d6935..b75cd2a590 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
+@@ -1,41 +1,33 @@
+-// Checked exceptions (capability capturing rule 5): a subclass does not see the superclass's
+-// captured capabilities — the synthesized field is private; it must declare its
+-// own `captures` clause if its methods need them. Its constructors do acquire the
+-// superclass constructor's requirements at the `super` call, which the explicit
+-// `throws` clause below discharges, isolating the method-body error.
++// Checked exceptions (capability capturing rule 4): every subclass of a capturing class is itself a
++// capturing class, and its `captures` list must cover the superclass's -- each superclass entry
++// covered by an own entry, possibly a more general one. A subclass with no clause, or with one that
++// misses an entry, is an error; the covering case is in captures_subclass.cj.
+ 
+-// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan Cannot find a capability for 'Class-FileException'
+-// ASSERT: scan required by this 'throw' expression
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: 'NoClause' must capture 'Class-FileException'
++// ASSERT: scan error: 'Narrow' must capture 'Class-FileException'
+ 
+ class FileException <: Exception {}
++class LogException <: Exception {}
+ 
+ open class Base
+ captures FileException {
+-    init() {
+-    }
++    init() {}
+ 
+     public open func write(s: String): Unit {
+-        throw FileException() // ok: Base's captured capability
++        throw FileException()
+     }
+ }
+ 
+-class Derived <: Base {
+-    // the super call requires Base's captures; declaring them here satisfies it
+-    init() throws FileException {
+-        super()
+-    }
++class NoClause <: Base {
++    init() { super() }
++}
+ 
+-    public override func write(s: String): Unit {
+-        throw FileException() // error: super's capture is invisible here
+-    }
++class Narrow <: Base
++captures LogException {
++    init() { super() }
+ }
+ 
+ main() {
+-    try {
+-        let d = Derived()
+-        d.write("x")
+-    } catch (e: FileException) {
+-    }
+     return 0
+ }
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_multiple_clauses.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_multiple_clauses.cj
+deleted file mode 100644
+index bbccb39338..0000000000
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_multiple_clauses.cj
++++ /dev/null
+@@ -1,61 +0,0 @@
+-// Checked exceptions (capability parameters in declarations): a declaration may carry several `throws`
+-// clauses; their entries union into one list. This serves generated code -- a macro appends a clause
+-// instead of merging into an existing one -- and conditional compilation. `captures` unions the same way.
+-// Positive: every form parses, the unioned lists are what the bodies are checked against, and it runs.
+-
+-// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+-// EXEC: %run %output
+-
+-class AException <: Exception {}
+-class BException <: Exception {}
+-class CException <: Exception {}
+-class DException <: Exception {}
+-
+-// two clauses, the second carrying several entries
+-func step() throws AException throws BException, CException {
+-    throw AException()
+-}
+-
+-// a `where` block may sit between the clauses, in either order
+-func generic<T>(x: T) throws AException where T <: ToString throws BException {
+-    throw BException()
+-}
+-
+-// unioned lists are what call sites must satisfy: all three entries are required here
+-func callStep() throws AException, BException, CException {
+-    step()
+-}
+-
+-// `...` may repeat across the clauses of one declaration, idempotently: any occurrence opens
+-// the combined list to inference, so the DException thrown below needs no explicit entry
+-func opened() throws AException, ... throws BException, ... {
+-    throw AException()
+-}
+-
+-func callOpened() throws AException, BException {
+-    opened()
+-}
+-
+-// captures unions the same way; entries follow the `throws` entry rules, aliases included
+-type Two = (CException, DException)
+-
+-class Multi captures AException captures BException, Two {
+-    init() {}
+-    func a() { throw AException() }
+-    func b() { throw BException() }
+-    func c() { throw CException() }
+-    func d() { throw DException() }
+-}
+-
+-main() {
+-    try {
+-        callStep()
+-        callOpened()
+-        generic(1)
+-    } catch (e: Exception) {}
+-    try {
+-        let m = Multi()
+-        m.a()
+-    } catch (e: Exception) {}
+-    return 0
+-}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+new file mode 100644
+index 0000000000..491a5549d7
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+@@ -0,0 +1,27 @@
++// Checked exceptions: a declaration carries at most one clause of each kind, exactly as it carries
++// one `where` block; a second is an error. Generated code that adds requirements merges entries into
++// the existing clause, which also preserves its inference status -- appending a clause could flip it.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: duplicate 'throws' clause
++// ASSERT: scan error: duplicate 'captures' clause
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func f(): Unit throws AException throws BException {
++    throw AException()
++}
++
++// a `where` block between the two does not make a second clause legal either
++func g<T>(x: T): Unit throws AException where T <: ToString throws BException {
++    throw AException()
++}
++
++class Twice captures AException captures BException {
++    init() {}
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_clause_combined.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_clause_combined.cj
+deleted file mode 100644
+index 277233d530..0000000000
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_clause_combined.cj
++++ /dev/null
+@@ -1,20 +0,0 @@
+-// Checked exceptions: `throws ()` is an authoritative empty list -- it pins the callable as requiring
+-// no capabilities. Combining it with another `throws` clause of the same declaration contradicts the
+-// pin and is an error, even though several non-empty clauses union freely.
+-
+-// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error: an empty 'throws' clause cannot be combined with another clause of the same kind
+-
+-class AException <: Exception {}
+-
+-func f() throws () throws AException {
+-    throw AException()
+-}
+-
+-func g() throws AException throws () {
+-    throw AException()
+-}
+-
+-main() {
+-    return 0
+-}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic.cj b/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic.cj
+deleted file mode 100644
+index 3412970a5c..0000000000
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic.cj
++++ /dev/null
+@@ -1,77 +0,0 @@
+-// Checked exceptions (reflection and runtime casts): a runtime type test sees the erased shape and
+-// cannot verify a capability list, so a cast target is read pessimistically, by position: a function
+-// type in a covariant position receives `throws Exception`, one in a contravariant position keeps the
+-// empty list it spells. Positive: the requirement the cast hands back is dischargeable, and the
+-// contravariant positions stay clause-free.
+-
+-// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+-// EXEC: %run %output
+-
+-class AException <: Exception {}
+-
+-func throwing() throws AException {
+-    throw AException()
+-}
+-
+-func plain(): Unit {}
+-
+-// contravariant: the callback the value receives keeps the empty list, so a clause-free lambda fits
+-func higherOrder(f: () -> Unit): Unit {
+-    f()
+-}
+-
+-// covariant through a result: the returned function is read as requiring a capability
+-func returning(): () -> Unit {
+-    return plain
+-}
+-
+-main() {
+-    let asAny: Any = throwing
+-    var ran = 0
+-    try {
+-        // `() throws Exception -> Unit`: the requirement is real and is discharged here
+-        match (asAny as (() -> Unit)) {
+-            case Some(g) => g()
+-            case None => ran++
+-        }
+-    } catch (e: AException) {
+-        ran++
+-    } catch (e: Exception) {
+-        ran++
+-    }
+-
+-    let hoAny: Any = higherOrder
+-    try {
+-        match (hoAny as ((() -> Unit) -> Unit)) {
+-            case Some(h) => h(plain) // the parameter stayed clause-free: a plain function fits
+-            case None => ran++
+-        }
+-    } catch (e: Exception) {
+-        ran++
+-    }
+-
+-    let retAny: Any = returning
+-    try {
+-        match (retAny as (() -> (() -> Unit))) {
+-            case Some(r) => r()() // both arrows are covariant: both require a capability
+-            case None => ran++
+-        }
+-    } catch (e: Exception) {
+-        ran++
+-    }
+-
+-    // type patterns read the same way
+-    try {
+-        match (asAny) {
+-            case g: () -> Unit => g()
+-            case _ => ran++
+-        }
+-    } catch (e: Exception) {
+-        ran++
+-    }
+-
+-    if (ran == 1) {
+-        return 0
+-    }
+-    return 0
+-}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic_neg.cj
+deleted file mode 100644
+index b4726bf658..0000000000
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic_neg.cj
++++ /dev/null
+@@ -1,33 +0,0 @@
+-// Checked exceptions (reflection and runtime casts): the pessimistic reading of a cast target is a
+-// real requirement -- using the cast value where nothing discharges it is an error, which is exactly
+-// the laundering the rule closes. The rejected targets are in types/cast_target_neg.cj.
+-
+-// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan Cannot find a capability for 'Class-Exception'
+-
+-class AException <: Exception {}
+-
+-func throwing() throws AException {
+-    throw AException()
+-}
+-
+-public func callCast(x: Any): Unit {
+-    // the cast hands back `() throws Exception -> Unit`: nothing here discharges it
+-    match (x as (() -> Unit)) {
+-        case Some(g) => g()
+-        case None => ()
+-    }
+-}
+-
+-public func patternBinding(x: Any): Unit {
+-    match (x) {
+-        case g: () -> Unit => g() // same requirement through a type pattern
+-        case _ => ()
+-    }
+-}
+-
+-main() {
+-    callCast(throwing)
+-    patternBinding(throwing)
+-    return 0
+-}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_neg.cj
+index 3e1e3a4088..d272d547f7 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_neg.cj
+@@ -1,41 +1,54 @@
+-// Checked exceptions (reflection and runtime casts): a type argument of a generic is invariant --
+-// CangJie has no declaration-site variance -- so a function type inside one has no sound reading and
+-// the target is rejected. Targets are written without clauses: the reading decides them.
++// Checked exceptions (reflection and runtime casts): a runtime type test sees the erased shape, so
++// nothing verifies a capability list -- reading a function type in a cast target as clause-free
++// would launder the requirements of whatever value the cast accepts. The base design therefore
++// rejects any cast or type-pattern target containing a function type, in any position: the target
++// itself, a result, a parameter, a tuple component, a type argument. A parameter-typed target is
++// accepted (rejecting it would break ordinary generic code); an instantiation with a function type
++// is an unchecked boundary instead.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan cannot be a runtime cast target: it has a function type in an invariant position
+-// ASSERT: scan error: a capability clause is not allowed in a runtime cast target
++// ASSERT: scan cannot be a runtime cast target: it contains a function type
++// ASSERT: scan error: 'Class-ArrayList<() -> Unit>' cannot be a runtime cast target
++// ASSERT: scan error: 'Tuple<() -> Unit, Int64>' cannot be a runtime cast target
+ 
+ import std.collection.*
+ 
+ class AException <: Exception {}
+ 
+-func invariantTarget(x: Any): Unit {
+-    match (x as ArrayList<() -> Unit>) {
+-        case Some(_) => ()
+-        case None => ()
+-    }
++func topLevel(x: Any): Unit {
++    match (x as (() -> Unit)) { case Some(_) => (); case None => () }
+ }
+ 
+-func optionTarget(x: Any): Unit {
+-    match (x as Option<() -> Unit>) {
+-        case Some(_) => ()
+-        case None => ()
+-    }
++func inResult(x: Any): Unit {
++    match (x as (() -> (() -> Unit))) { case Some(_) => (); case None => () }
++}
++
++func inParameter(x: Any): Unit {
++    match (x as ((() -> Unit) -> Unit)) { case Some(_) => (); case None => () }
++}
++
++func inTuple(x: Any): Unit {
++    match (x as ((() -> Unit, Int64))) { case Some(_) => (); case None => () }
+ }
+ 
+-func arrayPattern(x: Any): Unit {
++func inTypeArgument(x: Any): Unit {
++    match (x as ArrayList<() -> Unit>) { case Some(_) => (); case None => () }
++}
++
++func inTypePattern(x: Any): Unit {
+     match (x) {
+-        case _: Array<() -> Unit> => ()
++        case _: () -> Unit => ()
+         case _ => ()
+     }
+ }
+ 
+-func writtenClause(x: Any): Unit {
+-    match (x as (() throws AException -> Unit)) {
+-        case Some(_) => ()
+-        case None => ()
+-    }
++func withClause(x: Any): Unit {
++    match (x as (() throws AException -> Unit)) { case Some(_) => (); case None => () }
++}
++
++// accepted: a parameter-typed target, whatever T turns out to be
++func parameterTyped<T>(x: Any): Option<T> {
++    x as T
+ }
+ 
+ main() {
+-- 
+2.54.0
+

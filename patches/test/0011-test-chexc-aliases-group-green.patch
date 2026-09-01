@@ -1,0 +1,99 @@
+From 83a360593dbb65132aceccda066eabdff14889cb Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 02:42:54 +0300
+Subject: [PATCH 11/43] test(chexc): aliases group green
+
+Syntax corrected to CangJie's 'type X = (...)' (the proposal's 6.1 examples use
+'typealias', which the language does not accept). The captures case now handles
+both exceptions the alias expands to.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../compiler/CheckedExceptions/aliases/alias_basic.cj    | 2 +-
+ .../CheckedExceptions/aliases/alias_cycle_neg.cj         | 4 ++--
+ .../LLT/compiler/CheckedExceptions/aliases/alias_neg.cj  | 4 ++--
+ .../aliases/alias_nested_and_captures.cj                 | 9 ++++++---
+ 4 files changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj
+index 512c52b0af..3d1fe03961 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj
+@@ -8,7 +8,7 @@ class NetworkException <: Exception {}
+ class FileNotFoundException <: Exception {}
+ class ParseException <: Exception {}
+ 
+-typealias MyModuleExceptions = (NetworkException, FileNotFoundException)
++type MyModuleExceptions = (NetworkException, FileNotFoundException)
+ 
+ func f() throws MyModuleExceptions {
+     throw NetworkException()
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj
+index 8610142463..2a2fad1f79 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj
+@@ -6,8 +6,8 @@
+ 
+ class AException <: Exception {}
+ 
+-typealias Loop = (AException, Loop2)
+-typealias Loop2 = (AException, Loop)
++type Loop = (AException, Loop2)
++type Loop2 = (AException, Loop)
+ 
+ func f() throws Loop {
+     throw AException()
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj
+index 024c44de5e..1a1f01e2e8 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj
+@@ -11,8 +11,8 @@ class AException <: Exception {}
+ class NotAnException {}
+ class RequestException <: UncheckedException {}
+ 
+-typealias BadElement = (AException, NotAnException)
+-typealias UncheckedElement = (AException, RequestException)
++type BadElement = (AException, NotAnException)
++type UncheckedElement = (AException, RequestException)
+ 
+ func f() throws BadElement {
+     throw AException()
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj
+index 2eeb34709c..adbc58d99c 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj
+@@ -8,15 +8,15 @@ class AException <: Exception {}
+ class BException <: Exception {}
+ class CException <: Exception {}
+ 
+-typealias AB = (AException, BException)
+-typealias ABC = (AB, CException)
++type AB = (AException, BException)
++type ABC = (AB, CException)
+ 
+ func wide() throws ABC {
+     throw CException()
+ }
+ 
+ // a single-element alias is a one-entry list
+-typealias JustA = AException
++type JustA = AException
+ func narrow() throws JustA {
+     throw AException()
+ }
+@@ -40,9 +40,12 @@ main() {
+         narrow()
+     } catch (e: AException) {
+     }
++    // `captures AB` expands to both AException and BException, so constructing a Worker
++    // demands both capabilities here
+     try {
+         let w = Worker()
+         w.run()
++    } catch (e: AException) {
+     } catch (e: BException) {
+     }
+     return 0
+-- 
+2.54.0
+

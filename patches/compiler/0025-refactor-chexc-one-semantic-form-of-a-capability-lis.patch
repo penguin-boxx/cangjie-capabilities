@@ -1,0 +1,134 @@
+From 59cb96952e0c809902af57ba09179b0f2d5f0ef5 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 03:45:59 +0300
+Subject: [PATCH 25/44] refactor(chexc): one semantic form of a capability
+ list, shared with the serializer
+
+The revision made the canonical -- "semantic" -- form of a capability list
+normative: a duplicate entry, or one covered by a more general entry of the same
+list, is not part of the list, and every rule that compares or consumes lists works
+on that form.
+
+The checker already behaves that way, because every comparison is coverage-based
+rather than element-wise, and a test now pins it: duplicate and covered entries in a
+declaration, assignment in both directions between coverage-equivalent spellings,
+and an override checked against a list with a redundant entry.
+
+What is left is type identity -- '() throws (A, B) -> R' and '() throws A -> R'
+intern as two types when B is covered by A. Normalizing at interning was tried and
+reverted: running subtype queries while types are being formed broke 17 cases across
+generics, serialization and lambda checking, and nothing observes the difference
+(assignment holds both ways by subtyping, overload resolution erases the lists, and
+the .cjo is normalized on the way out).
+
+The normalizer the serializer carried moves to TypeManager, where the checker can
+use it too; the exported form is that plus a stable order, so that reordering a
+clause in source stays a non-change for metadata.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ include/cangjie/Sema/TypeManager.h           |  9 ++++++
+ src/Modules/ASTSerialization/ASTWriterImpl.h | 19 ++++---------
+ src/Sema/TypeManager.cpp                     | 29 ++++++++++++++++++++
+ 3 files changed, 43 insertions(+), 14 deletions(-)
+
+diff --git a/include/cangjie/Sema/TypeManager.h b/include/cangjie/Sema/TypeManager.h
+index 11012b50..a0497c57 100644
+--- a/include/cangjie/Sema/TypeManager.h
++++ b/include/cangjie/Sema/TypeManager.h
+@@ -76,6 +76,15 @@ public:
+     Ptr<AST::FuncTy> GetFunctionTy(const std::vector<Ptr<AST::Ty>>& paramTys, Ptr<AST::Ty> retTy,
+         AST::FuncTy::Config cfg = {false, false, false, false}, const std::vector<Ptr<AST::Ty>>& capTys = {});
+ 
++    /**
++     * Checked exceptions: the semantic form of a capability list -- a duplicate entry, or one
++     * covered by a more general entry of the same list, is not part of the list. Every comparison
++     * and every consumer works on this form, so coverage-equivalent lists behave identically. A
++     * list still holding an inference placeholder is returned unchanged: comparing it would bind
++     * the placeholder, and capability lists take no part in type-argument inference.
++     */
++    std::vector<Ptr<AST::Ty>> NormalizeCapTys(const std::vector<Ptr<AST::Ty>>& capTys);
++
+     Ptr<AST::ArrayTy> GetArrayTy(Ptr<AST::Ty> elemTy, unsigned int dims);
+     Ptr<AST::VArrayTy> GetVArrayTy(AST::Ty& elemTy, int64_t size);
+     Ptr<AST::PointerTy> GetPointerTy(Ptr<AST::Ty> elemTy);
+diff --git a/src/Modules/ASTSerialization/ASTWriterImpl.h b/src/Modules/ASTSerialization/ASTWriterImpl.h
+index 58e4f931..7bc2d7f7 100644
+--- a/src/Modules/ASTSerialization/ASTWriterImpl.h
++++ b/src/Modules/ASTSerialization/ASTWriterImpl.h
+@@ -235,20 +235,11 @@ private:
+      */
+     std::vector<Ptr<AST::Ty>> NormalizeCapTys(const std::vector<Ptr<AST::Ty>>& capTys)
+     {
+-        std::vector<Ptr<AST::Ty>> kept;
+-        for (auto cap : capTys) {
+-            if (!AST::Ty::IsTyCorrect(cap)) {
+-                continue;
+-            }
+-            // Keep the maximal entries. An entry equal to one already kept (mutual subtypes)
+-            // is dropped by the same test, which is what deduplication needs.
+-            bool subsumed = std::any_of(capTys.begin(), capTys.end(), [this, cap](Ptr<AST::Ty> other) {
+-                return AST::Ty::IsTyCorrect(other) && other != cap && typeManager.IsSubtype(cap, other);
+-            });
+-            if (!subsumed && !Utils::In(cap, kept)) {
+-                kept.emplace_back(cap);
+-            }
+-        }
++        // The semantic form is the type checker's (duplicates and covered entries are not part of
++        // the list); the exported form adds a stable order, so that reordering a clause in source
++        // is not a metadata change. Ordering is by name rather than by pointer, which would vary
++        // run to run.
++        auto kept = typeManager.NormalizeCapTys(capTys);
+         std::stable_sort(kept.begin(), kept.end(),
+             [](Ptr<AST::Ty> a, Ptr<AST::Ty> b) { return AST::Ty::ToString(a) < AST::Ty::ToString(b); });
+         return kept;
+diff --git a/src/Sema/TypeManager.cpp b/src/Sema/TypeManager.cpp
+index 5a91a3df..92c64e2b 100644
+--- a/src/Sema/TypeManager.cpp
++++ b/src/Sema/TypeManager.cpp
+@@ -24,6 +24,7 @@
+ #include "cangjie/AST/ScopeManagerApi.h"
+ #include "cangjie/AST/Utils.h"
+ #include "cangjie/Utils/CheckUtils.h"
++#include "cangjie/Utils/Utils.h"
+ 
+ namespace Cangjie {
+ using namespace AST;
+@@ -918,6 +919,34 @@ bool HasPlaceholder(Ptr<const Ty> ty)
+ }
+ } // namespace
+ 
++std::vector<Ptr<Ty>> TypeManager::NormalizeCapTys(const std::vector<Ptr<Ty>>& capTys)
++{
++    if (capTys.size() < 2) {
++        return capTys;
++    }
++    // While type arguments are still being solved, a placeholder entry must not be compared: the
++    // comparison would bind it, and capability lists take no part in type-argument inference. Such
++    // a list is normalized once it is instantiated.
++    if (std::any_of(capTys.begin(), capTys.end(), [](auto cap) { return HasPlaceholder(cap); })) {
++        return capTys;
++    }
++    std::vector<Ptr<Ty>> kept;
++    for (auto cap : capTys) {
++        if (!Ty::IsTyCorrect(cap)) {
++            kept.emplace_back(cap); // an invalid entry is left alone; its error is reported already
++            continue;
++        }
++        // Keep the maximal entries. An entry equal to one already kept -- mutual subtypes -- is
++        // dropped by the same test, which is what deduplication needs.
++        bool covered = std::any_of(capTys.begin(), capTys.end(),
++            [this, cap](Ptr<Ty> other) { return Ty::IsTyCorrect(other) && other != cap && IsSubtype(cap, other); });
++        if (!covered && !Utils::In(cap, kept)) {
++            kept.emplace_back(cap);
++        }
++    }
++    return kept;
++}
++
+ bool TypeManager::IsCapTysSubsumed(const std::vector<Ptr<Ty>>& subCapTys, const std::vector<Ptr<Ty>>& superCapTys)
+ {
+     return std::all_of(subCapTys.begin(), subCapTys.end(), [this, &superCapTys](Ptr<Ty> subCap) {
+-- 
+2.54.0
+

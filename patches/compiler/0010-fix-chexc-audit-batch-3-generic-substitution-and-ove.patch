@@ -1,0 +1,187 @@
+From d54a90a3efce16a00fce6a602ed585ac4093696d Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 05:07:36 +0300
+Subject: [PATCH 10/44] =?UTF-8?q?fix(chexc):=20audit=20batch=203=20?=
+ =?UTF-8?q?=E2=80=94=20generic=20substitution=20and=20override=20coverage?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The last four findings of the implementation audit (notes/audit-report.md).
+
+MF3: a type parameter reachable ONLY through a capability list was invisible to
+GetAllGenericTys, which walks typeArgs — and capability lists deliberately sit
+outside typeArgs so they never reach code generation. The unsubstituted
+placeholder then reached capability checking, where it was both accepted as
+"unchecked" on the demand side (silently dropping a real requirement) and
+rejected on the supply side (refusing legal code). The traversal now also
+enqueues capability entries. This does not make capability lists participate in
+DECIDING type arguments (proposal 3.6 forbids that); it only completes the
+substitution that instantiation is handed.
+
+MF4: inferred lists were demanded verbatim at generic call sites, still naming
+the callee's own type parameters, so a requirement could be discharged at the
+wrong instantiation while the real exception escaped. They are now instantiated
+through the receiver's mapping combined with the call's type arguments.
+
+MF9: proposal 3.8 covers "a method or property accessor", but accessors are not
+member signatures in their own right and never reached override checking. Parent
+and child getters and setters are now paired explicitly.
+
+MF8: a non-private static class member can be redefined by a subclass and is
+dispatched virtually, so 3.8 applies — but override checking runs before
+inference and cannot see an inferred list. Such members now require an explicit
+clause rather than being inferred, which keeps the two consistent. The fuller
+fix (a post-inference re-check that would let them be inferred too) is recorded
+as follow-up in the ledger.
+
+Gate: CheckedExceptions 55/63 (the 8 failures are the three features not yet
+implemented); ctest 49/49; Parser/Sema LLT 3934/3934; clang-format clean.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 39 ++++++++++++++++++-
+ .../StructInheritanceChecker.cpp              | 26 +++++++++++++
+ .../StructInheritanceChecker.h                |  1 +
+ src/Sema/MultiTypeSubstUtils.cpp              | 11 ++++++
+ 4 files changed, 75 insertions(+), 2 deletions(-)
+
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 2eb3901c..1733b1c9 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -447,9 +447,14 @@ private:
+         if (ce.resolvedFunction) {
+             auto it = inferred.find(ce.resolvedFunction);
+             if (it != inferred.end()) {
++                // The entries name the CALLEE's type parameters; the declared list on the callee
++                // expression was already substituted by type check, so these must be too, or a
++                // generic callee's requirement is demanded (and discharged) at the wrong type.
++                auto typeMapping = CalleeTypeMapping(ce);
+                 for (auto cap : it->second) {
+-                    if (!Utils::In(cap, demands)) {
+-                        demands.emplace_back(cap);
++                    auto demanded = typeMapping.empty() ? cap : typeManager.GetInstantiatedTy(cap, typeMapping);
++                    if (Ty::IsTyCorrect(demanded) && !Utils::In(demanded, demands)) {
++                        demands.emplace_back(demanded);
+                     }
+                 }
+             }
+@@ -462,6 +467,27 @@ private:
+         DemandConstructedCaptures(ce);
+     }
+ 
++    /// Substitution from the callee's own type parameters to this call site's type arguments:
++    /// the receiver's instantiation (for a member of a generic type) combined with the call's
++    /// explicit or inferred type arguments (for a generic function).
++    TypeSubst CalleeTypeMapping(const CallExpr& ce) const
++    {
++        TypeSubst mapping;
++        if (!ce.resolvedFunction) {
++            return mapping;
++        }
++        if (auto ma = DynamicCast<MemberAccess*>(ce.baseFunc.get());
++            ma && ma->baseExpr && ce.resolvedFunction->outerDecl && Ty::IsTyCorrect(ma->baseExpr->GetTy())) {
++            mapping =
++                TypeCheckUtil::GenerateTypeMappingByTy(ce.resolvedFunction->outerDecl->GetTy(), ma->baseExpr->GetTy());
++        }
++        if (auto nre = DynamicCast<NameReferenceExpr*>(ce.baseFunc.get()); nre && !nre->instTys.empty()) {
++            auto funcMapping = TypeCheckUtil::GenerateTypeMapping(*ce.resolvedFunction, nre->instTys);
++            mapping.insert(funcMapping.begin(), funcMapping.end());
++        }
++        return mapping;
++    }
++
+     void DemandConstructedCaptures(CallExpr& ce)
+     {
+         // Constructing an instance of a capturing class or struct requires its captured
+@@ -608,6 +634,15 @@ private:
+         if (fd.outerDecl && fd.outerDecl->astKind == ASTKind::INTERFACE_DECL) {
+             return false;
+         }
++        // A non-private static class member can be redefined by a subclass and is dispatched
++        // virtually, so proposal 3.8 applies to it — but override checking runs during type
++        // check, before inference, and would not see an inferred list. Requiring an explicit
++        // clause here keeps the two consistent; a post-inference re-check would let these be
++        // inferred too (see notes/audit-report.md MF8).
++        if (fd.TestAttr(Attribute::STATIC) && !fd.TestAttr(Attribute::PRIVATE) && fd.outerDecl &&
++            fd.outerDecl->astKind == ASTKind::CLASS_DECL) {
++            return false;
++        }
+         auto& clause = fd.funcBody->throwsClause;
+         return !clause || clause->hasEllipsis;
+     }
+diff --git a/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp b/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
+index dd726e78..f2edf4e5 100644
+--- a/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
++++ b/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
+@@ -1331,6 +1331,32 @@ void StructInheritanceChecker::CheckPropertyInheritance(const MemberSignature& p
+             DiagKindRefactor::sema_property_must_implement_both, *childProp, childProp->identifier.Val());
+     }
+     CheckAccessVisibility(*parentDecl, child, child);
++    CheckPropertyThrowsClauses(*parentProp, *childProp);
++}
++
++/**
++ * Proposal 3.8 covers property accessors as well as methods, but accessors are not member
++ * signatures of their own, so they never reach the method override path. Pair them up here.
++ */
++void StructInheritanceChecker::CheckPropertyThrowsClauses(const PropDecl& parentProp, const PropDecl& childProp) const
++{
++    auto check = [this](const OwnedPtr<FuncDecl>& parentAccessor, const OwnedPtr<FuncDecl>& childAccessor) {
++        if (!parentAccessor || !childAccessor) {
++            return;
++        }
++        auto parentTy = DynamicCast<FuncTy*>(parentAccessor->GetTy());
++        auto childTy = DynamicCast<FuncTy*>(childAccessor->GetTy());
++        if (!parentTy || !childTy) {
++            return;
++        }
++        CheckThrowsClauseCompatible(*parentAccessor, *childAccessor, *parentTy, *childTy);
++    };
++    if (!parentProp.getters.empty() && !childProp.getters.empty()) {
++        check(parentProp.getters.front(), childProp.getters.front());
++    }
++    if (!parentProp.setters.empty() && !childProp.setters.empty()) {
++        check(parentProp.setters.front(), childProp.setters.front());
++    }
+ }
+ 
+ bool StructInheritanceChecker::CheckReturnOverrideByGeneric(const FuncTy& parentTy, const FuncTy& childTy) const
+diff --git a/src/Sema/InheritanceChecker/StructInheritanceChecker.h b/src/Sema/InheritanceChecker/StructInheritanceChecker.h
+index 4f742772..fdc96569 100644
+--- a/src/Sema/InheritanceChecker/StructInheritanceChecker.h
++++ b/src/Sema/InheritanceChecker/StructInheritanceChecker.h
+@@ -80,6 +80,7 @@ private:
+      * Checked exceptions (proposal 3.8): the override's 'throws' list must be pointwise subsumed
+      * by the original's. Constructors are exempt.
+      */
++    void CheckPropertyThrowsClauses(const AST::PropDecl& parentProp, const AST::PropDecl& childProp) const;
+     void CheckThrowsClauseCompatible(const AST::FuncDecl& parentFunc, const AST::FuncDecl& childFunc,
+         const FuncTy& parentTy, const FuncTy& childTy) const;
+     void CheckMutModifierCompatible(const MemberSignature& parent, const Decl& child) const;
+diff --git a/src/Sema/MultiTypeSubstUtils.cpp b/src/Sema/MultiTypeSubstUtils.cpp
+index 9b8d2214..56dd4cb6 100644
+--- a/src/Sema/MultiTypeSubstUtils.cpp
++++ b/src/Sema/MultiTypeSubstUtils.cpp
+@@ -205,6 +205,17 @@ std::unordered_set<Ptr<Ty>> GetAllGenericTys(Ptr<Ty> const ty)
+         for (auto it : curTy->typeArgs) {
+             q.emplace(it);
+         }
++        // Checked exceptions: a functional type's capability list is deliberately outside
++        // typeArgs (so capabilities never reach code generation), but a type parameter
++        // reachable only through it still needs a substitution — otherwise the raw
++        // instantiation placeholder survives into capability checking, where it is neither
++        // demandable nor dischargeable. Capability lists still take no part in deciding type
++        // arguments (proposal 3.6); this only makes the resulting substitution complete.
++        if (auto funcTy = DynamicCast<FuncTy*>(curTy)) {
++            for (auto cap : funcTy->capTys) {
++                q.emplace(cap);
++            }
++        }
+     }
+     return res;
+ }
+-- 
+2.54.0
+

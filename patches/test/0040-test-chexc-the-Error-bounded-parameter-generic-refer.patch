@@ -1,0 +1,141 @@
+From fb23b40f6b92bcf460d30d76537f78da834e4a7d Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Mon, 31 Aug 2026 14:34:54 +0300
+Subject: [PATCH 40/43] test(chexc): the Error-bounded parameter, generic
+ references, and same-cardinality completion
+
+'error_generic.cj' with its discriminating negative half (a parameter bounded by Exception must
+still demand, so the exemption cannot have widened); 'infer_ref_generic.cj' runs the pinned
+reference and catches the instantiated exception; 'infer_dots_completion.cj' pins the case where
+inference replaces an explicit entry with one that covers it, leaving the cardinality unchanged.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../inference/infer_dots_completion.cj        | 23 +++++++++++++
+ .../inference/infer_ref_generic.cj            | 23 +++++++++++++
+ .../unchecked/error_generic.cj                | 32 +++++++++++++++++++
+ .../unchecked/error_generic_neg.cj            | 13 ++++++++
+ 4 files changed, 91 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_dots_completion.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_generic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/unchecked/error_generic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/unchecked/error_generic_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_dots_completion.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_dots_completion.cj
+new file mode 100644
+index 0000000000..43e970eb64
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_dots_completion.cj
+@@ -0,0 +1,23 @@
++// Checked exceptions (interaction with an explicit 'throws'): the completed declaration type is
++// the semantic form of the union. Here the explicit entry is 'DerE' and inference adds 'BaseE',
++// which covers it -- one entry before, one entry after, and a different list. Completion that
++// compared cardinality left the declaration on its stale type, so the caller below was checked
++// against 'DerE' while the body could raise 'BaseE'.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: Cannot find a capability for 'Class-BaseE'
++
++open class BaseE <: Exception {}
++class DerE <: BaseE {}
++
++func h(): Unit
++throws DerE, ... {
++    throw BaseE()
++}
++
++public func caller(): Unit
++throws DerE {          // covers the explicit entry only; the completed list is {BaseE}
++    h()
++}
++
++main(): Int64 { 0 }
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_generic.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_generic.cj
+new file mode 100644
+index 0000000000..f8d236fa95
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_ref_generic.cj
+@@ -0,0 +1,23 @@
++// Checked exceptions (inference and function values): a reference that pins the referenced
++// declaration's type arguments demands the INSTANTIATED entries. 'risky<Int64>' requires
++// 'GenExc<Int64>'; demanding the uninstantiated 'GenExc<T>' made the requirement undischargeable,
++// since no 'catch' can name it.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class GenExc<T> <: Exception {}
++
++func risky<T>(): Unit {          // no clause: infers 'throws GenExc<T>'
++    throw GenExc<T>()
++}
++
++main(): Int64 {
++    try {
++        let w = risky<Int64>     // demands GenExc<Int64>, which this try supplies
++        w()
++    } catch (e: GenExc<Int64>) {
++        return 0
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_generic.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_generic.cj
+new file mode 100644
+index 0000000000..6bd9eb870c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_generic.cj
+@@ -0,0 +1,32 @@
++// Checked exceptions ("Capability requirement at 'throw'", rule 1): a static type outside the
++// 'Exception' root requires nothing -- and that applies to a type PARAMETER whose bound puts it
++// there, not only to a concrete class. 'throw e' with 'E <: Error' is untracked, so an explicit
++// empty clause is satisfiable; before this, such a throw demanded 'CanThrow<Generics-E>', a
++// capability no 'catch' could ever supply. ('Error' cannot be subclassed outside std.core -- its
++// constructors are not exported -- so the parameter is the only way to write this shape.)
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++// Under the Error root through its bound: nothing is demanded, so 'throws ()' holds.
++public func failGeneric<E>(e: E): Unit
++throws () where E <: Error {
++    throw e
++}
++
++// The mirror: a parameter bounded by Exception still demands, proved through the same bound.
++public func failChecked<E>(e: E): Unit
++throws E where E <: Exception {
++    throw e
++}
++
++class CheckedExc <: Exception {}
++
++main(): Int64 {
++    try {
++        failChecked<CheckedExc>(CheckedExc())
++    } catch (e: CheckedExc) {
++        return 0
++    }
++    return 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_generic_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_generic_neg.cj
+new file mode 100644
+index 0000000000..07e5a4d40a
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_generic_neg.cj
+@@ -0,0 +1,13 @@
++// The discriminating half of 'error_generic.cj': a parameter bounded by 'Exception' is tracked, so
++// a clause-free empty-clause function that throws it is still rejected. The Error exemption must
++// not have widened into "generic parameters never demand".
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: Cannot find a capability for 'Generics-E'
++
++public func failChecked<E>(e: E): Unit
++throws () where E <: Exception {
++    throw e
++}
++
++main(): Int64 { 0 }
+-- 
+2.54.0
+

@@ -1,0 +1,87 @@
+From d4df29ee190b3ef9bcfbaea84d418064ecab5a61 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 21 Aug 2026 18:07:56 +0300
+Subject: [PATCH 21/44] style: clang-format the lines this round touched
+
+Pure whitespace: a doc comment inserted at the wrong indentation, two calls that
+fit on one line, and the trailing-comment alignment of the block the deleted
+chexcEnabled field used to be part of. No semantic change; the binary the LLT run
+verified is unaffected.
+
+The lines went unformatted because './cj.py fmt compiler' silently formats
+nothing -- 'fmt' takes a repo directory, not a component name -- which the next
+commit fixes.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Lex/LexerImpl.h                  | 4 ++--
+ src/Sema/TypeCheckExpr/IsAsExprs.cpp | 3 +--
+ src/Sema/TypeCheckUtil.cpp           | 3 +--
+ src/Sema/TypeCheckerImpl.h           | 8 ++++----
+ 4 files changed, 8 insertions(+), 10 deletions(-)
+
+diff --git a/src/Lex/LexerImpl.h b/src/Lex/LexerImpl.h
+index 8bab30fb..5542787a 100644
+--- a/src/Lex/LexerImpl.h
++++ b/src/Lex/LexerImpl.h
+@@ -149,8 +149,8 @@ private:
+     const char* pInputEnd{nullptr}; // point to end of input file
+     const char* pCurrent{nullptr};  // point to the current character
+     const char* pResetCurrent{nullptr};
+-    int32_t currentChar{-1};  // currently processing character
+-    bool ehEnabled{false};    // EH keywords enabled flag (replaces dynamic tokenMap modification)
++    int32_t currentChar{-1}; // currently processing character
++    bool ehEnabled{false};   // EH keywords enabled flag (replaces dynamic tokenMap modification)
+     unsigned lineResetOffsetsFromBase{0};
+     TokenKind tokenKind{TokenKind::ILLEGAL};
+     Position pos;
+diff --git a/src/Sema/TypeCheckExpr/IsAsExprs.cpp b/src/Sema/TypeCheckExpr/IsAsExprs.cpp
+index 2a55e58e..0b7506a2 100644
+--- a/src/Sema/TypeCheckExpr/IsAsExprs.cpp
++++ b/src/Sema/TypeCheckExpr/IsAsExprs.cpp
+@@ -41,8 +41,7 @@ Ptr<Ty> TypeChecker::TypeCheckerImpl::CastTargetTy(Type& target)
+     }).Walk();
+     auto pessimistic = TypeCheckUtil::ReadCastTargetPessimistically(typeManager, exception->GetTy(), targetTy);
+     if (pessimistic.rejected) {
+-        diag.DiagnoseRefactor(
+-            DiagKindRefactor::sema_chexc_cast_target_invariant_func, target, Ty::ToString(targetTy));
++        diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_cast_target_invariant_func, target, Ty::ToString(targetTy));
+         return targetTy;
+     }
+     return pessimistic.ty;
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index b6bd7fcc..75487515 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -313,8 +313,7 @@ bool ContainsFuncTy(Ptr<const Ty> ty, std::unordered_set<Ptr<const Ty>>& seen)
+         ty->typeArgs.begin(), ty->typeArgs.end(), [&seen](auto arg) { return ContainsFuncTy(arg, seen); });
+ }
+ 
+-Ptr<Ty> ReadPessimistically(
+-    TypeManager& tyMgr, Ptr<Ty> exceptionTy, Ptr<Ty> ty, bool covariant, bool& rejected)
++Ptr<Ty> ReadPessimistically(TypeManager& tyMgr, Ptr<Ty> exceptionTy, Ptr<Ty> ty, bool covariant, bool& rejected)
+ {
+     if (!Ty::IsTyCorrect(ty)) {
+         return ty;
+diff --git a/src/Sema/TypeCheckerImpl.h b/src/Sema/TypeCheckerImpl.h
+index a1d9de1e..a30d29f7 100644
+--- a/src/Sema/TypeCheckerImpl.h
++++ b/src/Sema/TypeCheckerImpl.h
+@@ -821,10 +821,10 @@ private:
+     Ptr<AST::Ty> SynIsExpr(ASTContext& ctx, AST::IsExpr& ie);
+     bool ChkIsExpr(ASTContext& ctx, AST::Ty& target, AST::IsExpr& ie);
+     /**
+- * Checked exceptions: the type a runtime cast or type pattern binds at, read pessimistically from
+- * the written @p target. Diagnoses a clause written in the target and a function type in an
+- * invariant position of it.
+- */
++     * Checked exceptions: the type a runtime cast or type pattern binds at, read pessimistically from
++     * the written @p target. Diagnoses a clause written in the target and a function type in an
++     * invariant position of it.
++     */
+     Ptr<AST::Ty> CastTargetTy(AST::Type& target);
+     Ptr<AST::Ty> SynAsExpr(ASTContext& ctx, AST::AsExpr& ae);
+     bool ChkAsExpr(ASTContext& ctx, AST::Ty& target, AST::AsExpr& ae);
+-- 
+2.54.0
+

@@ -1,0 +1,124 @@
+From 4f53cabf72ae28eae108512ae466c0d4fe289253 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 02:28:32 +0300
+Subject: [PATCH 24/44] fix(chexc): substitute capability lists that mention a
+ type parameter
+
+A generic higher-order API with a clause was unusable: 'handling<A>(thrower)'
+against 'func handling<E>(fn: () throws E -> Unit)' reported *expected
+'() throws (Generics-Ti-1) -> Unit', found '() throws (Class-A) -> Unit'* -- the
+instantiation placeholder survived into the checked type. The proposal's own
+'retrying' example only worked because its clause named a concrete type.
+
+The cause was in deciding which substitutions are still needed:
+'FilterUnusedMapping' asks 'Ty::GetGenericTyArgs' which type parameters a type
+uses, and that walks 'typeArgs' -- where a capability list deliberately is not, so
+that capabilities never reach code generation. A parameter reachable only through a
+list therefore looked unused, its mapping was filtered away, and nothing replaced
+the placeholder. Both overloads of the filter now use a walk that looks past
+'typeArgs'.
+
+'Ty::GetGenericTyArgs' itself is unchanged on purpose: it also feeds type-argument
+inference, which must keep ignoring capability lists (no row unification). Making
+it capability-aware fixes the substitution and breaks that rule in the same step --
+measured, not guessed.
+
+Comparing lists had to stop binding placeholders as well: subtyping was happy to
+solve through a capability list what unification refuses to solve, which is the
+same rule from the other side.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Sema/MultiTypeSubstUtils.cpp | 24 ++++++++++++++++++++++--
+ src/Sema/TypeManager.cpp         | 22 +++++++++++++++++++++-
+ 2 files changed, 43 insertions(+), 3 deletions(-)
+
+diff --git a/src/Sema/MultiTypeSubstUtils.cpp b/src/Sema/MultiTypeSubstUtils.cpp
+index fb68caa9..8e4e3d36 100644
+--- a/src/Sema/MultiTypeSubstUtils.cpp
++++ b/src/Sema/MultiTypeSubstUtils.cpp
+@@ -48,6 +48,26 @@ std::set<Ptr<Ty>> GetDirectMappingTys(
+ }
+ 
+ // remove mappings not useful(either directly or transitively used) in tys
++namespace {
++/// The type parameters of @p candidates that @p ty actually uses. Unlike 'Ty::GetGenericTyArgs',
++/// this looks past 'typeArgs' into a functional type's capability list: a list sits outside
++/// 'typeArgs' so that capabilities never reach code generation, but a type parameter reachable only
++/// through one is still used by the type, and dropping its mapping here would leave the raw
++/// instantiation placeholder in the list, where nothing can discharge it. Deciding *which*
++/// substitutions are needed is not deciding type arguments -- those still ignore capability lists.
++std::set<Ptr<GenericsTy>> CollectUsedTyVars(Ptr<Ty> ty, const std::set<Ptr<TyVar>>& candidates)
++{
++    std::set<Ptr<GenericsTy>> used = ty->GetGenericTyArgs(candidates);
++    for (auto tv : GetAllGenericTys(ty)) {
++        auto generics = DynamicCast<GenericsTy*>(tv);
++        if (generics && candidates.count(generics) > 0) {
++            used.emplace(generics);
++        }
++    }
++    return used;
++}
++} // namespace
++
+ SubstPack FilterUnusedMapping(const SubstPack& mapping, const std::set<Ptr<Ty>>& tys)
+ {
+     std::set<Ptr<TyVar>> allu;
+@@ -61,7 +81,7 @@ SubstPack FilterUnusedMapping(const SubstPack& mapping, const std::set<Ptr<Ty>>&
+     }
+     // collect inst tyvars directly used
+     for (auto ty : tys) {
+-        for (auto tvu : ty->GetGenericTyArgs(allu)) {
++        for (auto tvu : CollectUsedTyVars(ty, allu)) {
+             reachable.emplace(StaticCast<TyVar*>(mapping.u2i.at(tvu)));
+         }
+     }
+@@ -100,7 +120,7 @@ MultiTypeSubst FilterUnusedMapping(const MultiTypeSubst& mapping, const std::set
+     std::queue<Ptr<TyVar>> worklist;
+     // collect tyvars directly used
+     for (auto ty : tys) {
+-        reachable.merge(ty->GetGenericTyArgs(all));
++        reachable.merge(CollectUsedTyVars(ty, all));
+     }
+     for (auto tv : reachable) {
+         worklist.push(tv);
+diff --git a/src/Sema/TypeManager.cpp b/src/Sema/TypeManager.cpp
+index b5327dd9..5a91a3df 100644
+--- a/src/Sema/TypeManager.cpp
++++ b/src/Sema/TypeManager.cpp
+@@ -901,11 +901,31 @@ bool TypeManager::IsFuncSubtype(const Ty& leaf, const Ty& root)
+     return false;
+ }
+ 
++namespace {
++/// True when @p ty is, or contains, a type-inference placeholder. Capability lists take no part in
++/// type-argument inference, so comparing them must never bind one: a placeholder entry neither
++/// covers a requirement nor is itself checked. Without this, subtyping would solve through a
++/// capability list what unification deliberately refuses to solve.
++bool HasPlaceholder(Ptr<const Ty> ty)
++{
++    if (!ty) {
++        return false;
++    }
++    if (auto tyVar = DynamicCast<const GenericsTy*>(ty); tyVar && tyVar->isPlaceholder) {
++        return true;
++    }
++    return std::any_of(ty->typeArgs.begin(), ty->typeArgs.end(), [](auto arg) { return HasPlaceholder(arg); });
++}
++} // namespace
++
+ bool TypeManager::IsCapTysSubsumed(const std::vector<Ptr<Ty>>& subCapTys, const std::vector<Ptr<Ty>>& superCapTys)
+ {
+     return std::all_of(subCapTys.begin(), subCapTys.end(), [this, &superCapTys](Ptr<Ty> subCap) {
++        if (HasPlaceholder(subCap)) {
++            return true; // nothing to check yet, and nothing to bind
++        }
+         return std::any_of(superCapTys.begin(), superCapTys.end(),
+-            [this, subCap](Ptr<Ty> superCap) { return IsSubtype(subCap, superCap); });
++            [this, subCap](Ptr<Ty> superCap) { return !HasPlaceholder(superCap) && IsSubtype(subCap, superCap); });
+     });
+ }
+ 
+-- 
+2.54.0
+

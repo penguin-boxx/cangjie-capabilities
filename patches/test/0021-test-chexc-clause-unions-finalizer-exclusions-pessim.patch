@@ -1,0 +1,472 @@
+From 0f0a9afabd9261d4efdcd0f8c102bcf732f02552 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Fri, 21 Aug 2026 17:21:23 +0300
+Subject: [PATCH 21/43] test(chexc): clause unions, finalizer exclusions,
+ pessimistic cast targets
+
+Covers the five rules fixed in the compiler this round:
+
+- parse/decl_multiple_clauses.cj -- several 'throws'/'captures' clauses union,
+  across a 'where' block too, with '...' repeating idempotently.
+- parse/neg_empty_clause_combined.cj -- 'throws () throws A' in both orders.
+- parse/neg_empty_list_mixed.cj -- '()' nested in or mixed with other entries.
+- parse/neg_finalizer_clause.cj and scopes/neg_finalizer.cj -- the clause side and
+  the scope side of the finalizer rule; they are separate files because the clause
+  error is a type-check error and aborts before the capability pass runs, so the
+  demand cases would never be reached.
+- inference/neg_ellipsis_exported.cj -- '...' on public, protected and interface
+  declarations.
+- types/cast_pessimistic.cj and types/cast_pessimistic_neg.cj -- the requirement a
+  cast hands back, discharged and undischarged, through both 'as' and a type
+  pattern, with the contravariant positions staying clause-free.
+- types/cast_target_neg.cj -- targets with no sound reading (ArrayList, Option,
+  Array of a function type) and a clause written in a target.
+
+parse/neg_duplicate_clause.cj is removed: the behaviour it pinned is now the
+supported one.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../inference/neg_ellipsis_exported.cj        | 26 +++++++
+ .../parse/decl_multiple_clauses.cj            | 61 +++++++++++++++
+ .../parse/neg_duplicate_clause.cj             | 16 ----
+ .../parse/neg_empty_clause_combined.cj        | 20 +++++
+ .../parse/neg_empty_list_mixed.cj             | 19 +++++
+ .../parse/neg_finalizer_clause.cj             | 22 ++++++
+ .../CheckedExceptions/scopes/neg_finalizer.cj | 41 ++++++++++
+ .../types/cast_pessimistic.cj                 | 77 +++++++++++++++++++
+ .../types/cast_pessimistic_neg.cj             | 33 ++++++++
+ .../types/cast_target_neg.cj                  | 43 +++++++++++
+ 10 files changed, 342 insertions(+), 16 deletions(-)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/neg_ellipsis_exported.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/decl_multiple_clauses.cj
+ delete mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_clause_combined.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_list_mixed.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_finalizer_clause.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/neg_finalizer.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/cast_target_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/neg_ellipsis_exported.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/neg_ellipsis_exported.cj
+new file mode 100644
+index 0000000000..1d5c0d5a8e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/neg_ellipsis_exported.cj
+@@ -0,0 +1,26 @@
++// Checked exceptions (interaction with an explicit throws): the `...` marker opens a clause to
++// inference, so it is not allowed on an exported declaration, whose list must not depend on inference.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: '...' is not allowed in the 'throws' clause of an exported declaration
++
++class AException <: Exception {}
++
++public func api() throws AException, ... {
++    throw AException()
++}
++
++public open class K {
++    protected func hook() throws AException, ... {
++        throw AException()
++    }
++}
++
++public interface I {
++    func m(): Unit
++    throws AException, ...
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_multiple_clauses.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_multiple_clauses.cj
+new file mode 100644
+index 0000000000..bbccb39338
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_multiple_clauses.cj
+@@ -0,0 +1,61 @@
++// Checked exceptions (capability parameters in declarations): a declaration may carry several `throws`
++// clauses; their entries union into one list. This serves generated code -- a macro appends a clause
++// instead of merging into an existing one -- and conditional compilation. `captures` unions the same way.
++// Positive: every form parses, the unioned lists are what the bodies are checked against, and it runs.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++class CException <: Exception {}
++class DException <: Exception {}
++
++// two clauses, the second carrying several entries
++func step() throws AException throws BException, CException {
++    throw AException()
++}
++
++// a `where` block may sit between the clauses, in either order
++func generic<T>(x: T) throws AException where T <: ToString throws BException {
++    throw BException()
++}
++
++// unioned lists are what call sites must satisfy: all three entries are required here
++func callStep() throws AException, BException, CException {
++    step()
++}
++
++// `...` may repeat across the clauses of one declaration, idempotently: any occurrence opens
++// the combined list to inference, so the DException thrown below needs no explicit entry
++func opened() throws AException, ... throws BException, ... {
++    throw AException()
++}
++
++func callOpened() throws AException, BException {
++    opened()
++}
++
++// captures unions the same way; entries follow the `throws` entry rules, aliases included
++type Two = (CException, DException)
++
++class Multi captures AException captures BException, Two {
++    init() {}
++    func a() { throw AException() }
++    func b() { throw BException() }
++    func c() { throw CException() }
++    func d() { throw DException() }
++}
++
++main() {
++    try {
++        callStep()
++        callOpened()
++        generic(1)
++    } catch (e: Exception) {}
++    try {
++        let m = Multi()
++        m.a()
++    } catch (e: Exception) {}
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+deleted file mode 100644
+index b5f160fcaa..0000000000
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
++++ /dev/null
+@@ -1,16 +0,0 @@
+-// Checked exceptions (capability parameters in declarations): a declaration may carry at most one `throws` clause;
+-// a second clause (even separated by a `where` block) is a parse error.
+-
+-// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+-// ASSERT: scan error: duplicate 'throws' clause
+-
+-class AException <: Exception {}
+-class BException <: Exception {}
+-
+-func f(): Unit throws AException throws BException {
+-    throw AException()
+-}
+-
+-main() {
+-    return 0
+-}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_clause_combined.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_clause_combined.cj
+new file mode 100644
+index 0000000000..277233d530
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_clause_combined.cj
+@@ -0,0 +1,20 @@
++// Checked exceptions: `throws ()` is an authoritative empty list -- it pins the callable as requiring
++// no capabilities. Combining it with another `throws` clause of the same declaration contradicts the
++// pin and is an error, even though several non-empty clauses union freely.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: an empty 'throws' clause cannot be combined with another clause of the same kind
++
++class AException <: Exception {}
++
++func f() throws () throws AException {
++    throw AException()
++}
++
++func g() throws AException throws () {
++    throw AException()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_list_mixed.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_list_mixed.cj
+new file mode 100644
+index 0000000000..e291cf2ac1
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_empty_list_mixed.cj
+@@ -0,0 +1,19 @@
++// Checked exceptions: `()` is the empty entry list and is legal only as the whole list -- neither
++// nested in nor mixed with other entries.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: '()' is only allowed as the whole capability list
++
++class AException <: Exception {}
++
++func mixed() throws AException, () {
++    throw AException()
++}
++
++func nested() throws ((), AException) {
++    throw AException()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_finalizer_clause.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_finalizer_clause.cj
+new file mode 100644
+index 0000000000..077f70827d
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_finalizer_clause.cj
+@@ -0,0 +1,22 @@
++// Checked exceptions (capability parameters in declarations): no capability scope encloses a
++// finalizer -- it may run long after the handlers that supplied the capabilities are gone -- so a
++// finalizer carries no `throws` clause. The scope side of the rule is in scopes/neg_finalizer.cj.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: a 'throws' clause is not allowed on a finalizer
++
++class AException <: Exception {}
++
++func mkA() throws AException {
++    throw AException()
++}
++
++class WithClause {
++    ~init() throws AException {
++        mkA()
++    }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/neg_finalizer.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/neg_finalizer.cj
+new file mode 100644
+index 0000000000..cdf5d016bd
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/neg_finalizer.cj
+@@ -0,0 +1,41 @@
++// Checked exceptions (capability scopes): no capability scope encloses a finalizer. It is therefore
++// not inference-eligible -- a checked throw inside one has nothing to discharge it -- and the
++// captured capabilities of a capturing class do not reach it either. The clause side of the rule is
++// in parse/neg_finalizer_clause.cj.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-BException'
++// ASSERT: scan Cannot find a capability for 'Class-CException'
++
++class BException <: Exception {}
++class CException <: Exception {}
++
++func mkB() throws BException {
++    throw BException()
++}
++
++func mkC() throws CException {
++    throw CException()
++}
++
++class Inferred {
++    ~init() { // error: a finalizer is not inference-eligible, so nothing discharges mkB
++        mkB()
++    }
++}
++
++class Capturing captures CException {
++    init() {}
++
++    func use() {
++        mkC() // ok: a receiver body is covered by the captures scope
++    }
++
++    ~init() { // error: the captured capability does not reach a finalizer
++        mkC()
++    }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic.cj b/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic.cj
+new file mode 100644
+index 0000000000..3412970a5c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic.cj
+@@ -0,0 +1,77 @@
++// Checked exceptions (reflection and runtime casts): a runtime type test sees the erased shape and
++// cannot verify a capability list, so a cast target is read pessimistically, by position: a function
++// type in a covariant position receives `throws Exception`, one in a contravariant position keeps the
++// empty list it spells. Positive: the requirement the cast hands back is dischargeable, and the
++// contravariant positions stay clause-free.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++
++func throwing() throws AException {
++    throw AException()
++}
++
++func plain(): Unit {}
++
++// contravariant: the callback the value receives keeps the empty list, so a clause-free lambda fits
++func higherOrder(f: () -> Unit): Unit {
++    f()
++}
++
++// covariant through a result: the returned function is read as requiring a capability
++func returning(): () -> Unit {
++    return plain
++}
++
++main() {
++    let asAny: Any = throwing
++    var ran = 0
++    try {
++        // `() throws Exception -> Unit`: the requirement is real and is discharged here
++        match (asAny as (() -> Unit)) {
++            case Some(g) => g()
++            case None => ran++
++        }
++    } catch (e: AException) {
++        ran++
++    } catch (e: Exception) {
++        ran++
++    }
++
++    let hoAny: Any = higherOrder
++    try {
++        match (hoAny as ((() -> Unit) -> Unit)) {
++            case Some(h) => h(plain) // the parameter stayed clause-free: a plain function fits
++            case None => ran++
++        }
++    } catch (e: Exception) {
++        ran++
++    }
++
++    let retAny: Any = returning
++    try {
++        match (retAny as (() -> (() -> Unit))) {
++            case Some(r) => r()() // both arrows are covariant: both require a capability
++            case None => ran++
++        }
++    } catch (e: Exception) {
++        ran++
++    }
++
++    // type patterns read the same way
++    try {
++        match (asAny) {
++            case g: () -> Unit => g()
++            case _ => ran++
++        }
++    } catch (e: Exception) {
++        ran++
++    }
++
++    if (ran == 1) {
++        return 0
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic_neg.cj
+new file mode 100644
+index 0000000000..b4726bf658
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/cast_pessimistic_neg.cj
+@@ -0,0 +1,33 @@
++// Checked exceptions (reflection and runtime casts): the pessimistic reading of a cast target is a
++// real requirement -- using the cast value where nothing discharges it is an error, which is exactly
++// the laundering the rule closes. The rejected targets are in types/cast_target_neg.cj.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-Exception'
++
++class AException <: Exception {}
++
++func throwing() throws AException {
++    throw AException()
++}
++
++public func callCast(x: Any): Unit {
++    // the cast hands back `() throws Exception -> Unit`: nothing here discharges it
++    match (x as (() -> Unit)) {
++        case Some(g) => g()
++        case None => ()
++    }
++}
++
++public func patternBinding(x: Any): Unit {
++    match (x) {
++        case g: () -> Unit => g() // same requirement through a type pattern
++        case _ => ()
++    }
++}
++
++main() {
++    callCast(throwing)
++    patternBinding(throwing)
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_neg.cj
+new file mode 100644
+index 0000000000..3e1e3a4088
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_neg.cj
+@@ -0,0 +1,43 @@
++// Checked exceptions (reflection and runtime casts): a type argument of a generic is invariant --
++// CangJie has no declaration-site variance -- so a function type inside one has no sound reading and
++// the target is rejected. Targets are written without clauses: the reading decides them.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan cannot be a runtime cast target: it has a function type in an invariant position
++// ASSERT: scan error: a capability clause is not allowed in a runtime cast target
++
++import std.collection.*
++
++class AException <: Exception {}
++
++func invariantTarget(x: Any): Unit {
++    match (x as ArrayList<() -> Unit>) {
++        case Some(_) => ()
++        case None => ()
++    }
++}
++
++func optionTarget(x: Any): Unit {
++    match (x as Option<() -> Unit>) {
++        case Some(_) => ()
++        case None => ()
++    }
++}
++
++func arrayPattern(x: Any): Unit {
++    match (x) {
++        case _: Array<() -> Unit> => ()
++        case _ => ()
++    }
++}
++
++func writtenClause(x: Any): Unit {
++    match (x as (() throws AException -> Unit)) {
++        case Some(_) => ()
++        case None => ()
++    }
++}
++
++main() {
++    return 0
++}
+-- 
+2.54.0
+

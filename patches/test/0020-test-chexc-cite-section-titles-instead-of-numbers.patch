@@ -1,0 +1,882 @@
+From faca32ed9a392a8255f51990cfd9e759f4103bd3 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Thu, 20 Aug 2026 17:39:34 +0300
+Subject: [PATCH 20/43] test(chexc): cite section titles instead of numbers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The 2026-08-20 proposal revision renumbered inference, unchecked exceptions,
+conversions and adapt, invalidating every "§6.x" in the suite at a stroke.
+Titles ("assumption imports", "capability capturing") survive renumbering, so
+each case still says which rule it pins without the citation rotting.
+
+74 files; runner directives (EXEC/ASSERT/DEPENDENCE) were excluded from the
+rewrite by construction and verified afterwards -- 153 EXEC directives intact,
+CheckedExceptions 83/83.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../LLT/compiler/CheckedExceptions/aliases/alias_basic.cj   | 2 +-
+ .../compiler/CheckedExceptions/aliases/alias_cycle_neg.cj   | 2 +-
+ .../LLT/compiler/CheckedExceptions/aliases/alias_neg.cj     | 4 ++--
+ .../CheckedExceptions/aliases/alias_nested_and_captures.cj  | 2 +-
+ .../CheckedExceptions/assume/assume_alias_and_inference.cj  | 4 ++--
+ .../LLT/compiler/CheckedExceptions/assume/assume_bare.cj    | 2 +-
+ .../LLT/compiler/CheckedExceptions/assume/assume_basic.cj   | 2 +-
+ .../CheckedExceptions/assume/assume_misplaced_neg.cj        | 2 +-
+ .../LLT/compiler/CheckedExceptions/assume/assume_neg.cj     | 2 +-
+ .../CheckedExceptions/assume/assume_other_package.cj        | 2 +-
+ .../compiler/CheckedExceptions/captures/captures_basic.cj   | 2 +-
+ .../CheckedExceptions/captures/captures_ctor_neg.cj         | 2 +-
+ .../CheckedExceptions/captures/captures_interface.cj        | 2 +-
+ .../CheckedExceptions/captures/captures_primary_ctor_neg.cj | 2 +-
+ .../compiler/CheckedExceptions/captures/captures_struct.cj  | 2 +-
+ .../CheckedExceptions/captures/captures_subclass_neg.cj     | 2 +-
+ .../LLT/compiler/CheckedExceptions/inference/infer_basic.cj | 2 +-
+ .../CheckedExceptions/inference/infer_explicit_dots.cj      | 2 +-
+ .../CheckedExceptions/inference/infer_lambda_boundary.cj    | 6 +++---
+ .../CheckedExceptions/inference/infer_poly_recursion_neg.cj | 2 +-
+ .../CheckedExceptions/inference/infer_public_neg.cj         | 2 +-
+ .../compiler/CheckedExceptions/inference/infer_recursion.cj | 2 +-
+ .../LLT/compiler/CheckedExceptions/parse/decl_functions.cj  | 2 +-
+ .../LLT/compiler/CheckedExceptions/parse/decl_main.cj       | 2 +-
+ .../LLT/compiler/CheckedExceptions/parse/decl_members.cj    | 2 +-
+ .../compiler/CheckedExceptions/parse/decl_primary_ctor.cj   | 4 ++--
+ .../compiler/CheckedExceptions/parse/flagon_identifier.cj   | 2 +-
+ .../compiler/CheckedExceptions/parse/neg_bad_positions.cj   | 2 +-
+ .../CheckedExceptions/parse/neg_duplicate_clause.cj         | 2 +-
+ .../CheckedExceptions/parse/neg_ellipsis_in_type.cj         | 2 +-
+ .../compiler/CheckedExceptions/parse/neg_missing_arrow.cj   | 2 +-
+ .../parse/neg_missing_type_after_throws.cj                  | 2 +-
+ .../LLT/compiler/CheckedExceptions/parse/type_functional.cj | 2 +-
+ .../compiler/CheckedExceptions/performs/performs_basic.cj   | 2 +-
+ .../CheckedExceptions/performs/performs_clause_neg.cj       | 2 +-
+ .../compiler/CheckedExceptions/performs/performs_generic.cj | 2 +-
+ .../CheckedExceptions/performs/performs_generic_neg.cj      | 2 +-
+ .../CheckedExceptions/performs/performs_kinds_neg.cj        | 2 +-
+ .../LLT/compiler/CheckedExceptions/performs/performs_neg.cj | 4 ++--
+ .../CheckedExceptions/performs/performs_order_neg.cj        | 2 +-
+ .../compiler/CheckedExceptions/performs/performs_xpkg.cj    | 2 +-
+ .../CheckedExceptions/performs/performs_xpkg_neg.cj         | 2 +-
+ .../compiler/CheckedExceptions/scopes/corner_scopes_neg.cj  | 2 +-
+ .../CheckedExceptions/scopes/default_param_and_funcvalue.cj | 2 +-
+ .../compiler/CheckedExceptions/scopes/discharge_positive.cj | 2 +-
+ .../CheckedExceptions/scopes/lambda_expected_type.cj        | 2 +-
+ .../CheckedExceptions/scopes/missing_capability_neg.cj      | 2 +-
+ .../CheckedExceptions/scopes/prop_accessor_demand.cj        | 2 +-
+ .../CheckedExceptions/scopes/prop_accessor_demand_neg.cj    | 2 +-
+ .../LLT/compiler/CheckedExceptions/serialization/libx.cj    | 6 +++---
+ .../compiler/CheckedExceptions/serialization/xpkg_basic.cj  | 2 +-
+ .../CheckedExceptions/serialization/xpkg_canonical_neg.cj   | 2 +-
+ .../CheckedExceptions/serialization/xpkg_captures_neg.cj    | 2 +-
+ .../CheckedExceptions/serialization/xpkg_captures_pos.cj    | 2 +-
+ .../CheckedExceptions/serialization/xpkg_functype.cj        | 4 ++--
+ .../CheckedExceptions/serialization/xpkg_generic_neg.cj     | 2 +-
+ .../CheckedExceptions/serialization/xpkg_generic_pos.cj     | 2 +-
+ .../CheckedExceptions/serialization/xpkg_member_neg.cj      | 2 +-
+ .../compiler/CheckedExceptions/serialization/xpkg_neg.cj    | 2 +-
+ .../CheckedExceptions/types/clause_not_exception_neg.cj     | 2 +-
+ .../compiler/CheckedExceptions/types/generics_explicit.cj   | 2 +-
+ .../CheckedExceptions/types/generics_no_inference.cj        | 2 +-
+ .../LLT/compiler/CheckedExceptions/types/overload_dup.cj    | 2 +-
+ .../CheckedExceptions/types/overload_functype_dup.cj        | 2 +-
+ .../LLT/compiler/CheckedExceptions/types/override_neg.cj    | 2 +-
+ .../compiler/CheckedExceptions/types/override_positive.cj   | 2 +-
+ .../LLT/compiler/CheckedExceptions/types/subtype_neg.cj     | 2 +-
+ .../compiler/CheckedExceptions/types/subtype_positive.cj    | 2 +-
+ .../compiler/CheckedExceptions/unchecked/error_hierarchy.cj | 2 +-
+ .../CheckedExceptions/unchecked/unchecked_generic_ok.cj     | 2 +-
+ .../CheckedExceptions/unchecked/unchecked_in_clause_neg.cj  | 2 +-
+ .../compiler/CheckedExceptions/unchecked/unchecked_mixed.cj | 2 +-
+ .../compiler/CheckedExceptions/unchecked/unchecked_throw.cj | 2 +-
+ 73 files changed, 82 insertions(+), 82 deletions(-)
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj
+index 3d1fe03961..094cdd5171 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.1): a tuple typealias used in a `throws` clause is a
++// Checked exceptions (capability list aliases): a tuple typealias used in a `throws` clause is a
+ // capability list — `throws MyExceptions` means `throws A, B`.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj
+index 2a2fad1f79..752814d4b8 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.1 / §3.10.2 rule 1): alias expansion is recursive, so a
++// Checked exceptions (capability list aliases / package metadata rule 1): alias expansion is recursive, so a
+ // cyclic alias must be rejected rather than expanded forever.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj
+index 1a1f01e2e8..e72001031a 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj
+@@ -1,6 +1,6 @@
+-// Checked exceptions (§6.1): every element of an alias tuple must be a subtype of
++// Checked exceptions (capability list aliases): every element of an alias tuple must be a subtype of
+ // Exception and not of UncheckedException — the same rules as spelled-out entries
+-// (§3.2 rules 3 and 5).
++// (capability parameters in declarations rules 3 and 5).
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+ // ASSERT: scan error
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj
+index adbc58d99c..0fdc89b301 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.1): alias expansion is recursive (aliases may contain
++// Checked exceptions (capability list aliases): alias expansion is recursive (aliases may contain
+ // other aliases) and applies to `captures` clauses as well as `throws`.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_alias_and_inference.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_alias_and_inference.cj
+index 2d2bac5cdf..cfefabdba1 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_alias_and_inference.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_alias_and_inference.cj
+@@ -1,5 +1,5 @@
+-// Checked exceptions (§5.2.2): a capability list alias may be used in the annotation (§6.1), and
+-// an assumed requirement participates in capability parameter inference (§6.3) like a declared one
++// Checked exceptions (assumption imports): a capability list alias may be used in the annotation (capability list aliases), and
++// an assumed requirement participates in capability parameter inference (capability parameter inference) like a declared one
+ // — `wrapper` is internal and clause-free, so its list is inferred to hold both assumed types.
+ 
+ // DEPENDENCE: legacy_db.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj
+index c6a743a69e..a7881fe918 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§5.2.2): the bare form `@AssumeThrows` assumes `Exception`.
++// Checked exceptions (assumption imports): the bare form `@AssumeThrows` assumes `Exception`.
+ 
+ // DEPENDENCE: legacy_db.cj
+ // EXEC: %compiler %cmp_opt %compile_lib_opt legacy_db.cj -o legacy_db.%middle
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj
+index 7af720e1f4..e5460577aa 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§5.2.2): an assumption import imposes a throws list on every call into an
++// Checked exceptions (assumption imports): an assumption import imposes a throws list on every call into an
+ // unchecked dependency — functions, methods and constructors alike. Handled here by a try-catch,
+ // so the program compiles and runs.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_misplaced_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_misplaced_neg.cj
+index 1d811bfd6e..1cf97af114 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_misplaced_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_misplaced_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§5.2.2): the annotation only means anything on an import, where the trust
++// Checked exceptions (assumption imports): the annotation only means anything on an import, where the trust
+ // relationship lives. Anywhere else it would be silently inert, so it is rejected.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj
+index 1124d45767..6d51823ed8 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§5.2.2): an unhandled assumed requirement is a missing capability, exactly
++// Checked exceptions (assumption imports): an unhandled assumed requirement is a missing capability, exactly
+ // like a declared one.
+ 
+ // DEPENDENCE: legacy_db.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_other_package.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_other_package.cj
+index 66644d6055..a05119cc4b 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_other_package.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_other_package.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§5.2.2): the assumption is scoped to the package its import names. Calls
++// Checked exceptions (assumption imports): the assumption is scoped to the package its import names. Calls
+ // into any other package — here the standard library and the current package — are unaffected.
+ 
+ // DEPENDENCE: legacy_db.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_basic.cj
+index fc1ea79b05..1445b6d9e0 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_basic.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_basic.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.9, pre-Modal semantics per author ruling): a `captures`
++// Checked exceptions (capability capturing, pre-Modal semantics per author ruling): a `captures`
+ // clause on a class makes EVERY constructor demand the captured capabilities at
+ // its call site, and puts them in scope in EVERY method/prop body.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj
+index d037aaeb2b..edee99617c 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_ctor_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.9): constructing a capturing class demands the captured
++// Checked exceptions (capability capturing): constructing a capturing class demands the captured
+ // capabilities at the construction site — no suitable capability, no instance.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_interface.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_interface.cj
+index 772c1820af..7a18e2c0e3 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_interface.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_interface.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.9 / §2.1.3): capability capturing makes an implementation
++// Checked exceptions (capability capturing / interfaces and inheritance): capability capturing makes an implementation
+ // with implementation-specific exceptions conform to a clause-free interface —
+ // the adapter pattern, without receiver modes (pre-Modal).
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_primary_ctor_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_primary_ctor_neg.cj
+index 37abb7fd38..4f66ea91b7 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_primary_ctor_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_primary_ctor_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.9, author ruling): a capturing class may not declare a
++// Checked exceptions (capability capturing, author ruling): a capturing class may not declare a
+ // primary constructor (forward-compatible with Modal, where primaries are ~local);
+ // it declares explicit init constructors.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_struct.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_struct.cj
+index cbf7c8393d..de5d5154d1 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_struct.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_struct.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.9): `captures` is allowed on structs; copying duplicates
++// Checked exceptions (capability capturing): `captures` is allowed on structs; copying duplicates
+ // the capability (freely duplicable evidence).
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
+index 8937781971..87d33d6935 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/captures/captures_subclass_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.9 rule 5): a subclass does not see the superclass's
++// Checked exceptions (capability capturing rule 5): a subclass does not see the superclass's
+ // captured capabilities — the synthesized field is private; it must declare its
+ // own `captures` clause if its methods need them. Its constructors do acquire the
+ // superclass constructor's requirements at the `super` call, which the explicit
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_basic.cj
+index 8b29b4ff20..5e58eaaf0e 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_basic.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_basic.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.3): non-public callables without a clause get their
++// Checked exceptions (capability parameter inference): non-public callables without a clause get their
+ // capability lists inferred from their bodies; discharge removes entries;
+ // inferred lists propagate to callers through normal checking.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_explicit_dots.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_explicit_dots.cj
+index 81b258d506..7fc72f4d7a 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_explicit_dots.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_explicit_dots.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.3.5): an explicit clause disables inference (authoritative);
++// Checked exceptions (interaction with an explicit throws): an explicit clause disables inference (authoritative);
+ // `throws A, ...` re-enables it — declared entries union with inferred ones;
+ // `throws ()` pins an empty list.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_lambda_boundary.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_lambda_boundary.cj
+index 4663391877..f84e33a687 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_lambda_boundary.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_lambda_boundary.cj
+@@ -1,8 +1,8 @@
+-// Checked exceptions (§6.3.2, discharge by a function literal): a requirement raised
++// Checked exceptions (what is inferred, discharge by a function literal): a requirement raised
+ // inside a literal whose EXPECTED TYPE carries the corresponding capability parameter
+ // is discharged there and must NOT be inferred for the enclosing declaration. A literal
+ // whose expected type carries no capability list discharges nothing, so the requirement
+-// propagates out by capture (§2.1.2) and IS inferred.
++// propagates out by capture (higher-order functions) and IS inferred.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
+ // EXEC: %run %output
+@@ -12,7 +12,7 @@ class NegativeException <: Exception {}
+ 
+ // the literal parameter DOES declare a capability list: it handles IOException itself.
+ // Note the fallback: calling `f()` again from the catch block would be outside the try's
+-// capability scope (§3.3) and would make this helper itself require the capability.
++// capability scope (capability argument inference) and would make this helper itself require the capability.
+ func withIOException<R>(f: () throws IOException -> R, fallback: R): R {
+     try {
+         f()
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_poly_recursion_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_poly_recursion_neg.cj
+index 02b001deb8..2e36f6b2d8 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_poly_recursion_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_poly_recursion_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.3.4): polymorphic recursion over exception-relevant type
++// Checked exceptions (recursion): polymorphic recursion over exception-relevant type
+ // parameters makes the candidate universe infinite — inference is rejected with
+ // an error naming the growing instantiation; explicit clauses are required.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_public_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_public_neg.cj
+index dbde7bc5a0..28021fb756 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_public_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_public_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.3.1): public declarations are never inferred — their
++// Checked exceptions (which declarations are inferred): public declarations are never inferred — their
+ // clauses are authoritative (explicit or empty by omission), so an undeclared
+ // checked throw in a public function is an error even with inference on.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_recursion.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_recursion.cj
+index 6035648d82..571ab599ac 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_recursion.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_recursion.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.3.4): recursion is inferred via the least fixpoint of
++// Checked exceptions (recursion): recursion is inferred via the least fixpoint of
+ // the SCC's monotone equations. Covers self-recursion, mutual recursion with
+ // PARTIAL discharge inside the cycle (distinguishes fixpoint from naive union),
+ // and a mixed cycle with one authoritative explicit member.
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_functions.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_functions.cj
+index 68377a87d0..0de74c6e1c 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_functions.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_functions.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2): `throws` clauses on top-level function declarations.
++// Checked exceptions (capability parameters in declarations): `throws` clauses on top-level function declarations.
+ // Positive: all forms parse and the program compiles and runs.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_main.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_main.cj
+index f288638a56..ac29cd7935 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_main.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_main.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2): `main` may carry a `throws` clause — the listed
++// Checked exceptions (capability parameters in declarations): `main` may carry a `throws` clause — the listed
+ // exceptions are handled by the default exception handler.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj
+index 07b7dd17e1..98f69bc679 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_members.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2): `throws` clauses on members — methods, static methods,
++// Checked exceptions (capability parameters in declarations): `throws` clauses on members — methods, static methods,
+ // constructors, property accessors, operators, interface methods, extension methods.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_primary_ctor.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_primary_ctor.cj
+index b0fb78e0c6..316e547093 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/decl_primary_ctor.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/decl_primary_ctor.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2 rule 1): a primary constructor may carry a `throws` clause. The
++// Checked exceptions (capability parameters in declarations rule 1): a primary constructor may carry a `throws` clause. The
+ // clause must survive desugaring into the synthesized `init`, so construction sites demand it
+ // and the constructor's own body may discharge it.
+ 
+@@ -12,7 +12,7 @@ func mayThrowField(): Int64 throws FieldException {
+     7
+ }
+ 
+-// class primary constructor with a clause (the proposal's §3.2 example shape)
++// class primary constructor with a clause (the proposal's capability parameters in declarations example shape)
+ public class A {
+     public A(let x: Int64) throws CreationException {
+         if (x < 0) {
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/flagon_identifier.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/flagon_identifier.cj
+index 5e1cc83751..f197b79e5c 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/flagon_identifier.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/flagon_identifier.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§10): `throws` and `captures` are recognised by spelling only where a
++// Checked exceptions (grammar impact): `throws` and `captures` are recognised by spelling only where a
+ // clause may start; everywhere else they stay ordinary identifiers, EVEN WITH THE FEATURE
+ // ENABLED. Reserving them would break existing code — `std.unittest.mock` exports a public
+ // `throws` function used at hundreds of call sites.
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_bad_positions.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_bad_positions.cj
+index 9bad959a53..df1c042783 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_bad_positions.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_bad_positions.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2): `throws` clauses are only legal on callables —
++// Checked exceptions (capability parameters in declarations): `throws` clauses are only legal on callables —
+ // not on variable declarations.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+index 00b502e2bc..b5f160fcaa 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_duplicate_clause.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2): a declaration may carry at most one `throws` clause;
++// Checked exceptions (capability parameters in declarations): a declaration may carry at most one `throws` clause;
+ // a second clause (even separated by a `where` block) is a parse error.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_in_type.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_in_type.cj
+index 75814c02b9..4c59b9af9e 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_in_type.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_in_type.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.4/§6.3.5): the `...` marker never appears in functional
++// Checked exceptions (functional types/interaction with an explicit throws): the `...` marker never appears in functional
+ // types — a functional type's capability list is always complete.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_arrow.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_arrow.cj
+index c066183b01..08bba2441c 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_arrow.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_arrow.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.4): a functional type's `throws` clause must be followed
++// Checked exceptions (functional types): a functional type's `throws` clause must be followed
+ // by `->`; `(A) throws (E)` without an arrow is a parse error.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_type_after_throws.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_type_after_throws.cj
+index ea28117cc7..85f13abb1a 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_type_after_throws.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_missing_type_after_throws.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2): `throws` in a declaration must be followed by an
++// Checked exceptions (capability parameters in declarations): `throws` in a declaration must be followed by an
+ // exception type (or a parenthesized list); a bare clause is a parse error.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/type_functional.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/type_functional.cj
+index 80d5317e4a..3ba5dd0ae4 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/parse/type_functional.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/type_functional.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.4): `throws` clauses in functional types.
++// Checked exceptions (functional types): `throws` clauses in functional types.
+ // Forms: parenthesised list, single-type sugar, empty list, right-associative nesting.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_basic.cj
+index e505e088b7..1126c281d5 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_basic.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_basic.cj
+@@ -1,4 +1,4 @@
+-// Effects (§8.2): 'perform c' requires a handler capability for the command's type, supplied by a
++// Effect handlers: 'perform c' requires a handler capability for the command's type, supplied by a
+ // 'handle' clause — the same shape as 'throw'/'catch', with 'performs' declaring the requirement.
+ 
+ // EXEC: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_clause_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_clause_neg.cj
+index 1a78d036f4..3bb8267e2e 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_clause_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_clause_neg.cj
+@@ -1,4 +1,4 @@
+-// Effects (§8.2): a 'performs' entry must be a 'Command' subtype, mirroring the rule that a
++// Effect handlers: a 'performs' entry must be a 'Command' subtype, mirroring the rule that a
+ // 'throws' entry must be an 'Exception' subtype.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic.cj
+index 4dc74bf316..37343fde96 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic.cj
+@@ -1,4 +1,4 @@
+-// Effects (§8.2 with §3.7): a generic command in a 'performs' clause is instantiated at the
++// Effect handlers (with overloading): a generic command in a 'performs' clause is instantiated at the
+ // call site, and a handler for exactly that instantiation discharges it.
+ 
+ // EXEC: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic_neg.cj
+index 644e7afd7c..934fbbf534 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_generic_neg.cj
+@@ -1,4 +1,4 @@
+-// Effects (§8.2 with §3.7): the instantiated demand names the instantiated command type — a
++// Effect handlers (with overloading): the instantiated demand names the instantiated command type — a
+ // handler for a different instantiation does not discharge it.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_kinds_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_kinds_neg.cj
+index 1c1fc7bddd..1767586182 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_kinds_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_kinds_neg.cj
+@@ -1,4 +1,4 @@
+-// Effects (§8.2 with §9.1): the two capability kinds never discharge one another. A 'catch'
++// Effect handlers (with the keyword scheme): the two capability kinds never discharge one another. A 'catch'
+ // supplies exception capabilities only, and a 'handle' supplies effect capabilities only, because
+ // discharge is by subtyping and the 'Command' and 'Exception' roots are disjoint.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
+index a4cf0f14da..ca961a3bc0 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_neg.cj
+@@ -1,5 +1,5 @@
+-// Effects (§8.2): an undeclared, unhandled 'perform' is a missing capability — and unlike an
+-// exception requirement it is never inferred (§9.1 policy table), so this is an error even though
++// Effect handlers: an undeclared, unhandled 'perform' is a missing capability — and unlike an
++// exception requirement it is never inferred (the keyword scheme policy table), so this is an error even though
+ // the function is not part of the exported surface.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj
+index 7b624860cc..fb1c5b0291 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_order_neg.cj
+@@ -1,4 +1,4 @@
+-// Effects (§9.1 rule 8): the clause order is fixed — 'performs' precedes 'throws'. The reverse
++// Effects (the keyword scheme rule 8): the clause order is fixed — 'performs' precedes 'throws'. The reverse
+ // order is rejected, not silently accepted.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg.cj
+index 3f5b22767f..1d291b4500 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg.cj
+@@ -1,4 +1,4 @@
+-// Effects (§8.2 with §3.10.2): a 'performs' requirement crosses the package boundary — the
++// Effect handlers (with package metadata): a 'performs' requirement crosses the package boundary — the
+ // entries live in the functional type's capability list, which the .cjo carries.
+ 
+ // DEPENDENCE: libeff.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg_neg.cj
+index 759584cd18..fea5a34c38 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/performs_xpkg_neg.cj
+@@ -1,4 +1,4 @@
+-// Effects (§8.2 with §3.10.2): an imported, unhandled effect requirement is a missing
++// Effect handlers (with package metadata): an imported, unhandled effect requirement is a missing
+ // capability — and it is not inferred even here, since effect requirements never are.
+ 
+ // DEPENDENCE: libeff.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj
+index 85c43ca498..c0a30b0319 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/corner_scopes_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.3, scope corner cases):
++// Checked exceptions (capability argument inference, scope corner cases):
+ // 1) a catch block is NOT inside its try's capability scope (bare rethrow of a
+ //    checked exception needs an enclosing capability);
+ // 2) a finally block is outside the scope too;
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/default_param_and_funcvalue.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/default_param_and_funcvalue.cj
+index 9f08dfdd73..9ac7e3a638 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/default_param_and_funcvalue.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/default_param_and_funcvalue.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.3): a default parameter value is checked against the
++// Checked exceptions (capability argument inference): a default parameter value is checked against the
+ // callable's own capability scope; calling a function VALUE demands its type's
+ // capabilities; main() throws is covered by the default handler.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/discharge_positive.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/discharge_positive.cj
+index 231c56fb72..d618a8f01d 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/discharge_positive.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/discharge_positive.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.3): capability scopes — try-catch introduces one capability
++// Checked exceptions (capability argument inference): capability scopes — try-catch introduces one capability
+ // per catch-pattern type (E1|E2 introduces two); declared clauses cover bodies;
+ // contravariance: a base-type handler discharges subtype throws; catch/finally
+ // blocks are OUTSIDE the try's scope; try-with-resources initializers are inside.
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj
+index a5d181902c..3db63ed37b 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/lambda_expected_type.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.5): a literal's capability list comes from the expected
++// Checked exceptions (first-class functions): a literal's capability list comes from the expected
+ // type only; inside such a literal those capabilities are in scope. A literal with
+ // no expected type has no capability parameters (its demands need enclosing scopes).
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj
+index 6922b89649..a8bb4234c6 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/missing_capability_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.3): a throw (or call requiring a capability) with no
++// Checked exceptions (capability argument inference): a throw (or call requiring a capability) with no
+ // suitable capability in scope is an error, with the proposal's wording (mode
+ // omitted pre-Modal per author ruling).
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand.cj
+index e421f4b372..b390b0f099 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2/§3.3): the positive twin of prop_accessor_demand_neg — the same
++// Checked exceptions (capability parameters in declarations/capability argument inference): the positive twin of prop_accessor_demand_neg — the same
+ // accesses are fine once the capabilities are supplied, either by a try-catch or by the
+ // caller's own clause. Guards against over-demanding.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand_neg.cj
+index e6032234a3..3f597b2143 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/prop_accessor_demand_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2/§3.3): a property accessor's `throws` clause is demanded at every
++// Checked exceptions (capability parameters in declarations/capability argument inference): a property accessor's `throws` clause is demanded at every
+ // use site — read, write, compound assign and increment — not only inside the accessor body.
+ // The accessors are public so inference cannot mask the result.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/libx.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/libx.cj
+index 96e9fbcbe8..ef0284f279 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/libx.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/libx.cj
+@@ -1,4 +1,4 @@
+-// Support package for the cross-package tests (proposal 3.10.2): a CHECKED dependency whose
++// Support package for the cross-package tests (package metadata): a CHECKED dependency whose
+ // public surface carries 'throws' clauses. Compiled with --enable-checked-exceptions, so its
+ // capability lists must survive into the .cjo and be demanded at call sites in other packages.
+ 
+@@ -38,13 +38,13 @@ public class Connection {
+     }
+ }
+ 
+-// A public signature carrying a functional type with a clause (proposal 3.4): the clause is part
++// A public signature carrying a functional type with a clause (functional types): the clause is part
+ // of the parameter's TYPE, so it must survive in the .cjo nested inside that type.
+ public func withCallback(cb: () throws XException -> Int64): Int64 throws XException {
+     return cb()
+ }
+ 
+-// A capturing class (proposal 3.9): construction demands the captured capabilities, so the
++// A capturing class (capability capturing): construction demands the captured capabilities, so the
+ // 'captures' clause must cross the boundary as well.
+ public class Session captures XException {
+     public init() {
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_basic.cj
+index 6ae20199d3..d31ed53e73 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_basic.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_basic.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.10.2): a 'throws' clause on a public declaration must cross the package
++// Checked exceptions (package metadata): a 'throws' clause on a public declaration must cross the package
+ // boundary through the .cjo, so a call in another package demands the same capabilities.
+ 
+ // DEPENDENCE: libx.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_canonical_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_canonical_neg.cj
+index d3a6d4e198..d90614f451 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_canonical_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_canonical_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.10.2 rule 1): the capability list written to the .cjo is in canonical
++// Checked exceptions (package metadata rule 1): the capability list written to the .cjo is in canonical
+ // normal form — entries subsumed by another entry are dropped, so an importer of
+ // 'throws SubExc, BaseExc' sees 'BaseExc' alone and gets ONE diagnostic, not two. Dropping the
+ // subsumed entry loses no obligation: any supply discharging 'BaseExc' discharges 'SubExc' too.
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_neg.cj
+index c5fbaacebb..8846f20707 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.9 rule 4 with §3.10.2): constructing an imported capturing class demands
++// Checked exceptions (capability capturing rule 4 with package metadata): constructing an imported capturing class demands
+ // its captured capabilities at the construction site, so the 'captures' clause must cross the
+ // package boundary too.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_pos.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_pos.cj
+index 62e820a0ee..ba0e6a1c05 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_pos.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_captures_pos.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.9 with §3.10.2): the imported captures requirement is discharged at the
++// Checked exceptions (capability capturing with package metadata): the imported captures requirement is discharged at the
+ // construction site, and the instance's methods then need no capability of their own.
+ 
+ // DEPENDENCE: libx.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_functype.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_functype.cj
+index 76e5ec1ea9..c9d755922d 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_functype.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_functype.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.4 with §3.10.2): a clause on a FUNCTIONAL TYPE is part of the type, so
++// Checked exceptions (functional types with package metadata): a clause on a FUNCTIONAL TYPE is part of the type, so
+ // it must survive nested inside an imported signature — the lambda passed here is covered by the
+ // parameter type's capability list and may throw without a try of its own.
+ 
+@@ -11,7 +11,7 @@ import libx.*
+ 
+ main() {
+     try {
+-        // The literal's capability list comes from the expected type (proposal 3.5), which the
++        // The literal's capability list comes from the expected type (first-class functions), which the
+         // .cjo must have carried across: the body may throw XException with no local handler.
+         withCallback({ => throw XException() })
+         return 1
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_neg.cj
+index b9a46d35ec..5448f5d4c6 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.10.2 with §3.7): an imported generic declaration's capability list is
++// Checked exceptions (package metadata with overloading): an imported generic declaration's capability list is
+ // instantiated at the call site, so the demand names the instantiated type.
+ 
+ // DEPENDENCE: libx.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_pos.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_pos.cj
+index adf5728a96..41c8c4dbe5 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_pos.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_generic_pos.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.10.2 with §3.7): the instantiated imported requirement is discharged by
++// Checked exceptions (package metadata with overloading): the instantiated imported requirement is discharged by
+ // a handler for exactly that instantiation.
+ 
+ // DEPENDENCE: libx.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_member_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_member_neg.cj
+index 1b7378d84e..08c5a77655 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_member_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_member_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.10.2): clauses on imported METHODS and PROPERTY ACCESSORS cross the
++// Checked exceptions (package metadata): clauses on imported METHODS and PROPERTY ACCESSORS cross the
+ // boundary too, not just free functions.
+ 
+ // DEPENDENCE: libx.cj
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_neg.cj
+index 15fb771471..ebe97c30ed 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/serialization/xpkg_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.10.2): an imported requirement that is not discharged is a missing
++// Checked exceptions (package metadata): an imported requirement that is not discharged is a missing
+ // capability, exactly as it would be within the declaring package. Without cjo metadata the
+ // import silently arrives capability-free and this compiles, which is the bug being guarded.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/clause_not_exception_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/clause_not_exception_neg.cj
+index 7fdbb5dfdc..f594924345 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/clause_not_exception_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/clause_not_exception_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2 rule 3): every type in a `throws` clause must be a
++// Checked exceptions (capability parameters in declarations rule 3): every type in a `throws` clause must be a
+ // subtype of class `Exception` (type parameters must be bounded by it).
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_explicit.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_explicit.cj
+index c832958536..0106993246 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/generics_explicit.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_explicit.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.6): clause types may be/contain type parameters; capability
++// Checked exceptions (generics): clause types may be/contain type parameters; capability
+ // argument inference follows type-argument inference (explicit args work).
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj b/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
+index 6d5b4652f0..1dc65b8b48 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/generics_no_inference.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.6): capability parameters of argument functions are NOT
++// Checked exceptions (generics): capability parameters of argument functions are NOT
+ // considered in type-argument inference (no row unification).
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj b/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj
+index 53fd287bc3..2da87a3823 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/overload_dup.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.7): signatures that coincide after removing capability
++// Checked exceptions (overloading): signatures that coincide after removing capability
+ // lists are duplicate declarations.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj b/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj
+index 1735cdaf85..2907d4810e 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/overload_functype_dup.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.7): parameter function types differing only in capability
++// Checked exceptions (overloading): parameter function types differing only in capability
+ // lists are the same type for overload purposes — such overloads are duplicates.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj
+index eed95e0dee..4ec9b059eb 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/override_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.8): an override may not require capabilities the
++// Checked exceptions (overriding and redefinition): an override may not require capabilities the
+ // original does not provide for.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/override_positive.cj b/testsuites/LLT/compiler/CheckedExceptions/types/override_positive.cj
+index 2452d57968..6423e78bba 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/override_positive.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/override_positive.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.8): an override's throws list must be pointwise subsumed
++// Checked exceptions (overriding and redefinition): an override's throws list must be pointwise subsumed
+ // by the original's — subsets and subtype entries are legal.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj
+index edebce3556..16c88b45a1 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.4): narrowing a capability list is NOT a subtype —
++// Checked exceptions (functional types): narrowing a capability list is NOT a subtype —
+ // the target type must cover every capability the source function requires.
+ 
+ // EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/subtype_positive.cj b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_positive.cj
+index ffb436ff54..c5be2c5c6c 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/types/subtype_positive.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/subtype_positive.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.4): functional-type subtyping — capability lists compare
++// Checked exceptions (functional types): functional-type subtyping — capability lists compare
+ // as sets: permutations, adding requirements, and pointwise widening are all legal.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_hierarchy.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_hierarchy.cj
+index e462dad232..75a9aeb4da 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_hierarchy.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/error_hierarchy.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§1.1, §6.4): the Error hierarchy is fail-fast, not statically tracked —
++// Checked exceptions (the fail-fast/recoverable split, unchecked exceptions): the Error hierarchy is fail-fast, not statically tracked —
+ // 'Error <: ToString' is a separate root from 'Exception', and throwing one never requires a
+ // capability. Errors cannot be constructed by user code (their constructors are internal to
+ // std.core), so the user-visible path is rethrowing a caught one, and the compiler-side proof
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_generic_ok.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_generic_ok.cj
+index fb575b6ea8..ea9b087b4d 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_generic_ok.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_generic_ok.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2 rule 5, exemption): type parameters may appear in
++// Checked exceptions (capability parameters in declarations rule 5, exemption): type parameters may appear in
+ // clauses; a capability requirement whose type INSTANTIATES to an unchecked
+ // exception type is trivially satisfied at the call site.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_in_clause_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_in_clause_neg.cj
+index 014631fb6e..1ea1ab1895 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_in_clause_neg.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_in_clause_neg.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§3.2 rule 5): a concrete unchecked exception type in a
++// Checked exceptions (capability parameters in declarations rule 5): a concrete unchecked exception type in a
+ // `throws` list is misleading (throwing it never needs a capability) and is
+ // rejected with a dedicated diagnostic.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_mixed.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_mixed.cj
+index 8a534b54da..445540770a 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_mixed.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_mixed.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.4): checked and unchecked coexist — checked throws still
++// Checked exceptions (unchecked exceptions): checked and unchecked coexist — checked throws still
+ // demand capabilities in the same body where unchecked throws demand none; an
+ // unchecked base with checked-looking usage stays exempt through subtyping.
+ 
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_throw.cj b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_throw.cj
+index 379762d9ce..769a270212 100644
+--- a/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_throw.cj
++++ b/testsuites/LLT/compiler/CheckedExceptions/unchecked/unchecked_throw.cj
+@@ -1,4 +1,4 @@
+-// Checked exceptions (§6.4): throwing an UncheckedException subtype requires no
++// Checked exceptions (unchecked exceptions): throwing an UncheckedException subtype requires no
+ // capability; unchecked exceptions remain catchable like any exception.
+ 
+ // EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
+-- 
+2.54.0
+

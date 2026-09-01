@@ -1,0 +1,236 @@
+From e8718a05cca37482f2bed46b4c0cb62fb4035b0e Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 05:57:29 +0300
+Subject: [PATCH 27/44] feat(chexc): infer statics and by effective visibility,
+ re-checking inferred overrides
+
+Two narrowings existed for one reason: an override's list is compared against the
+overridden declaration's during type check, which runs before capability parameter
+inference, so a list acquired BY inference was never compared at all. Non-private
+static members therefore required an explicit clause, and eligibility used the
+declaration's own modifier instead of effective visibility.
+
+The pairs are now recorded where the inheritance checker already has them and
+consumed after inference: an inferred override requiring more than what it overrides
+is an error, with the overridden declaration pointed at. A list depends on its own
+body only, never on its overriders.
+
+With that in place both narrowings go. Static members are ordinary members, and
+visibility is effective visibility -- the narrowest of a declaration's own modifier
+and those of its enclosing declarations -- so a 'public' method of an 'internal'
+class is inferred, as is a 'private init' of a 'public' class, while anything that
+really leaves the module keeps an authoritative list.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ include/cangjie/Sema/CapabilityCheck.h        | 15 +++--
+ include/cangjie/Sema/TypeManager.h            | 23 +++++++
+ src/Frontend/CompilerInstance.cpp             |  1 +
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 61 +++++++++++++------
+ .../StructInheritanceChecker.cpp              |  3 +
+ 5 files changed, 81 insertions(+), 22 deletions(-)
+
+diff --git a/include/cangjie/Sema/CapabilityCheck.h b/include/cangjie/Sema/CapabilityCheck.h
+index 9f9fd691..5a3b96e4 100644
+--- a/include/cangjie/Sema/CapabilityCheck.h
++++ b/include/cangjie/Sema/CapabilityCheck.h
+@@ -80,11 +80,9 @@ private:
+ 
+ /**
+  * True when @p decl leaves its module, so its capability list is authoritative and never inferred.
+- * The test is the declaration's own modifier plus interface membership -- an interface member is a
+- * public contract whether or not the modifier is written. The text defines this over *effective*
+- * visibility (the narrowest of the declaration's own modifier and its enclosing declarations'),
+- * which additionally infers, say, a `public` method of an `internal` class; that widening waits on
+- * re-checking an inferred override against the declaration it overrides.
++ * The test is *effective* visibility -- the narrowest of the declaration's own modifier and those of
++ * its enclosing declarations -- plus interface membership, an interface member being a public
++ * contract whether or not the modifier is written.
+  */
+ bool IsExportedDecl(const AST::Decl& decl);
+ 
+@@ -115,6 +113,13 @@ InferredCapabilities InferCapabilities(
+  */
+ void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCapabilities& inferred);
+ 
++/**
++ * Checked exceptions: report every inferred list that requires more than the declaration it
++ * overrides or implements. Written lists are compared during type check; an inferred one cannot be,
++ * because inference runs after it -- so the override pairs recorded then are consumed here.
++ */
++void CheckInferredOverrides(TypeManager& typeManager, const InferredCapabilities& inferred, DiagnosticEngine& diag);
++
+ /**
+  * Run capability argument checking over every callable body and initializer of @p pkg on the
+  * typed AST (after sema type check, before desugar destroys 'TryExpr' structure). The pass
+diff --git a/include/cangjie/Sema/TypeManager.h b/include/cangjie/Sema/TypeManager.h
+index a0497c57..b1349daa 100644
+--- a/include/cangjie/Sema/TypeManager.h
++++ b/include/cangjie/Sema/TypeManager.h
+@@ -76,6 +76,25 @@ public:
+     Ptr<AST::FuncTy> GetFunctionTy(const std::vector<Ptr<AST::Ty>>& paramTys, Ptr<AST::Ty> retTy,
+         AST::FuncTy::Config cfg = {false, false, false, false}, const std::vector<Ptr<AST::Ty>>& capTys = {});
+ 
++    /**
++     * Checked exceptions: remember that @p child overrides or implements @p parent. Override
++     * checking runs during type check, before capability parameter inference, so an inferred list
++     * has no overridden list to be checked against at that point; the pairs recorded here let the
++     * capability pass do it afterwards ("an inferred override requiring more than the overridden
++     * list is an error").
++     */
++    void RecordOverride(const AST::FuncDecl& child, const AST::FuncDecl& parent)
++    {
++        overriddenDecls[&child].emplace_back(&parent);
++    }
++    /// The declarations @p child overrides or implements, as recorded during type check.
++    const std::vector<Ptr<const AST::FuncDecl>>& GetOverridden(const AST::FuncDecl& child) const
++    {
++        static const std::vector<Ptr<const AST::FuncDecl>> none;
++        auto found = overriddenDecls.find(&child);
++        return found == overriddenDecls.end() ? none : found->second;
++    }
++
+     /**
+      * Checked exceptions: the semantic form of a capability list -- a duplicate entry, or one
+      * covered by a more general entry of the same list, is not part of the list. Every comparison
+@@ -388,6 +407,10 @@ public:
+         AST::Ty& ty, bool needSubstituteGeneric = false, const TypeSubst& typeMapping = {});
+ 
+ private:
++    /// Checked exceptions: override/implementation pairs, filled during type check (see
++    /// RecordOverride) and consumed after capability parameter inference.
++    std::unordered_map<Ptr<const AST::FuncDecl>, std::vector<Ptr<const AST::FuncDecl>>> overriddenDecls;
++
+     friend class TyVarScope;
+     friend class InstCtxScope;
+ #ifdef CANGJIE_CODEGEN_CJNATIVE_BACKEND
+diff --git a/src/Frontend/CompilerInstance.cpp b/src/Frontend/CompilerInstance.cpp
+index e8cb553d..aee8532b 100644
+--- a/src/Frontend/CompilerInstance.cpp
++++ b/src/Frontend/CompilerInstance.cpp
+@@ -739,6 +739,7 @@ bool CompilerInstance::PerformCapabilityCheck()
+         // parameter inference and capability argument checking, so a declaration's own type is
+         // the single source of its list. Keep these three calls adjacent.
+         Sema::CompleteInferredCapabilityTypes(*typeManager, inferred);
++        Sema::CheckInferredOverrides(*typeManager, inferred, diag);
+         Sema::CheckCapabilities(*typeManager, *importManager, *srcPkg, missHandler, inferred);
+     }
+     return diag.GetErrorCount() == errorCountBefore;
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 6613d574..17d486a0 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -42,6 +42,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "Diags.h"
+ #include "TypeCheckUtil.h"
+ #include "cangjie/AST/ASTCasting.h"
+ #include "cangjie/AST/Utils.h"
+@@ -838,10 +839,6 @@ private:
+         if (!fd.funcBody || !fd.funcBody->body) {
+             return false;
+         }
+-        // The rule is the declaration's own modifier, not the effective visibility the text
+-        // defines: inferring a 'public' method of an 'internal' class is only safe once an
+-        // inferred override is re-checked against the declaration it overrides, which is the same
+-        // machinery the static-member rule waits on.
+         if (Sema::IsExportedDecl(fd)) {
+             return false;
+         }
+@@ -855,15 +852,6 @@ private:
+         if (fd.outerDecl && fd.outerDecl->astKind == ASTKind::INTERFACE_DECL) {
+             return false;
+         }
+-        // A non-private static class member can be redefined by a subclass and is dispatched
+-        // virtually, so the override rule applies to it — but override checking runs during type
+-        // check, before inference, and would not see an inferred list. Requiring an explicit
+-        // clause here keeps the two consistent; a post-inference re-check would let these be
+-        // inferred too.
+-        if (fd.TestAttr(Attribute::STATIC) && !fd.TestAttr(Attribute::PRIVATE) && fd.outerDecl &&
+-            fd.outerDecl->astKind == ASTKind::CLASS_DECL) {
+-            return false;
+-        }
+         auto& clause = fd.funcBody->throwsClause;
+         return !clause || clause->hasEllipsis;
+     }
+@@ -1144,11 +1132,18 @@ private:
+ namespace Cangjie::Sema {
+ bool IsExportedDecl(const Decl& decl)
+ {
+-    if (decl.TestAttr(Attribute::PUBLIC) || decl.TestAttr(Attribute::PROTECTED)) {
+-        return true;
++    // Effective visibility: the narrowest of the declaration's own modifier and those of its
++    // enclosing declarations, so a 'public' method of an 'internal' class does not leave the module
++    // and is inferred, while a 'private init' of a 'public' class is inferred too.
++    for (auto current = Ptr<const Decl>(&decl); current; current = current->outerDecl) {
++        if (current->outerDecl && current->outerDecl->astKind == ASTKind::INTERFACE_DECL) {
++            continue; // an interface member is a public contract, written modifier or not
++        }
++        if (!current->TestAttr(Attribute::PUBLIC) && !current->TestAttr(Attribute::PROTECTED)) {
++            return false;
++        }
+     }
+-    // Interface members are public contracts whether or not the modifier is written.
+-    return decl.outerDecl && decl.outerDecl->astKind == ASTKind::INTERFACE_DECL;
++    return true;
+ }
+ 
+ void ReportCapabilityMissHandler::HandleMiss(const CapabilityDemand& demand)
+@@ -1167,6 +1162,38 @@ void ReportCapabilityMissHandler::HandleMiss(const CapabilityDemand& demand)
+     builder.AddMainHintArguments(demand.requiredBy);
+ }
+ 
++void CheckInferredOverrides(TypeManager& typeManager, const InferredCapabilities& inferred, DiagnosticEngine& diag)
++{
++    // A declaration's list depends on its own body only, never on its overriders -- so an override
++    // that INFERS more than the declaration it overrides is an error, exactly as a written one is.
++    // Written lists are compared during type check; these could not be, because inference runs
++    // after it, so the pairs recorded there are consumed here.
++    for (auto& [decl, caps] : inferred) {
++        if (!decl || caps.empty()) {
++            continue;
++        }
++        for (auto parent : typeManager.GetOverridden(*decl)) {
++            auto parentTy = DynamicCast<FuncTy*>(parent->GetTy());
++            if (!parentTy) {
++                continue;
++            }
++            for (auto capTy : caps) {
++                if (!Ty::IsTyCorrect(capTy) || typeManager.IsCapTysSubsumed({capTy}, parentTy->capTys)) {
++                    continue;
++                }
++                auto builder = diag.DiagnoseRefactor(DiagKindRefactor::sema_chexc_override_missing_capability,
++                    MakeRangeForDeclIdentifier(*decl), Ty::ToString(capTy), decl->identifier.Val());
++                builder.AddMainHintArguments(Ty::ToString(capTy));
++                builder.AddNote(MakeRangeForDeclIdentifier(*parent),
++                    parentTy->capTys.empty()
++                        ? "the overridden or implemented declaration has no 'throws' clause, and this "
++                          "one's list was inferred from its body"
++                        : "the overridden or implemented declaration is declared here");
++            }
++        }
++    }
++}
++
+ void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCapabilities& inferred)
+ {
+     for (auto& [decl, caps] : inferred) {
+diff --git a/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp b/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
+index a42ec1e1..1d1b8223 100644
+--- a/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
++++ b/src/Sema/InheritanceChecker/StructInheritanceChecker.cpp
+@@ -1391,6 +1391,9 @@ void StructInheritanceChecker::CheckThrowsClauseCompatible(const AST::FuncDecl&
+     if (parentFunc.TestAttr(Attribute::CONSTRUCTOR) || childFunc.TestAttr(Attribute::CONSTRUCTOR)) {
+         return;
+     }
++    // The pair is remembered for the capability pass: a list this declaration only acquires by
++    // inference is compared against the overridden one there, since inference runs later.
++    typeManager.RecordOverride(childFunc, parentFunc);
+     for (auto capTy : childTy.capTys) {
+         if (typeManager.IsCapTysSubsumed({capTy}, parentTy.capTys)) {
+             continue;
+-- 
+2.54.0
+

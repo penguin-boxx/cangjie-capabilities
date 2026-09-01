@@ -1,0 +1,135 @@
+From d3cf0e54db47150edfddcc4c984bd33228197f2e Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 05:57:31 +0300
+Subject: [PATCH 28/43] test(chexc): inferred statics, effective visibility,
+ inferred overrides
+
+infer_static_and_visibility.cj -- a non-private static method, a 'public' method of
+an 'internal' class, and a 'private init' of a 'public' class all infer, while the
+'public' static factory beside them keeps its written list.
+infer_override_neg.cj -- the check that unlocked them: an override and an interface
+implementation, each with no clause of its own, whose inferred list exceeds what it
+overrides.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../inference/infer_override_neg.cj           | 42 ++++++++++++++
+ .../inference/infer_static_and_visibility.cj  | 57 +++++++++++++++++++
+ 2 files changed, 99 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_override_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/inference/infer_static_and_visibility.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_override_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_override_neg.cj
+new file mode 100644
+index 0000000000..6f3dadf462
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_override_neg.cj
+@@ -0,0 +1,42 @@
++// Checked exceptions (which declarations are inferred): an override or implementation is checked
++// against the overridden declaration's list whether its own list is written or inferred. An inferred
++// override requiring more than the overridden list is an error -- a list depends on its own body
++// only, never on its overriders. Written lists are compared during type check; an inferred one is
++// compared after inference, which is what this pins.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: exception type 'Class-AException' in 'throws' clause of 'run' is not covered
++// ASSERT: scan error: exception type 'Class-AException' in 'throws' clause of 'act' is not covered
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++open class Base {
++    public open func run(): Unit
++    throws BException {
++        throw BException()
++    }
++}
++
++class Derived <: Base {
++    // no clause of its own, so the list is inferred -- and it exceeds Base's
++    public override func run(): Unit {
++        throw AException()
++    }
++}
++
++interface Contract {
++    func act(): Unit
++    throws BException
++}
++
++class Impl <: Contract {
++    // implementations are checked the same way
++    public func act(): Unit {
++        throw AException()
++    }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/inference/infer_static_and_visibility.cj b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_static_and_visibility.cj
+new file mode 100644
+index 0000000000..ec3b65f3d2
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/inference/infer_static_and_visibility.cj
+@@ -0,0 +1,57 @@
++// Checked exceptions (which declarations are inferred): the rule covers all kinds of callables, so a
++// non-private static method is inferred like an instance one; and visibility is EFFECTIVE
++// visibility, so a `public` method of an `internal` class -- which does not leave the module -- is
++// inferred too, while a `private init` of a `public` class is inferred as well.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++class Internal {          // internal: the default
++    public func exposed(): Int64 { // effectively internal, so inferred
++        throw AException()
++    }
++
++    static func helper(): Int64 { // a non-private static member, inferred
++        throw BException()
++    }
++}
++
++public class Exposed {
++    public let value: Int64
++
++    private init(v: Int64) { // effectively private, so inferred
++        value = v
++        throw AException()
++    }
++
++    public static func make(): Exposed
++    throws AException { // exported: written, never inferred
++        Exposed(1)
++    }
++}
++
++main(): Int64 {
++    var caught = 0
++    try {
++        Internal().exposed()
++    } catch (e: AException) {
++        caught++
++    }
++    try {
++        Internal.helper()
++    } catch (e: BException) {
++        caught++
++    }
++    try {
++        Exposed.make()
++    } catch (e: AException) {
++        caught++
++    }
++    if (caught == 3) {
++        return 0
++    }
++    return 1
++}
+-- 
+2.54.0
+

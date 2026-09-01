@@ -1,0 +1,277 @@
+From b0a52c1c0dc53f1e3f5579783b7363eead0e2d3d Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 09:08:31 +0300
+Subject: [PATCH 29/43] test(chexc): escape hatch, cast targets by level,
+ 'resume throwing', '...' placement, warn-level override resolution
+
+One test per rule of this round, plus the regression the std link failure earned:
+'warn_override_resolution.cj' builds and RUNS a program whose implementation exceeds the
+interface's list in both shapes -- declared and inferred -- and calls it through an F-bounded
+type parameter, which is where a call left on the abstract member would have no body behind it.
+Compiling it is not enough to catch that; the test runs the binary.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../parse/neg_ellipsis_placement.cj           | 20 +++++++
+ .../performs/resume_throwing_neg.cj           | 25 +++++++++
+ .../CheckedExceptions/scopes/escape_hatch.cj  | 35 ++++++++++++
+ .../scopes/escape_hatch_unchecked_warn.cj     | 16 ++++++
+ .../scopes/warn_override_resolution.cj        | 53 +++++++++++++++++++
+ .../types/cast_target_effect_neg.cj           | 18 +++++++
+ .../types/cast_target_level.cj                | 35 ++++++++++++
+ 7 files changed, 202 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_placement.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/performs/resume_throwing_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch_unchecked_warn.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/scopes/warn_override_resolution.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/cast_target_effect_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/types/cast_target_level.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_placement.cj b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_placement.cj
+new file mode 100644
+index 0000000000..03ac750736
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/parse/neg_ellipsis_placement.cj
+@@ -0,0 +1,20 @@
++// Checked exceptions (interaction with an explicit throws): the '...' marker appears only as the
++// last entry of a 'throws' clause, at most once.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: '...' must be the last entry of a 'throws' clause
++
++class AException <: Exception {}
++class BException <: Exception {}
++
++func notLast(): Unit throws AException, ..., BException {
++    throw BException()
++}
++
++func twice(): Unit throws AException, ..., ... {
++    throw AException()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/performs/resume_throwing_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/performs/resume_throwing_neg.cj
+new file mode 100644
+index 0000000000..b8a8b25e67
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/performs/resume_throwing_neg.cj
+@@ -0,0 +1,25 @@
++// Effect requirements: 'resume ... throwing e' injects 'e' at the suspended 'perform' site, so it is
++// a requirement site classified by the static type of 'e', exactly as 'throw e' is -- and it
++// resolves in the handler body's enclosing capability scopes, a 'handle' body being outside its own
++// try's scope, like a 'catch' body.
++
++// EXEC-PIPE-1: %compiler %cmp_opt %enableEH --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-AException'
++// ASSERT: scan required by this 'resume ... throwing' expression
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++class AException <: Exception {}
++
++public func handler(): Int64 {
++    try {
++        perform GetNumber()
++    } handle (_: GetNumber) {
++        resume throwing AException() // error: nothing here supplies the capability
++    }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch.cj
+new file mode 100644
+index 0000000000..49b8425e72
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch.cj
+@@ -0,0 +1,35 @@
++// Checked exceptions (the escape hatch): 'unsafeAssumeHandled<E>(f)' runs 'f' with a fabricated
++// capability for 'E' -- a type-level assumption with no runtime content, for migration and boundary
++// code that knows an exception cannot occur. The callback takes its capability list from the
++// parameter's type, so a requirement inside it is discharged; the call site itself requires nothing.
++// If an E really escapes, it propagates exactly as an unchecked exception would.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++
++func mayThrow(n: Int64): Int64 throws AException {
++    if (n < 0) {
++        throw AException()
++    }
++    n
++}
++
++// no clause of its own: the assumption removes the obligation rather than passing it on
++func assumed(n: Int64): Int64 {
++    unsafeAssumeHandled<AException, Int64>({ => mayThrow(n) })
++}
++
++main(): Int64 {
++    if (assumed(3) != 3) {
++        return 1
++    }
++    // the assumption is a lie here, and the exception propagates like an unchecked one
++    try {
++        assumed(-1)
++        return 1
++    } catch (e: AException) {
++        return 0
++    }
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch_unchecked_warn.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch_unchecked_warn.cj
+new file mode 100644
+index 0000000000..b0ce82bfc8
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/escape_hatch_unchecked_warn.cj
+@@ -0,0 +1,16 @@
++// Checked exceptions (the escape hatch): instantiating it with an unchecked type is a no-op --
++// throwing an unchecked exception never required a capability -- so the call is warned about,
++// in the 'checked-exceptions' group.
++
++// EXEC-PIPE: %compiler %cmp_opt --experimental --enable-chexc %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan warning: 'unsafeAssumeHandled' assumes 'Class-MyUnchecked', which is unchecked
++
++class MyUnchecked <: UncheckedException {}
++
++func nothingToAssume(): Int64 {
++    unsafeAssumeHandled<MyUnchecked, Int64>({ => 1 })
++}
++
++main() {
++    return nothingToAssume() - 1
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_override_resolution.cj b/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_override_resolution.cj
+new file mode 100644
+index 0000000000..30dab3ccd1
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/scopes/warn_override_resolution.cj
+@@ -0,0 +1,53 @@
++// Checked exceptions (author ruling: warn level compiles and runs): an override whose list is not
++// covered by the overridden declaration is a warning at this level, so the program is still built --
++// and the call through the type parameter must still resolve to the implementation. Pairing an
++// override with what it implements is a question about shape; a capability list takes no part in it.
++// A call left on the abstract declaration would have no body behind it, which shows up only at link
++// time, so this test runs the program rather than just compiling it. Both shapes are covered: a
++// list the implementation declares, and one it only acquires by inference.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-chexc=warn %n.cj -o %output 2> warn_out.txt
++// EXEC: %run %output
++// EXEC-PIPE: cat warn_out.txt | compare %f
++// ASSERT: scan warning: exception type 'Class-AException' in 'throws' clause of 'write' is not covered
++// ASSERT: scan warning: exception type 'Class-AException' in 'throws' clause of 'read' is not covered
++
++class AException <: Exception {}
++
++// F-bounded, as the platform-socket interfaces are: the type parameter is what makes the calls in
++// 'Holder' direct ones rather than virtual dispatch.
++interface Platform<Self> where Self <: Platform<Self> {
++    func write(x: Int64): Int64
++    func read(): Int64
++}
++
++class Impl <: Platform<Impl> {
++    public func write(x: Int64): Int64
++    throws AException {
++        return x + 1
++    }
++
++    // no clause of its own: the list is inferred from the body, and exceeds the interface's
++    public func read(): Int64 {
++        if (false) {
++            throw AException()
++        }
++        return 1
++    }
++}
++
++class Holder<NS> where NS <: Platform<NS> {
++    Holder(private let it: NS) {}
++
++    func go(x: Int64): Int64 {
++        it.write(x) + it.read()
++    }
++}
++
++main(): Int64 {
++    let h = Holder<Impl>(Impl())
++    if (h.go(40) != 42) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_effect_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_effect_neg.cj
+new file mode 100644
+index 0000000000..4f8e2b7565
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_effect_neg.cj
+@@ -0,0 +1,18 @@
++// Checked exceptions x effect handlers: with the effect-handler feature enabled, a functional cast
++// target is an error at every exception-checking level -- the value may carry a 'performs'
++// component, and no pessimistic reading exists for it: there is no top command type.
++
++// EXEC-PIPE-1: %compiler %cmp_opt %enableEH %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error: '() -> Unit' cannot be a runtime cast target: it contains a function type
++
++import stdx.effect.*
++
++class GetNumber <: Command<Int64> {}
++
++func functional(x: Any): Unit {
++    match (x as (() -> Unit)) { case Some(_) => (); case None => () }
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_level.cj b/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_level.cj
+new file mode 100644
+index 0000000000..3286964e6e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/types/cast_target_level.cj
+@@ -0,0 +1,35 @@
++// Checked exceptions (reflection and runtime casts): rejecting a functional cast target is an
++// ordinary checking violation for the exception kind, so at the 'warn' level it is a warning and
++// the package still builds. A capturing type is rejected as a target for a different reason: its
++// instances hold capabilities and are bound to the handlers that supplied them, which a cast result
++// cannot be.
++
++// EXEC-PIPE: %compiler %cmp_opt --experimental --enable-chexc=warn %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan warning: '() -> Unit' cannot be a runtime cast target: it contains a function type
++// ASSERT: scan warning: 'Class-Capturing' cannot be a runtime cast target: it is a capturing type
++
++class AException <: Exception {}
++
++class Capturing
++captures AException {
++    init() {}
++}
++
++func functional(x: Any): Unit {
++    match (x as (() -> Unit)) { case Some(_) => (); case None => () }
++}
++
++func capturing(x: Any): Unit {
++    match (x as Capturing) { case Some(_) => (); case None => () }
++}
++
++func capturingPattern(x: Any): Unit {
++    match (x) {
++        case _: Capturing => ()
++        case _ => ()
++    }
++}
++
++main() {
++    return 0
++}
+-- 
+2.54.0
+

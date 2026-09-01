@@ -1,0 +1,253 @@
+From 847f7142df54deb7c6d7fcd50dacb27265772ae1 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 30 Aug 2026 11:51:34 +0300
+Subject: [PATCH 35/44] =?UTF-8?q?fix(chexc):=20close=20the=20review's=20co?=
+ =?UTF-8?q?nfirmed=20defects=20=E2=80=94=20inferred=20lists=20on=20functio?=
+ =?UTF-8?q?n=20values,=20semantic=20form=20at=20call=20sites,=20vanished?=
+ =?UTF-8?q?=20unchecked=20entries,=20CanPerform=20naming?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An external review (2026-08-30) was analyzed claim by claim; each in-scope finding was probed
+before being believed, and four were real:
+
+- The P0: a reference that turns an INFERRED declaration into a value lost the list entirely.
+  Reference expressions are typed before inference runs, so the completed declaration type never
+  reaches them, and the side map was unioned for calls only — 'let w: () -> Unit = risky' with a
+  throwing 'risky' compiled at 'error' and leaked at run time. The list is now demanded where the
+  value is formed ('DemandInferredOnValue'), references are call-graph edges as "Recursion"
+  requires ("its edges are calls and also references"), and the collecting pass picks the demand
+  up, so a declaration that only references a thrower infers the requirement itself. Formation-
+  site payment is stricter than the text's type-riding reading — the same boundary trade
+  assumption imports made (artifact C15); declared clauses still ride the reference's type.
+- A covered entry was still demanded: 'throws Base, Derived' demanded both. Call-site demands now
+  pass through the semantic form ('NormalizeCapTys') — the list IS {Base}.
+- An entry instantiated to an unchecked type did not vanish from the functional type for
+  assignability: coverage now treats an unchecked sub-entry as trivially satisfied; the type
+  manager learns the 'UncheckedException' root at type-check preparation. The entry still prints
+  and still splits identity in invariant positions — recorded as I30, needs the CapList design.
+- Effect capabilities were named 'Handler<C>' in diagnostics; the text defines 'CanPerform<C>'.
+
+Plus one reconstruction site the review flagged: 'GetOriginalTy' rebuilt a functional type
+without its capability list (and without its config flags); both are mapped through now.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../Basic/DiagRefactor/DiagnosticSema.def     |  4 +-
+ include/cangjie/Sema/TypeManager.h            | 11 ++++
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 60 ++++++++++++++++++-
+ .../GenericInstantiationManagerImpl.cpp       | 11 +++-
+ src/Sema/TypeChecker.cpp                      |  9 +++
+ src/Sema/TypeManager.cpp                      |  8 +++
+ 6 files changed, 97 insertions(+), 6 deletions(-)
+
+diff --git a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+index 7f49eb83..04a5f288 100644
+--- a/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
++++ b/include/cangjie/Basic/DiagRefactor/DiagnosticSema.def
+@@ -433,10 +433,10 @@ WARNING(sema_chexc_missing_capability_warn, CHEXC,
+     "Cannot find a capability for '%s' (of type 'CanThrow<%s>') in the current scope",
+     "required by %s")
+ ERROR(sema_chexc_missing_handler_capability,
+-    "Cannot find a capability for '%s' (of type 'Handler<%s>') in the current scope",
++    "Cannot find a capability for '%s' (of type 'CanPerform<%s>') in the current scope",
+     "required by %s")
+ WARNING(sema_chexc_missing_handler_capability_warn, CHEXC,
+-    "Cannot find a capability for '%s' (of type 'Handler<%s>') in the current scope",
++    "Cannot find a capability for '%s' (of type 'CanPerform<%s>') in the current scope",
+     "required by %s")
+ 
+ ERROR(sema_chexc_performs_type_not_command, "type '%s' in 'performs' clause is not a subtype of 'Command'",
+diff --git a/include/cangjie/Sema/TypeManager.h b/include/cangjie/Sema/TypeManager.h
+index b1349daa..89fb1325 100644
+--- a/include/cangjie/Sema/TypeManager.h
++++ b/include/cangjie/Sema/TypeManager.h
+@@ -103,6 +103,16 @@ public:
+      * the placeholder, and capability lists take no part in type-argument inference.
+      */
+     std::vector<Ptr<AST::Ty>> NormalizeCapTys(const std::vector<Ptr<AST::Ty>>& capTys);
++    /**
++     * Checked exceptions: remember std.core's 'UncheckedException' type once name resolution has
++     * it. An entry whose type is (or instantiates to) an unchecked exception type imposes nothing
++     * -- rule "Unchecked types in 'throws' lists" -- so coverage treats it as trivially satisfied.
++     * Null when std.core does not provide the class (bootstrapping); every entry is checked then.
++     */
++    void SetUncheckedExceptionTy(Ptr<AST::Ty> ty)
++    {
++        uncheckedExceptionTy = ty;
++    }
+ 
+     Ptr<AST::ArrayTy> GetArrayTy(Ptr<AST::Ty> elemTy, unsigned int dims);
+     Ptr<AST::VArrayTy> GetVArrayTy(AST::Ty& elemTy, int64_t size);
+@@ -410,6 +420,7 @@ private:
+     /// Checked exceptions: override/implementation pairs, filled during type check (see
+     /// RecordOverride) and consumed after capability parameter inference.
+     std::unordered_map<Ptr<const AST::FuncDecl>, std::vector<Ptr<const AST::FuncDecl>>> overriddenDecls;
++    Ptr<AST::Ty> uncheckedExceptionTy{nullptr};
+ 
+     friend class TyVarScope;
+     friend class InstCtxScope;
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index 15e4b0d1..10e2837e 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -473,15 +473,17 @@ private:
+             }
+             case ASTKind::MEMBER_ACCESS: {
+                 // A function-typed field or property of an assumed package, or one of its methods
+-                // taken as a value.
++                // taken as a value -- and a method with an inferred list taken as a value.
+                 auto& ma = StaticCast<MemberAccess&>(*node);
+                 ImposeAssumedOnValue(ma, ma.target);
++                DemandInferredOnValue(ma, ma.target);
+                 return VisitAction::WALK_CHILDREN;
+             }
+             case ASTKind::REF_EXPR: {
+-                // The same for an unqualified reference to one of its declarations.
++                // The same for an unqualified reference.
+                 auto& re = StaticCast<RefExpr&>(*node);
+                 ImposeAssumedOnValue(re, re.ref.target);
++                DemandInferredOnValue(re, re.ref.target);
+                 return VisitAction::WALK_CHILDREN;
+             }
+             default:
+@@ -679,7 +681,10 @@ private:
+             }
+         }
+         AddAssumedDemands(ce, demands);
+-        for (auto cap : demands) {
++        // The semantic form is what a scope offers AND what a callee requires: an entry covered by
++        // a more general entry of the same list is not part of the list, so it is not demanded --
++        // 'throws Base, Derived' is the list {Base}, and a missing handler reports Base alone.
++        for (auto cap : typeManager.NormalizeCapTys(demands)) {
+             if (Ty::IsTyCorrect(cap)) {
+                 Demand(cap, ce, DescribeCallee(ce));
+             }
+@@ -736,6 +741,39 @@ private:
+         return entry == assumed.end() ? none : entry->second;
+     }
+ 
++    /**
++     * A reference that turns an INFERRED declaration into a value: the declaration's effective
++     * list exists only in the side map and the completed declaration type -- the reference
++     * expression was typed before inference ran and its functional type never carries the list,
++     * so a call through the value would demand nothing at all (a program with no handler anywhere
++     * compiled and leaked; review finding of 2026-08-30). The obligation is demanded here, where
++     * the value is formed. Stricter than the text, which puts the list on the type and pays at
++     * the eventual call -- the same boundary reading as assumption imports (artifact C15).
++     * Declared clauses are untouched: a reference's type carries those, and the call through the
++     * value pays them.
++     */
++    void DemandInferredOnValue(const Expr& expr, Ptr<const Decl> target)
++    {
++        // A callee is not a value taken out of the declaration: the call path unions the
++        // inferred list itself, and demanding here too would report the same obligation twice.
++        if (!target || calleeExprs.count(&expr) > 0) {
++            return;
++        }
++        auto func = DynamicCast<const FuncDecl*>(target.get());
++        if (!func) {
++            return;
++        }
++        auto it = inferred.find(Ptr<FuncDecl>(const_cast<FuncDecl*>(func)));
++        if (it == inferred.end()) {
++            return;
++        }
++        for (auto cap : it->second) {
++            if (Ty::IsTyCorrect(cap)) {
++                Demand(cap, expr, "this reference to '" + target->identifier.Val() + "', whose list is inferred");
++            }
++        }
++    }
++
+     void ImposeAssumedOnValue(Expr& expr, Ptr<const Decl> target)
+     {
+         // A callee is not a value taken out of the package: the call itself already carries the
+@@ -1052,6 +1090,22 @@ private:
+                         // call for the post-SCC check below.
+                         genericCalls[i].emplace_back(Ptr<const CallExpr>(ce), found->second);
+                     }
++                    return VisitAction::WALK_CHILDREN;
++                }
++                // References are edges too ("its edges are calls and also references"): a value
++                // formed from an eligible declaration pays that declaration's inferred list at the
++                // formation site, so the list must be solved no later than its referrers'.
++                Ptr<Decl> target = nullptr;
++                if (auto re = DynamicCast<RefExpr*>(node.get())) {
++                    target = re->ref.target;
++                } else if (auto ma = DynamicCast<MemberAccess*>(node.get())) {
++                    target = ma->target;
++                }
++                if (target) {
++                    auto found = index.find(target);
++                    if (found != index.end() && found->second != i) {
++                        callees[i].emplace(found->second);
++                    }
+                 }
+                 return VisitAction::WALK_CHILDREN;
+             }).Walk();
+diff --git a/src/Sema/GenericInstantiation/GenericInstantiationManagerImpl.cpp b/src/Sema/GenericInstantiation/GenericInstantiationManagerImpl.cpp
+index 59caaf0d..297c1193 100644
+--- a/src/Sema/GenericInstantiation/GenericInstantiationManagerImpl.cpp
++++ b/src/Sema/GenericInstantiation/GenericInstantiationManagerImpl.cpp
+@@ -184,7 +184,16 @@ Ptr<Ty> GetOriginalTy(Ty& ty, const TypeSubst& g2gTyMap, TypeManager& typeManage
+     for (auto paramTy : funcTy.paramTys) {
+         paramTys.emplace_back(GetOriginalTy(*paramTy, g2gTyMap, typeManager));
+     }
+-    return typeManager.GetFunctionTy(paramTys, GetOriginalTy(*funcTy.retTy, g2gTyMap, typeManager));
++    // Checked exceptions: the capability list is part of the type and is mapped like every other
++    // component; dropping it here is the reconstruction defect class (a rebuilt type silently
++    // loses the clause). The config flags travel too.
++    std::vector<Ptr<Ty>> capTys;
++    capTys.reserve(funcTy.capTys.size());
++    for (auto capTy : funcTy.capTys) {
++        capTys.emplace_back(GetOriginalTy(*capTy, g2gTyMap, typeManager));
++    }
++    return typeManager.GetFunctionTy(paramTys, GetOriginalTy(*funcTy.retTy, g2gTyMap, typeManager),
++        {funcTy.isC, funcTy.isClosureTy, funcTy.hasVariableLenArg, funcTy.noCast}, capTys);
+ }
+ 
+ inline bool IsGenericFuncWithDefaultParam(const Decl& decl)
+diff --git a/src/Sema/TypeChecker.cpp b/src/Sema/TypeChecker.cpp
+index 8a23c561..d36bde48 100644
+--- a/src/Sema/TypeChecker.cpp
++++ b/src/Sema/TypeChecker.cpp
+@@ -2349,6 +2349,15 @@ void TypeChecker::TypeCheckerImpl::PrepareTypeCheck(ASTContext& ctx, Package& pk
+     // Reset search's cache.
+     ctx.searcher->InvalidateCache();
+ 
++    // Checked exceptions: hand the type manager the unchecked-exception root, so coverage can
++    // treat an entry instantiated to an unchecked type as vanished (rule "Unchecked types in
++    // 'throws' lists"). Resolved by name here, where the import manager is at hand; absent while
++    // bootstrapping a core without the class, in which case every entry stays checked.
++    if (auto unchecked = importManager.GetCoreDecl<ClassDecl>(CLASS_UNCHECKED_EXCEPTION);
++        unchecked && Ty::IsTyCorrect(unchecked->GetTy())) {
++        typeManager.SetUncheckedExceptionTy(unchecked->GetTy());
++    }
++
+     CheckPrimaryCtorBeforeMerge(pkg);
+     // Merging common classes into specific if any
+     mpImpl->PrepareTypeCheck4CJMP(pkg);
+diff --git a/src/Sema/TypeManager.cpp b/src/Sema/TypeManager.cpp
+index 1bf4e7b8..97ffae95 100644
+--- a/src/Sema/TypeManager.cpp
++++ b/src/Sema/TypeManager.cpp
+@@ -953,6 +953,14 @@ bool TypeManager::IsCapTysSubsumed(const std::vector<Ptr<Ty>>& subCapTys, const
+         if (HasPlaceholder(subCap)) {
+             return true; // nothing to check yet, and nothing to bind
+         }
++        // An entry that instantiated to an unchecked exception type vanished from the semantic
++        // list ("Unchecked types in 'throws' lists"): 'safeThrow<ReqExc>' with an unchecked
++        // 'ReqExc' is assignable wherever the clause-free shape is. Written entries can never be
++        // unchecked -- they are rejected at declaration -- so this only ever fires post-substitution.
++        if (uncheckedExceptionTy && Ty::IsTyCorrect(subCap) && !subCap->IsGeneric() &&
++            IsSubtype(subCap, uncheckedExceptionTy)) {
++            return true;
++        }
+         return std::any_of(superCapTys.begin(), superCapTys.end(),
+             [this, subCap](Ptr<Ty> superCap) { return !HasPlaceholder(superCap) && IsSubtype(subCap, superCap); });
+     });
+-- 
+2.54.0
+

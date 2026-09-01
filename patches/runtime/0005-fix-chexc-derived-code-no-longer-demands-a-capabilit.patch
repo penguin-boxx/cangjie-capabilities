@@ -1,0 +1,62 @@
+From 0a1ec1790b02db5648d04ae8cf75adc1b756234d Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 13:01:31 +0300
+Subject: [PATCH 5/6] fix(chexc): derived code no longer demands a capability
+ its author cannot supply
+
+'@Derive' on a non-exhaustive enum generates 'case _ => throw Exception("Should never happen")'
+inside 'toString' and 'hashCode' -- implementations of interfaces that declare no clause, in code
+generated into the user's package where no clause can be written. Reaching that branch is a broken
+invariant rather than a failure a caller could handle, so it throws 'IllegalStateException', which
+is unchecked. The constraint-diagnostic stub 'diagnostics.cj' generates is a standalone function
+and simply declares what it throws.
+
+stdx.net.tls.common, which derives over a non-exhaustive enum, goes from two capability
+diagnostics with no possible fix to none.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ stdlib/libs/std/deriving/builtins/utils.cj   | 7 ++++++-
+ stdlib/libs/std/deriving/impl/diagnostics.cj | 6 +++++-
+ 2 files changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/stdlib/libs/std/deriving/builtins/utils.cj b/stdlib/libs/std/deriving/builtins/utils.cj
+index 0615050..76fa37b 100644
+--- a/stdlib/libs/std/deriving/builtins/utils.cj
++++ b/stdlib/libs/std/deriving/builtins/utils.cj
+@@ -29,8 +29,13 @@ func destructEnumCase(enumCase: TargetEnumCase, prefix: String): Tokens {
+ 
+ func enumFallback(target: DerivingTarget): Tokens {
+     match (isEnumHasEllipsis(target)) {
++        // A non-exhaustive enum needs a branch for the constructors this compilation cannot see.
++        // Reaching it is a broken invariant, not a failure the caller could handle -- and the
++        // branch is generated into 'toString' and 'hashCode', implementations of interfaces that
++        // declare no 'throws' clause and could not be given one here. An unchecked exception is
++        // both the honest classification and the only one that fits.
+         case true => quote(
+-            case _ => throw Exception("Should never happen")
++            case _ => throw IllegalStateException("Should never happen")
+         )
+         case _ => quote()
+     }
+diff --git a/stdlib/libs/std/deriving/impl/diagnostics.cj b/stdlib/libs/std/deriving/impl/diagnostics.cj
+index 37dc789..4e02cfb 100644
+--- a/stdlib/libs/std/deriving/impl/diagnostics.cj
++++ b/stdlib/libs/std/deriving/impl/diagnostics.cj
+@@ -128,8 +128,12 @@ private func diagnoseEnumCaseTypes(
+                 joinTokens(delimiter: quote(&))
+ 
+             counter++
++            // The body is never run: the declaration exists so that the compiler reports the
++            // constraint violation. It still has to be checkable, and the code is generated into
++            // the user's package where no clause can be written by hand -- so the clause is
++            // generated with it. A clause parses whether or not checking is enabled.
+             errors.add(quote(
+-                func $checkFunctionName<$genericName>(_: $t): $upperBound where $constraints { throw Exception() }
++                func $checkFunctionName<$genericName>(_: $t): $upperBound throws Exception where $constraints { throw Exception() }
+                 let _ = $checkFunctionName<$t>
+             ))
+         }
+-- 
+2.54.0
+

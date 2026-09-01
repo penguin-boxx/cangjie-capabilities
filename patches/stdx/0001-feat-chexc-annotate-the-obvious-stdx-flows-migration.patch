@@ -1,0 +1,350 @@
+From b8740baeff6d9806079cc2f983d5830361d67555 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sun, 23 Aug 2026 09:56:48 +0300
+Subject: [PATCH 1/4] feat(chexc): annotate the obvious stdx flows (migration
+ phase 3, leaf packages)
+
+The six packages whose whole capability surface is one or two flows: stdx.compress
+(TarGzip's file entry points, FSException), stdx.crypto.common (the PEM decoders, the
+native-memory helpers, CryptoException), stdx.net.tls.common and the crypto kit accessor
+(the "kit is not set" throw), stdx.actors (ActorFuture.get re-throws whatever the actor
+threw), stdx.string_intern, stdx.unittest.data (the csv/tsv/json strategy builders open a
+file), stdx.effect (an unhandled command is what the default implementation raises). Each
+of those packages now reports no capability diagnostic at all.
+
+Annotation propagates: a clause on a leaf makes its callers report the requirement they
+always had, so stdx.crypto.keys, stdx.crypto.x509 and stdx.net.http each gained a handful
+of diagnostics they will lose again when their own ring is annotated. Net across stdx:
+1,386 -> 1,401.
+
+Left alone deliberately: 'Iterator.next' implementations that infer 'ContentFormatException'
+over a clause-free 'Iterator.next' (needs the std.core ruling), 'Resource.close' overrides
+for the same reason, and the CryptoKit interface, whose members' clauses have to land
+together with every implementation across the crypto packages.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/stdx/actors/actor_future.cj         |  9 ++++++---
+ src/stdx/compress/tar_gzip.cj           | 20 +++++++++++++-------
+ src/stdx/crypto/common/crypto_kit.cj    |  3 ++-
+ src/stdx/crypto/common/pem.cj           |  3 ++-
+ src/stdx/crypto/common/pem_entry.cj     |  6 ++++--
+ src/stdx/crypto/common/utils.cj         | 24 ++++++++++++++++--------
+ src/stdx/effect/effect.cj               |  3 ++-
+ src/stdx/net/tls/common/tls_kit.cj      |  3 ++-
+ src/stdx/string_intern/intern_string.cj |  4 +++-
+ src/stdx/unittest/data/csv_strategy.cj  |  6 ++++--
+ src/stdx/unittest/data/json_strategy.cj |  3 ++-
+ 11 files changed, 56 insertions(+), 28 deletions(-)
+
+diff --git a/src/stdx/actors/actor_future.cj b/src/stdx/actors/actor_future.cj
+index 2b45216..fc54a14 100644
+--- a/src/stdx/actors/actor_future.cj
++++ b/src/stdx/actors/actor_future.cj
+@@ -32,7 +32,8 @@ public class ActorFuture<T> {
+     private let mtx = Mutex()
+     private let cond: Condition
+ 
+-    public func get(): T {
++    public func get(): T
++    throws Exception {
+         if (isReady.load()) {
+             return result.getOrThrow()
+         }
+@@ -45,7 +46,8 @@ public class ActorFuture<T> {
+         }
+     }
+ 
+-    public func get(timeout: Duration): Option<T> {
++    public func get(timeout: Duration): Option<T>
++    throws Exception {
+         if (timeout <= Duration.Zero) {
+             return Some(get())
+         }
+@@ -69,7 +71,8 @@ public class ActorFuture<T> {
+         return tryGet()
+     }
+ 
+-    public func tryGet(): Option<T> {
++    public func tryGet(): Option<T>
++    throws Exception {
+         if (isReady.load()) {
+             return Some(result.getOrThrow())
+         }
+diff --git a/src/stdx/compress/tar_gzip.cj b/src/stdx/compress/tar_gzip.cj
+index 3ac2b52..c322f3c 100644
+--- a/src/stdx/compress/tar_gzip.cj
++++ b/src/stdx/compress/tar_gzip.cj
+@@ -8,7 +8,7 @@
+ 
+ package stdx.compress
+ 
+-import std.fs.{Path, File, OpenMode}
++import std.fs.{Path, File, OpenMode, FSException}
+ import std.io.{InputStream, OutputStream}
+ import stdx.compress.tar.Tar
+ import stdx.compress.zlib.{DecompressInputStream, CompressOutputStream, WrapType}
+@@ -16,13 +16,15 @@ import stdx.compress.zlib.{DecompressInputStream, CompressOutputStream, WrapType
+ public class TarGzip {
+     private init() { } // static class
+ 
+-    public static func archive(fromDir!: String, destFile!: String, includeBaseDirectory!: Bool): Unit {
++    public static func archive(fromDir!: String, destFile!: String, includeBaseDirectory!: Bool): Unit
++    throws FSException {
+         try (file = File(destFile, OpenMode.Write)) {
+             TarGzip.archive(fromDir: Path(fromDir), destStream: file, includeBaseDirectory: includeBaseDirectory)
+         }
+     }
+ 
+-    public static func archive(fromDir!: Path, destFile!: Path, includeBaseDirectory!: Bool): Unit {
++    public static func archive(fromDir!: Path, destFile!: Path, includeBaseDirectory!: Bool): Unit
++    throws FSException {
+         try (file = File(destFile, OpenMode.Write)) {
+             TarGzip.archive(fromDir: fromDir, destStream: file, includeBaseDirectory: includeBaseDirectory)
+         }
+@@ -36,14 +38,16 @@ public class TarGzip {
+         TarGzip.archive(fromDir: fromDir, filter: { _ => true }, destStream: destStream, includeBaseDirectory: includeBaseDirectory)
+     }
+ 
+-    public static func archive(fromDir!: String, filter!: (String) -> Bool, destFile!: String, includeBaseDirectory!: Bool): Unit {
++    public static func archive(fromDir!: String, filter!: (String) -> Bool, destFile!: String, includeBaseDirectory!: Bool): Unit
++    throws FSException {
+         try (file = File(destFile, OpenMode.Write)) {
+             TarGzip.archive(fromDir: Path(fromDir), filter: { p: Path => filter(p.toString()) },
+                 destStream: file, includeBaseDirectory: includeBaseDirectory)
+         }
+     }
+ 
+-    public static func archive(fromDir!: Path, filter!: (Path) -> Bool, destFile!: Path, includeBaseDirectory!: Bool): Unit {
++    public static func archive(fromDir!: Path, filter!: (Path) -> Bool, destFile!: Path, includeBaseDirectory!: Bool): Unit
++    throws FSException {
+         try (file = File(destFile, OpenMode.Write)) {
+             TarGzip.archive(fromDir: fromDir, filter: filter,
+                 destStream: file, includeBaseDirectory: includeBaseDirectory)
+@@ -56,13 +60,15 @@ public class TarGzip {
+         gzip.close()
+     }
+ 
+-    public static func extract(fromTarGzip!: String, destDir!: String, overwrite!: Bool): Unit {
++    public static func extract(fromTarGzip!: String, destDir!: String, overwrite!: Bool): Unit
++    throws FSException {
+         try (file = File(fromTarGzip, OpenMode.Read)) {
+             TarGzip.extract(fromStream: file, destDir: Path(destDir), overwrite: overwrite)
+         }
+     }
+ 
+-    public static func extract(fromTarGzip!: Path, destDir!: Path, overwrite!: Bool): Unit {
++    public static func extract(fromTarGzip!: Path, destDir!: Path, overwrite!: Bool): Unit
++    throws FSException {
+         try (file = File(fromTarGzip, OpenMode.Read)) {
+             TarGzip.extract(fromStream: file, destDir: destDir, overwrite: overwrite)
+         }
+diff --git a/src/stdx/crypto/common/crypto_kit.cj b/src/stdx/crypto/common/crypto_kit.cj
+index c4c7f91..ef16984 100644
+--- a/src/stdx/crypto/common/crypto_kit.cj
++++ b/src/stdx/crypto/common/crypto_kit.cj
+@@ -28,7 +28,8 @@ public func setGlobalCryptoKit(kit: CryptoKit): Unit {
+     globalCryptoKit = kit
+ }
+ 
+-public func getGlobalCryptoKit(): CryptoKit {
++public func getGlobalCryptoKit(): CryptoKit
++throws CryptoException {
+     globalCryptoKit ?? throw CryptoException("Global crypto kit is not set. " + // cjlint-ignore !G.EXP.03
+         "If you want to use the default implementation, make sure that package `stdx.crypto.kit` is imported.")
+ }
+diff --git a/src/stdx/crypto/common/pem.cj b/src/stdx/crypto/common/pem.cj
+index 275ec95..852c07e 100644
+--- a/src/stdx/crypto/common/pem.cj
++++ b/src/stdx/crypto/common/pem.cj
+@@ -25,7 +25,8 @@ public struct Pem <: Collection<PemEntry> & ToString {
+      * Decode a PEM text into sequence of entries
+      * @throw CryptoException - if text is without valid LABLE or is not encoded in base64.
+      */
+-    public static func decode(text: String): Pem {
++    public static func decode(text: String): Pem
++    throws CryptoException {
+         Pem(parsePem(text.toArray()))
+     }
+ 
+diff --git a/src/stdx/crypto/common/pem_entry.cj b/src/stdx/crypto/common/pem_entry.cj
+index 9882f9c..f2d80e4 100644
+--- a/src/stdx/crypto/common/pem_entry.cj
++++ b/src/stdx/crypto/common/pem_entry.cj
+@@ -20,11 +20,13 @@ public struct PemEntry <: ToString {
+         public let label: String,
+         public let headers: Array<(String, String)>,
+         public let body: ?DerBlob
+-    ) {
++    )
++    throws CryptoException {
+         validateLabel(unsafe { label.rawData() })
+     }
+ 
+-    public init(label: String, body: DerBlob) {
++    public init(label: String, body: DerBlob)
++    throws CryptoException {
+         this(label, [], body)
+     }
+ 
+diff --git a/src/stdx/crypto/common/utils.cj b/src/stdx/crypto/common/utils.cj
+index ed2670f..9e4b5c3 100644
+--- a/src/stdx/crypto/common/utils.cj
++++ b/src/stdx/crypto/common/utils.cj
+@@ -62,19 +62,23 @@ public class CryptoException <: Exception {
+     }
+ }
+ 
+-protected func malloc<T>(count!: Int64, initial!: ?T): NativePointerResource<T> where T <: CType {
++protected func malloc<T>(count!: Int64, initial!: ?T): NativePointerResource<T>
++throws CryptoException where T <: CType {
+     NativePointerResource<T>(count, initial)
+ }
+ 
+-protected func malloc<T>(count!: Int64): NativePointerResource<T> where T <: CType {
++protected func malloc<T>(count!: Int64): NativePointerResource<T>
++throws CryptoException where T <: CType {
+     NativePointerResource<T>(count, Option<T>.None)
+ }
+ 
+-protected func malloc<T>(initial!: ?T): NativePointerResource<T> where T <: CType {
++protected func malloc<T>(initial!: ?T): NativePointerResource<T>
++throws CryptoException where T <: CType {
+     NativePointerResource<T>(1, initial)
+ }
+ 
+-protected func malloc<T>(): NativePointerResource<T> where T <: CType {
++protected func malloc<T>(): NativePointerResource<T>
++throws CryptoException where T <: CType {
+     NativePointerResource<T>(1, Option<T>.None)
+ }
+ 
+@@ -85,14 +89,16 @@ protected unsafe func mallocCString(str: ?String): CStringResource {
+     }
+ }
+ 
+-protected func mallocCopyOf<T>(source: ?Array<T>): NativePointerResource<T> where T <: CType {
++protected func mallocCopyOf<T>(source: ?Array<T>): NativePointerResource<T>
++throws CryptoException where T <: CType {
+     match (source) {
+         case Some(source) => mallocCopyOf(source)
+         case None => NativePointerResource<T>()
+     }
+ }
+ 
+-protected func mallocCopyOf<T>(source: Array<T>): NativePointerResource<T> where T <: CType {
++protected func mallocCopyOf<T>(source: Array<T>): NativePointerResource<T>
++throws CryptoException where T <: CType {
+     let result = NativePointerResource<T>(source.size, None)
+     for (index in 0..source.size) {
+         unsafe {
+@@ -124,7 +130,8 @@ protected class NativePointerResource<T> <: Resource where T <: CType {
+         nativePointer = CPointer()
+     }
+ 
+-    protected init(count: Int64, sample: ?T) {
++    protected init(count: Int64, sample: ?T)
++    throws CryptoException {
+         unsafe {
+             if (count <= 0) {
+                 throw IllegalArgumentException("Count should be positive: ${count}.")
+@@ -155,7 +162,8 @@ protected class NativePointerResource<T> <: Resource where T <: CType {
+     }
+ }
+ 
+-protected unsafe func toArray(ptr: CPointer<Byte>, size: UIntNative): Array<Byte> {
++protected unsafe func toArray(ptr: CPointer<Byte>, size: UIntNative): Array<Byte>
++throws CryptoException {
+     if (ptr.isNull() && size != 0) {
+         throw NoneValueException("Native pointer is NULL.")
+     }
+diff --git a/src/stdx/effect/effect.cj b/src/stdx/effect/effect.cj
+index 0b68119..3dbbbd0 100644
+--- a/src/stdx/effect/effect.cj
++++ b/src/stdx/effect/effect.cj
+@@ -27,7 +27,8 @@ public class UnhandledCommandException <: Exception {
+ }
+ 
+ public abstract class Command<Res> {
+-    public open func defaultImpl(): Res {
++    public open func defaultImpl(): Res
++    throws UnhandledCommandException {
+         throw UnhandledCommandException()
+     }
+ }
+diff --git a/src/stdx/net/tls/common/tls_kit.cj b/src/stdx/net/tls/common/tls_kit.cj
+index 4d2e3a9..5e00e7e 100644
+--- a/src/stdx/net/tls/common/tls_kit.cj
++++ b/src/stdx/net/tls/common/tls_kit.cj
+@@ -22,7 +22,8 @@ public func setGlobalTlsKit(kit: TlsKit): Unit {
+     globalTlsKit = kit
+ }
+ 
+-public func getGlobalTlsKit(): TlsKit {
++public func getGlobalTlsKit(): TlsKit
++throws TlsException {
+     globalTlsKit ?? throw TlsException("Global TLS kit is not set. " +
+         "If you want to use the default implementation, make sure that package `stdx.net.tls` is imported.")
+ }
+diff --git a/src/stdx/string_intern/intern_string.cj b/src/stdx/string_intern/intern_string.cj
+index a0b2dc3..272e4e4 100644
+--- a/src/stdx/string_intern/intern_string.cj
++++ b/src/stdx/string_intern/intern_string.cj
+@@ -37,6 +37,7 @@ public interface Internable {
+      * @param strMaxLength max lenght of string in dynamic string pool
+      */
+     static func configInternPool(capacity!: Int64, strMaxLength!: Int64): Unit
++    throws Exception
+ }
+ 
+ class InternStringPoolHolder {
+@@ -101,7 +102,8 @@ extend String <: Internable {
+      * @param capacity dynamic string pool capacity
+      * @param strMaxLength max lenght of string in dynamic string pool
+      */
+-    public static func configInternPool(capacity!: Int64 = 8192, strMaxLength!: Int64 = 512): Unit {
++    public static func configInternPool(capacity!: Int64 = 8192, strMaxLength!: Int64 = 512): Unit
++    throws Exception {
+         if (capacity <= 0) {
+             throw IllegalArgumentException("capacity should be positive: " + capacity.toString())
+         }
+diff --git a/src/stdx/unittest/data/csv_strategy.cj b/src/stdx/unittest/data/csv_strategy.cj
+index 76afe5c..f333f3e 100644
+--- a/src/stdx/unittest/data/csv_strategy.cj
++++ b/src/stdx/unittest/data/csv_strategy.cj
+@@ -432,7 +432,8 @@ public func csv<T>(
+     skipRows!: Array<UInt64> = [],
+     skipColumns!: Array<UInt64> = [],
+     skipEmptyLines!: Bool = false
+-): CsvStrategy<T> where T <: Serializable<T> {
++): CsvStrategy<T>
++throws FSException where T <: Serializable<T> {
+     CsvStrategy<T>(
+         fileName,
+         delimiter: delimiter,
+@@ -472,7 +473,8 @@ public func tsv<T>(
+     skipRows!: Array<UInt64> = [],
+     skipColumns!: Array<UInt64> = [],
+     skipEmptyLines!: Bool = false
+-): CsvStrategy<T> where T <: Serializable<T> {
++): CsvStrategy<T>
++throws FSException where T <: Serializable<T> {
+     CsvStrategy<T>(
+         fileName,
+         delimiter: TSV_DELIMITER,
+diff --git a/src/stdx/unittest/data/json_strategy.cj b/src/stdx/unittest/data/json_strategy.cj
+index 33cac4a..c910826 100644
+--- a/src/stdx/unittest/data/json_strategy.cj
++++ b/src/stdx/unittest/data/json_strategy.cj
+@@ -39,6 +39,7 @@ public class JsonStrategy<T> <: DataStrategy<T> where T <: Serializable<T> {
+     }
+ }
+ 
+-public func json<T>(fileName: String): JsonStrategy<T> where T <: Serializable<T> {
++public func json<T>(fileName: String): JsonStrategy<T>
++throws FSException where T <: Serializable<T> {
+     JsonStrategy<T>(fileName: fileName)
+ }
+-- 
+2.54.0
+

@@ -1,0 +1,612 @@
+From c64836a0ead90b3ba3bb5139d6a41ab2abad50c8 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 00:21:06 +0300
+Subject: [PATCH 09/43] test(chexc): red-first groups for aliases, assumption
+ imports, conversions, adapt
+
+aliases/ (4): tuple-alias capability lists incl. nested aliases and captures
+clauses; element-validation and cyclic-alias negatives.
+assume/ (3 + support pkg): @AssumeThrows imposing a list on calls into an
+unchecked dependency, bare form = Exception, unhandled-assumption negative.
+conversions/ (4): Convertible boundary synthesis with cause chaining; exact-From
+and no-chaining negatives; ambiguity negative; rule 1 priority + rule 6 captures
+never converting.
+adapt/ (2): adapt<I>(x) capturing an implementation's requirements; missing
+capability and non-applicable backing type negatives.
+
+Red state: 11/13 fail as expected (2 negatives pass vacuously on existing errors).
+Conversions and adapt will be implemented on separate branches per author ruling.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../CheckedExceptions/adapt/adapt_basic.cj    | 39 ++++++++++++++
+ .../CheckedExceptions/adapt/adapt_neg.cj      | 38 +++++++++++++
+ .../CheckedExceptions/aliases/alias_basic.cj  | 40 ++++++++++++++
+ .../aliases/alias_cycle_neg.cj                | 18 +++++++
+ .../CheckedExceptions/aliases/alias_neg.cj    | 27 ++++++++++
+ .../aliases/alias_nested_and_captures.cj      | 49 +++++++++++++++++
+ .../CheckedExceptions/assume/assume_bare.cj   | 21 ++++++++
+ .../CheckedExceptions/assume/assume_basic.cj  | 31 +++++++++++
+ .../CheckedExceptions/assume/assume_neg.cj    | 20 +++++++
+ .../CheckedExceptions/assume/legacy_db.pkg.cj | 17 ++++++
+ .../conversions/convert_ambiguous_neg.cj      | 36 +++++++++++++
+ .../conversions/convert_basic.cj              | 38 +++++++++++++
+ .../convert_priority_and_captures.cj          | 54 +++++++++++++++++++
+ .../conversions/convert_rules_neg.cj          | 46 ++++++++++++++++
+ 14 files changed, 474 insertions(+)
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/adapt/adapt_basic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/adapt/adapt_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.pkg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/conversions/convert_ambiguous_neg.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/conversions/convert_basic.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/conversions/convert_priority_and_captures.cj
+ create mode 100644 testsuites/LLT/compiler/CheckedExceptions/conversions/convert_rules_neg.cj
+
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/adapt/adapt_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/adapt/adapt_basic.cj
+new file mode 100644
+index 0000000000..f159be209c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/adapt/adapt_basic.cj
+@@ -0,0 +1,39 @@
++// Checked exceptions (§6.5, experimental extension): `adapt<I>(x)` produces an
++// implementation of I backed by x, capturing the capabilities its methods require,
++// so a clause-bearing implementation satisfies a clause-free interface.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class FileException <: Exception {}
++
++interface Appendable {
++    func append(s: String): Unit
++}
++
++// an existing implementation whose method declares a throws clause
++class FileWriter {
++    var count: Int64 = 0
++
++    public func append(s: String): Unit throws FileException {
++        count = count + s.size
++        if (count > 100) {
++            throw FileException()
++        }
++    }
++}
++
++func use(a: Appendable) {
++    a.append("hello")
++}
++
++main() {
++    let w = FileWriter()
++    try {
++        // adapt captures CanThrow<FileException> from this try
++        let a = adapt<Appendable>(w)
++        use(a)
++    } catch (e: FileException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/adapt/adapt_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/adapt/adapt_neg.cj
+new file mode 100644
+index 0000000000..95a7026e38
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/adapt/adapt_neg.cj
+@@ -0,0 +1,38 @@
++// Checked exceptions (§6.5 rules 1-2): `adapt` requires the backing type to provide
++// every interface method up to throws lists, and the capabilities of those methods
++// must be present at the adapt call site.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++// ASSERT: scan Cannot find a capability for 'Class-FileException'
++
++class FileException <: Exception {}
++
++interface Appendable {
++    func append(s: String): Unit
++}
++
++class FileWriter {
++    public func append(s: String): Unit throws FileException {
++        throw FileException()
++    }
++}
++
++class Unrelated {
++    public func somethingElse(): Unit {
++    }
++}
++
++// rule 2: no FileException capability in scope at the adapt site
++func noCapability(): Appendable {
++    adapt<Appendable>(FileWriter())
++}
++
++// rule 1: Unrelated does not provide 'append'
++func notApplicable(): Appendable {
++    adapt<Appendable>(Unrelated())
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj
+new file mode 100644
+index 0000000000..512c52b0af
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_basic.cj
+@@ -0,0 +1,40 @@
++// Checked exceptions (§6.1): a tuple typealias used in a `throws` clause is a
++// capability list — `throws MyExceptions` means `throws A, B`.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class NetworkException <: Exception {}
++class FileNotFoundException <: Exception {}
++class ParseException <: Exception {}
++
++typealias MyModuleExceptions = (NetworkException, FileNotFoundException)
++
++func f() throws MyModuleExceptions {
++    throw NetworkException()
++}
++
++func g() throws NetworkException, FileNotFoundException {
++    throw FileNotFoundException()
++}
++
++// the alias and the spelled-out list denote the same capability list, so these
++// functional types are interchangeable
++func takesF(h: () throws MyModuleExceptions -> Unit): Unit throws MyModuleExceptions {
++    h()
++}
++
++// an alias may be mixed with ordinary entries
++func mixed() throws MyModuleExceptions, ParseException {
++    throw ParseException()
++}
++
++main() {
++    try {
++        takesF(f)
++        takesF(g)
++        mixed()
++    } catch (e: Exception) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj
+new file mode 100644
+index 0000000000..8610142463
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_cycle_neg.cj
+@@ -0,0 +1,18 @@
++// Checked exceptions (§6.1 / §3.10.2 rule 1): alias expansion is recursive, so a
++// cyclic alias must be rejected rather than expanded forever.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++
++class AException <: Exception {}
++
++typealias Loop = (AException, Loop2)
++typealias Loop2 = (AException, Loop)
++
++func f() throws Loop {
++    throw AException()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj
+new file mode 100644
+index 0000000000..024c44de5e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_neg.cj
+@@ -0,0 +1,27 @@
++// Checked exceptions (§6.1): every element of an alias tuple must be a subtype of
++// Exception and not of UncheckedException — the same rules as spelled-out entries
++// (§3.2 rules 3 and 5).
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++// ASSERT: scan is not a subtype of class 'Exception'
++// ASSERT: scan unchecked exception type
++
++class AException <: Exception {}
++class NotAnException {}
++class RequestException <: UncheckedException {}
++
++typealias BadElement = (AException, NotAnException)
++typealias UncheckedElement = (AException, RequestException)
++
++func f() throws BadElement {
++    throw AException()
++}
++
++func g() throws UncheckedElement {
++    throw AException()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj
+new file mode 100644
+index 0000000000..2eeb34709c
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/aliases/alias_nested_and_captures.cj
+@@ -0,0 +1,49 @@
++// Checked exceptions (§6.1): alias expansion is recursive (aliases may contain
++// other aliases) and applies to `captures` clauses as well as `throws`.
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class AException <: Exception {}
++class BException <: Exception {}
++class CException <: Exception {}
++
++typealias AB = (AException, BException)
++typealias ABC = (AB, CException)
++
++func wide() throws ABC {
++    throw CException()
++}
++
++// a single-element alias is a one-entry list
++typealias JustA = AException
++func narrow() throws JustA {
++    throw AException()
++}
++
++class Worker
++captures AB {
++    init() {
++    }
++
++    func run(): Unit {
++        throw BException() // captured through the alias
++    }
++}
++
++main() {
++    try {
++        wide()
++    } catch (e: Exception) {
++    }
++    try {
++        narrow()
++    } catch (e: AException) {
++    }
++    try {
++        let w = Worker()
++        w.run()
++    } catch (e: BException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj
+new file mode 100644
+index 0000000000..726f564ab7
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_bare.cj
+@@ -0,0 +1,21 @@
++// Checked exceptions (§5.2.2): the bare form `@AssumeThrows` assumes `Exception`,
++// and a capability list alias may be used in the annotation (§6.1).
++
++// DEPENDENCE: legacy_db.pkg.cj
++// EXEC: %compiler legacy_db.pkg.cj %compile_lib_opt -o legacy_db.%lib_extension
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %f legacy_db.%lib_extension -o %output
++// EXEC: %run %output
++
++@AssumeThrows
++import legacy_db
++
++main() {
++    try {
++        let n = legacy_db.query("select 1") // demands CanThrow<Exception>
++        if (n == 0) {
++            return 1
++        }
++    } catch (e: Exception) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj
+new file mode 100644
+index 0000000000..f4fe8489e1
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_basic.cj
+@@ -0,0 +1,31 @@
++// Checked exceptions (§5.2.2): an assumption import imposes a throws list on every
++// call into an unchecked dependency — functions, methods and constructors alike.
++// Handled here by a try-catch, so the program compiles and runs.
++
++// DEPENDENCE: legacy_db.pkg.cj
++// EXEC: %compiler legacy_db.pkg.cj %compile_lib_opt -o legacy_db.%lib_extension
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %f legacy_db.%lib_extension -o %output
++// EXEC: %run %output
++
++@AssumeThrows[SqlException]
++import legacy_db
++
++class SqlException <: Exception {}
++
++// the assumed requirement propagates like a declared one
++func countRows(sql: String): Int64 throws SqlException {
++    legacy_db.query(sql)
++}
++
++main() {
++    try {
++        let n = countRows("select 1")
++        let c = legacy_db.Connection() // constructors are covered too
++        let m = c.execute("select 2")
++        if (n + m == 0) {
++            return 1
++        }
++    } catch (e: SqlException) {
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj
+new file mode 100644
+index 0000000000..a384223ffb
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/assume_neg.cj
+@@ -0,0 +1,20 @@
++// Checked exceptions (§5.2.2): an unhandled assumed requirement is a missing
++// capability, exactly like a declared one.
++
++// DEPENDENCE: legacy_db.pkg.cj
++// EXEC: %compiler legacy_db.pkg.cj %compile_lib_opt -o legacy_db.%lib_extension
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %f legacy_db.%lib_extension -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-SqlException'
++
++@AssumeThrows[SqlException]
++import legacy_db
++
++class SqlException <: Exception {}
++
++public func unhandled(sql: String): Int64 {
++    legacy_db.query(sql) // error: no SqlException capability, and public means no inference
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.pkg.cj b/testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.pkg.cj
+new file mode 100644
+index 0000000000..701212500e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/assume/legacy_db.pkg.cj
+@@ -0,0 +1,17 @@
++// Support package for the assumption-import tests: an "unchecked" dependency,
++// compiled without --enable-checked-exceptions, that declares no throws clauses.
++
++package legacy_db
++
++public func query(sql: String): Int64 {
++    sql.size
++}
++
++public class Connection {
++    public init() {
++    }
++
++    public func execute(sql: String): Int64 {
++        sql.size
++    }
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_ambiguous_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_ambiguous_neg.cj
+new file mode 100644
+index 0000000000..cd3b19528e
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_ambiguous_neg.cj
+@@ -0,0 +1,36 @@
++// Checked exceptions (§6.2.1 rule 3): when several Convertible implementations
++// apply at a call site, the conversion is ambiguous and must be rejected — the
++// user disambiguates by writing the try-catch by hand.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan error
++// ASSERT: scan ambiguous
++
++class FromException <: Exception {}
++class ToOneException <: Exception {}
++class ToTwoException <: Exception {}
++
++extend ToOneException <: Convertible<FromException, ToOneException> {
++    public static func convertFrom(x: FromException): ToOneException {
++        ToOneException()
++    }
++}
++
++extend ToTwoException <: Convertible<FromException, ToTwoException> {
++    public static func convertFrom(x: FromException): ToTwoException {
++        ToTwoException()
++    }
++}
++
++func g() throws FromException {
++    throw FromException()
++}
++
++// both targets' capabilities are in scope, so both conversions apply
++func f() throws ToOneException, ToTwoException {
++    g()
++}
++
++main() {
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_basic.cj b/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_basic.cj
+new file mode 100644
+index 0000000000..631fcb29ea
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_basic.cj
+@@ -0,0 +1,38 @@
++// Checked exceptions (§6.2): a visible Convertible<From, To> makes the compiler
++// synthesize the handle-convert-rethrow boundary, so a call requiring From
++// type-checks where only a To capability is in scope. The original is preserved
++// as the cause (§6.2.2).
++
++// EXEC: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output
++// EXEC: %run %output
++
++class LibBException <: Exception {}
++class LibAException <: Exception {}
++
++extend LibAException <: Convertible<LibBException, LibAException> {
++    public static func convertFrom(x: LibBException): LibAException {
++        LibAException()
++    }
++}
++
++func g() throws LibBException {
++    throw LibBException()
++}
++
++// no LibBException capability here — the conversion supplies one and rethrows as A
++func f() throws LibAException {
++    g()
++}
++
++main() {
++    try {
++        f()
++        return 1
++    } catch (e: LibAException) {
++        // the converted exception carries the original as its cause
++        match (e.cause) {
++            case Some(c) => return 0
++            case None => return 1
++        }
++    }
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_priority_and_captures.cj b/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_priority_and_captures.cj
+new file mode 100644
+index 0000000000..7ba0a3c408
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_priority_and_captures.cj
+@@ -0,0 +1,54 @@
++// Checked exceptions (§6.2.1): rule 1 — an available capability wins and no
++// conversion is considered (so adding a Convertible cannot change the meaning of
++// code that already type-checks); rule 6 — a `captures` requirement is storage
++// and never converts, so a capturing constructor still demands its own capability.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-FileException'
++
++class FileException <: Exception {}
++class WrapperException <: Exception {}
++
++extend WrapperException <: Convertible<FileException, WrapperException> {
++    public static func convertFrom(x: FileException): WrapperException {
++        WrapperException()
++    }
++}
++
++func mayFail() throws FileException {
++    throw FileException()
++}
++
++// rule 1: the direct capability is used; the conversion is not considered, so the
++// FileException handler (not the WrapperException one) observes the exception
++func direct(): Bool {
++    try {
++        mayFail()
++        false
++    } catch (e: FileException) {
++        true
++    }
++}
++
++class Writer
++captures FileException {
++    init() {
++    }
++
++    func write(): Unit {
++        throw FileException()
++    }
++}
++
++// rule 6: the captures requirement is storage — the visible conversion must NOT
++// satisfy it, so this construction is an error
++func build(): Writer throws WrapperException {
++    Writer()
++}
++
++main() {
++    if (!direct()) {
++        return 1
++    }
++    return 0
++}
+diff --git a/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_rules_neg.cj b/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_rules_neg.cj
+new file mode 100644
+index 0000000000..b645ef2d97
+--- /dev/null
++++ b/testsuites/LLT/compiler/CheckedExceptions/conversions/convert_rules_neg.cj
+@@ -0,0 +1,46 @@
++// Checked exceptions (§6.2.1): conversions are exact-From (rule 4) and do not
++// chain (rule 5) — neither case may silently succeed.
++
++// EXEC-PIPE-1: %compiler %cmp_opt --experimental --enable-checked-exceptions %n.cj -o %output 2>&1 | compare %f
++// ASSERT: scan Cannot find a capability for 'Class-DerivedException'
++// ASSERT: scan Cannot find a capability for 'Class-MidException'
++
++open class BaseException <: Exception {}
++class DerivedException <: BaseException {}
++class MidException <: Exception {}
++class TargetException <: Exception {}
++class OtherException <: Exception {}
++
++// rule 4: a Convertible from the BASE does not fire for a missing DERIVED capability
++extend TargetException <: Convertible<BaseException, TargetException> {
++    public static func convertFrom(x: BaseException): TargetException {
++        TargetException()
++    }
++}
++
++// rule 5: From -> Mid -> Target must not chain
++extend OtherException <: Convertible<MidException, OtherException> {
++    public static func convertFrom(x: MidException): OtherException {
++        OtherException()
++    }
++}
++
++func throwsDerived() throws DerivedException {
++    throw DerivedException()
++}
++
++func throwsMid() throws MidException {
++    throw MidException()
++}
++
++func exactOnly() throws TargetException {
++    throwsDerived() // error: Convertible<BaseException, _> must not fire for DerivedException
++}
++
++func noChaining() throws TargetException {
++    throwsMid() // error: Mid -> Other -> Target would be a chain
++}
++
++main() {
++    return 0
++}
+-- 
+2.54.0
+

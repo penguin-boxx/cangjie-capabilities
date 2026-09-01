@@ -1,0 +1,385 @@
+From 8234ca7e0025290e5a2b8612381ac03db8c6d0b0 Mon Sep 17 00:00:00 2001
+From: Andrey Stoyan <andrey.stoyan.csam@gmail.com>
+Date: Sat, 15 Aug 2026 04:56:50 +0300
+Subject: [PATCH 09/44] =?UTF-8?q?fix(chexc):=20audit=20batch=202=20?=
+ =?UTF-8?q?=E2=80=94=20capability=20lists=20lost=20through=20reconstructio?=
+ =?UTF-8?q?n?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three findings from the audit (notes/audit-report.md; plan and adversarial
+review in notes/batch2-guide.md), all instances of one root cause: capability
+lists survive on the paths built for them, and vanish wherever machinery that
+predates the feature rebuilds a type or a callee expression.
+
+MF1: a property accessor's 'throws' clause was enforced inside the accessor but
+demanded nothing at use sites, because the desugared callee expression was given
+a capability-free functional type. All three desugar sites (get, set, and the
+compound-assignment getter) now carry the accessor's list, instantiated through
+the RECEIVER's type so an inherited or extended generic accessor demands
+'MyExc<Int64>' rather than a bare 'MyExc<T>'. A defensive fallback in HandleCall
+recovers the declared clause whenever a callee expression carries none.
+
+MF6: a primary constructor's clause was parsed and then discarded by
+DesugarPrimaryCtor, so construction sites demanded nothing, the clause was never
+validated, and a public primary constructor got a spurious error in its own
+body — the proposal's own 3.2 example did not compile. The clause is now cloned
+onto the synthesized 'init'.
+
+MF2 (part): inferred lists are written into declaration types between inference
+and checking (CompleteInferredCapabilityTypes), so a declaration's own type is
+the single source of its list. Expression types are deliberately NOT completed:
+they were formed during type check, so re-typing them would double-charge call
+sites, which read the inference map instead. The remaining half of MF2
+(demanding at function-value formation) is left open — the adversarial review
+disproved its premise; see notes/batch2-guide.md section 5.
+
+Also fixed, found by the review rather than reported: neither hand-written
+ThrowsClause copier (ASTCloner, PartialInstantiation) carried the '...' marker,
+so a cloned declaration could silently flip between inference-eligible and not.
+
+Tests: property accessors demanded at read/write/compound-assign/increment sites
+and their positive twin; generic accessor instantiation, positive and negative;
+primary constructors with clauses incl. struct form, 'throws ()' and a field
+initializer discharged by the constructor's clause.
+
+Gate: CheckedExceptions 56/64 (the 8 failures are the three features not yet
+implemented); ctest 49/49; Parser/Sema LLT 3934/3934; clang-format clean.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ include/cangjie/Sema/CapabilityCheck.h        | 12 +++-
+ src/AST/Clone.cpp                             |  4 ++
+ src/Frontend/CompilerInstance.cpp             |  4 ++
+ src/Sema/CapabilityCheck/CapabilityCheck.cpp  | 59 ++++++++++++++++---
+ src/Sema/Desugar/AfterTypeCheck.cpp           | 17 +++++-
+ src/Sema/Desugar/DesugarInTypeCheck.cpp       |  7 +++
+ .../PartialInstantiation.cpp                  |  1 +
+ src/Sema/TypeCheckUtil.cpp                    | 47 +++++++++++++++
+ src/Sema/TypeCheckUtil.h                      |  9 +++
+ 9 files changed, 148 insertions(+), 12 deletions(-)
+
+diff --git a/include/cangjie/Sema/CapabilityCheck.h b/include/cangjie/Sema/CapabilityCheck.h
+index 9323c790..f7d8c5b3 100644
+--- a/include/cangjie/Sema/CapabilityCheck.h
++++ b/include/cangjie/Sema/CapabilityCheck.h
+@@ -70,7 +70,7 @@ private:
+  * Kept beside the AST rather than written into declaration types: the checking pass stays a
+  * pure check, and call sites resolve a callee's list through this map.
+  */
+-using InferredCapabilities = std::unordered_map<Ptr<const AST::Decl>, std::vector<Ptr<AST::Ty>>>;
++using InferredCapabilities = std::unordered_map<Ptr<AST::FuncDecl>, std::vector<Ptr<AST::Ty>>>;
+ 
+ /**
+  * Infer capability parameter lists for the inference-eligible declarations of @p pkg
+@@ -82,6 +82,16 @@ using InferredCapabilities = std::unordered_map<Ptr<const AST::Decl>, std::vecto
+ InferredCapabilities InferCapabilities(
+     TypeManager& typeManager, const ImportManager& importManager, AST::Package& pkg, DiagnosticEngine& diag);
+ 
++/**
++ * Complete the types of the declarations covered by @p inferred (proposal 6.3.3: capability
++ * parameters, then clause components of types, then capability arguments). Each declaration's
++ * functional type is re-interned with its inferred entries, so the declaration's own type is the
++ * single source of its capability list. Expression types are deliberately NOT completed: they
++ * were formed during type check, before inference ran, and re-typing them would double-charge
++ * every call site — call sites read the map instead.
++ */
++void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCapabilities& inferred);
++
+ /**
+  * Run capability argument checking over every callable body and initializer of @p pkg on the
+  * typed AST (after sema type check, before desugar destroys 'TryExpr' structure). The pass
+diff --git a/src/AST/Clone.cpp b/src/AST/Clone.cpp
+index 4198bf33..6da63d3e 100644
+--- a/src/AST/Clone.cpp
++++ b/src/AST/Clone.cpp
+@@ -399,6 +399,10 @@ OwnedPtr<ThrowsClause> ASTCloner::CloneThrowsClause(const ThrowsClause& node, co
+     ret->leftParenPos = node.leftParenPos;
+     ret->rightParenPos = node.rightParenPos;
+     ret->commaPosVector = node.commaPosVector;
++    // The `...` marker decides whether inference stays enabled for the declaration
++    // (proposal 6.3.5); it is a plain member, not a Node-level field, so CopyNodeField
++    // does not carry it.
++    ret->hasEllipsis = node.hasEllipsis;
+     for (auto& capType : node.capTypes) {
+         ret->capTypes.emplace_back(CloneType(capType.get(), visitor));
+     }
+diff --git a/src/Frontend/CompilerInstance.cpp b/src/Frontend/CompilerInstance.cpp
+index 499698b6..c588b910 100644
+--- a/src/Frontend/CompilerInstance.cpp
++++ b/src/Frontend/CompilerInstance.cpp
+@@ -729,6 +729,10 @@ bool CompilerInstance::PerformCapabilityCheck()
+         // Capability parameter inference runs first and its results act as the declared clauses
+         // of the declarations it covers (proposal 6.3.3: parameters before arguments).
+         auto inferred = Sema::InferCapabilities(*typeManager, *importManager, *srcPkg, diag);
++        // Proposal 6.3.3: the clause components of types are completed between capability
++        // parameter inference and capability argument checking, so a declaration's own type is
++        // the single source of its list. Keep these three calls adjacent.
++        Sema::CompleteInferredCapabilityTypes(*typeManager, inferred);
+         Sema::CheckCapabilities(*typeManager, *importManager, *srcPkg, missHandler, inferred);
+     }
+     return diag.GetErrorCount() == errorCountBefore;
+diff --git a/src/Sema/CapabilityCheck/CapabilityCheck.cpp b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+index cd015ad1..2eb3901c 100644
+--- a/src/Sema/CapabilityCheck/CapabilityCheck.cpp
++++ b/src/Sema/CapabilityCheck/CapabilityCheck.cpp
+@@ -298,7 +298,7 @@ private:
+                 // An inferred list acts as the declaration's clause — except while collecting
+                 // that very declaration's residual demands, when consulting it would make every
+                 // requirement look discharged (proposal 6.3.2).
+-                if (fb.funcDecl && fb.funcDecl != collectingFor) {
++                if (fb.funcDecl && fb.funcDecl.get() != collectingFor.get()) {
+                     auto it = inferred.find(fb.funcDecl);
+                     if (it != inferred.end()) {
+                         caps.insert(caps.end(), it->second.begin(), it->second.end());
+@@ -427,23 +427,38 @@ private:
+         if (!funcTy) {
+             return;
+         }
+-        for (auto cap : funcTy->capTys) {
+-            if (Ty::IsTyCorrect(cap)) {
+-                Demand(cap, ce, DescribeCallee(ce));
++        std::vector<Ptr<Ty>> demands = funcTy->capTys;
++        // Defence in depth: a callee expression rebuilt by machinery that predates this feature
++        // can carry a capability-free functional type. Recover from the callee's DECLARED clause
++        // — never from its FuncTy capTys, which also hold the inferred entries the union below
++        // contributes — re-instantiated through the receiver so a generic accessor demands
++        // 'MyExc<Int64>' rather than a bare 'MyExc<T>'.
++        if (demands.empty() && ce.resolvedFunction) {
++            Ptr<Ty> receiverTy = nullptr;
++            if (auto ma = DynamicCast<MemberAccess*>(ce.baseFunc.get()); ma && ma->baseExpr) {
++                receiverTy = ma->baseExpr->GetTy();
+             }
++            demands = TypeCheckUtil::GetInstantiatedAccessorCapTys(typeManager, *ce.resolvedFunction, receiverTy);
+         }
+-        // A callee whose list was inferred (proposal 6.3) carries it beside the AST rather than
+-        // in its type, because inference runs after the call site's type was formed.
++        // A callee whose list was inferred (proposal 6.3) carries it beside the AST: this call
++        // site's type was formed during type check, before inference ran, so completing the
++        // declaration's type cannot reach it. Unioned, not appended: the entries can be
++        // pointer-identical to those already present.
+         if (ce.resolvedFunction) {
+             auto it = inferred.find(ce.resolvedFunction);
+             if (it != inferred.end()) {
+                 for (auto cap : it->second) {
+-                    if (Ty::IsTyCorrect(cap)) {
+-                        Demand(cap, ce, DescribeCallee(ce));
++                    if (!Utils::In(cap, demands)) {
++                        demands.emplace_back(cap);
+                     }
+                 }
+             }
+         }
++        for (auto cap : demands) {
++            if (Ty::IsTyCorrect(cap)) {
++                Demand(cap, ce, DescribeCallee(ce));
++            }
++        }
+         DemandConstructedCaptures(ce);
+     }
+ 
+@@ -851,6 +866,34 @@ void ReportCapabilityMissHandler::HandleMiss(const CapabilityDemand& demand)
+     builder.AddMainHintArguments(demand.requiredBy);
+ }
+ 
++void CompleteInferredCapabilityTypes(TypeManager& typeManager, const InferredCapabilities& inferred)
++{
++    for (auto& [decl, caps] : inferred) {
++        if (caps.empty() || !decl || !decl->funcBody) {
++            continue;
++        }
++        auto funcTy = DynamicCast<FuncTy*>(decl->GetTy());
++        if (!funcTy) {
++            continue;
++        }
++        // Union: a clause ending in '...' contributes declared entries that are already present
++        // (proposal 6.3.5).
++        std::vector<Ptr<Ty>> completed = funcTy->capTys;
++        for (auto cap : caps) {
++            if (Ty::IsTyCorrect(cap) && !Utils::In(cap, completed)) {
++                completed.emplace_back(cap);
++            }
++        }
++        if (completed.size() == funcTy->capTys.size()) {
++            continue;
++        }
++        auto completedTy = typeManager.GetFunctionTy(funcTy->paramTys, funcTy->retTy,
++            {funcTy->IsCFunc(), funcTy->isClosureTy, funcTy->hasVariableLenArg, funcTy->noCast}, completed);
++        decl->SetTy(completedTy);
++        decl->funcBody->SetTy(completedTy);
++    }
++}
++
+ InferredCapabilities InferCapabilities(
+     TypeManager& typeManager, const ImportManager& importManager, AST::Package& pkg, DiagnosticEngine& diag)
+ {
+diff --git a/src/Sema/Desugar/AfterTypeCheck.cpp b/src/Sema/Desugar/AfterTypeCheck.cpp
+index 89d811d9..22295abc 100644
+--- a/src/Sema/Desugar/AfterTypeCheck.cpp
++++ b/src/Sema/Desugar/AfterTypeCheck.cpp
+@@ -136,7 +136,10 @@ std::vector<OwnedPtr<FuncArg>> GetFuncArgsForDesugaredPropDecl(
+     auto leftBaseExpr = mapExpr ? CreateMemberAccess(ASTCloner::Clone(mapExpr), getFunc)
+                                 : OwnedPtr<Expr>(CreateRefExpr(getFunc).release());
+     // 'getFunc' may be generic type, which need to be update to real used type.
+-    leftBaseExpr->SetTy(tyMgr.GetFunctionTy({}, &propTy));
++    // Checked exceptions: the accessor's own 'throws' clause must ride on the synthesized callee
++    // type, or the use site demands nothing (proposal 3.3).
++    leftBaseExpr->SetTy(tyMgr.GetFunctionTy(
++        {}, &propTy, {}, GetInstantiatedAccessorCapTys(tyMgr, getFunc, mapExpr ? mapExpr->GetTy() : nullptr)));
+     auto isMemberAccessSuperCall = false;
+     if (auto ma = DynamicCast<MemberAccess*>(leftBaseExpr.get()); ma) {
+         CJC_NULLPTR_CHECK(ma->baseExpr);
+@@ -182,11 +185,13 @@ void DesugarGetForPropDecl(TypeManager& tyMgr, Expr& expr)
+         return;
+     }
+     OwnedPtr<Expr> baseExpr;
++    Ptr<Ty> receiverTy = nullptr;
+     bool isMemberAccessSuperCall = false;
+     if (auto ma = DynamicCast<MemberAccess*>(&expr); ma) {
+         if (!ma->baseExpr) {
+             return; // Current node may be desugared by other process.
+         }
++        receiverTy = ma->baseExpr->GetTy();
+         if (auto ref = DynamicCast<RefExpr*>(ma->baseExpr.get()); ref) {
+             isMemberAccessSuperCall = ref->isSuper;
+         }
+@@ -195,7 +200,9 @@ void DesugarGetForPropDecl(TypeManager& tyMgr, Expr& expr)
+         baseExpr = CreateRefExpr(*getFunc);
+     }
+     // 'getFunc' may be generic type, which need to be update to real used type.
+-    baseExpr->SetTy(tyMgr.GetFunctionTy({}, expr.GetTy()));
++    // Checked exceptions: carry the accessor's capability list onto the synthesized callee type.
++    baseExpr->SetTy(tyMgr.GetFunctionTy(
++        {}, expr.GetTy(), {}, GetInstantiatedAccessorCapTys(tyMgr, *StaticCast<FuncDecl*>(getFunc), receiverTy)));
+     CopyBasicInfo(&expr, baseExpr.get());
+     auto lastCallExpr = CreateCallExpr(std::move(baseExpr), {});
+     lastCallExpr->callKind = isMemberAccessSuperCall ? CallKind::CALL_SUPER_FUNCTION : CallKind::CALL_DECLARED_FUNCTION;
+@@ -242,11 +249,15 @@ void DesugarSetForPropDecl(TypeManager& tyMgr, Expr& expr)
+     subExpr->EnableAttr(Attribute::UNREACHABLE);
+ 
+     // Since current desugar happens inside sema stage, we cannot use 'move' to create new node.
++    Ptr<Ty> receiverTy =
++        subExpr->astKind == ASTKind::MEMBER_ACCESS ? RawStaticCast<MemberAccess*>(subExpr)->baseExpr->GetTy() : nullptr;
+     auto baseExpr = subExpr->astKind == ASTKind::MEMBER_ACCESS
+         ? CreateMemberAccess(ASTCloner::Clone(RawStaticCast<MemberAccess*>(subExpr)->baseExpr.get()), *setFunc)
+         : OwnedPtr<Expr>(CreateRefExpr(*setFunc).release());
+     // 'setFunc' may be generic type, which need to be update to real used type.
+-    baseExpr->SetTy(tyMgr.GetFunctionTy({subExpr->GetTy()}, TypeManager::GetPrimitiveTy(TypeKind::TYPE_UNIT)));
++    // Checked exceptions: carry the accessor's capability list onto the synthesized callee type.
++    baseExpr->SetTy(tyMgr.GetFunctionTy({subExpr->GetTy()}, TypeManager::GetPrimitiveTy(TypeKind::TYPE_UNIT), {},
++        GetInstantiatedAccessorCapTys(tyMgr, *setFunc, receiverTy)));
+     CopyBasicInfo(subExpr, baseExpr.get());
+     Ptr<Expr> basePtr = nullptr;
+     // For refExpr case, 'a += b' is desugared to aSet(aGet() + b), there is no side effect to be handle.
+diff --git a/src/Sema/Desugar/DesugarInTypeCheck.cpp b/src/Sema/Desugar/DesugarInTypeCheck.cpp
+index 6e2cb845..5376e8c2 100644
+--- a/src/Sema/Desugar/DesugarInTypeCheck.cpp
++++ b/src/Sema/Desugar/DesugarInTypeCheck.cpp
+@@ -662,6 +662,13 @@ void DesugarPrimaryCtor(Decl& decl, PrimaryCtorDecl& fd)
+         // Despite that the whole tree is cloned, the retType node is explicitly given by the user.
+         funcBody->retType->DisableAttr(Attribute::COMPILER_ADD);
+     }
++    // Checked exceptions (experimental): the primary constructor's 'throws' clause belongs to the
++    // synthesized 'init'. Every consumer reads the DESUGARED body — the capability list of the
++    // constructor's functional type (what construction sites demand), clause validation, and
++    // inference eligibility — so without this the clause is parsed and then dropped. Cloned
++    // rather than moved: the primary constructor declaration keeps living in the AST for name
++    // resolution, LSP and incremental hashing, exactly like the return type above.
++    funcBody->throwsClause = ASTCloner::Clone(fd.funcBody->throwsClause.get(), SetIsClonedSourceCode);
+     auto funcParamList = MakeOwned<FuncParamList>();
+     CopyFileID(funcParamList.get(), &fd);
+     std::vector<OwnedPtr<Node>>::iterator it;
+diff --git a/src/Sema/GenericInstantiation/PartialInstantiation.cpp b/src/Sema/GenericInstantiation/PartialInstantiation.cpp
+index 8fbbbc41..33efb5be 100644
+--- a/src/Sema/GenericInstantiation/PartialInstantiation.cpp
++++ b/src/Sema/GenericInstantiation/PartialInstantiation.cpp
+@@ -481,6 +481,7 @@ OwnedPtr<ThrowsClause> PartialInstantiation::InstantiateThrowsClause(const Throw
+     ret->leftParenPos = node.leftParenPos;
+     ret->rightParenPos = node.rightParenPos;
+     ret->commaPosVector = node.commaPosVector;
++    ret->hasEllipsis = node.hasEllipsis;
+     for (auto& capType : node.capTypes) {
+         ret->capTypes.emplace_back(InstantiateType(capType.get(), visitor));
+     }
+diff --git a/src/Sema/TypeCheckUtil.cpp b/src/Sema/TypeCheckUtil.cpp
+index 84afea21..999dce30 100644
+--- a/src/Sema/TypeCheckUtil.cpp
++++ b/src/Sema/TypeCheckUtil.cpp
+@@ -328,6 +328,53 @@ std::vector<Ptr<Ty>> GetFuncBodyCapTys(const FuncBody& fb)
+     return ExpandCapabilityList(fb.throwsClause->capTypes);
+ }
+ 
++std::vector<Ptr<Ty>> GetInstantiatedAccessorCapTys(TypeManager& tyMgr, const FuncDecl& accessor, Ptr<Ty> receiverTy)
++{
++    if (!accessor.funcBody) {
++        return {};
++    }
++    // Entries that failed elaboration are dropped rather than forwarded: a FuncTy marks itself
++    // invalid when any capability ty is incorrect, and the desugared callee expressions this
++    // feeds have never carried an invalid ty.
++    std::vector<Ptr<Ty>> caps;
++    bool anyGeneric = false;
++    for (auto cap : GetFuncBodyCapTys(*accessor.funcBody)) {
++        if (!Ty::IsTyCorrect(cap)) {
++            continue;
++        }
++        anyGeneric = anyGeneric || cap->HasGeneric();
++        caps.emplace_back(cap);
++    }
++    if (!anyGeneric || !Ty::IsTyCorrect(receiverTy)) {
++        return caps;
++    }
++    // The accessor may be inherited or reached through an extend, so the mapping comes from the
++    // RECEIVER's type — which walks extends and the inheritance chain — not from outerDecl.
++    MultiTypeSubst mts;
++    tyMgr.GenerateGenericMapping(mts, *receiverTy);
++    // Collapse to a single-valued substitution: picking one of several candidates would make
++    // user-visible diagnostics depend on pointer order, so an ambiguous variable keeps its
++    // un-instantiated entry.
++    TypeSubst subst;
++    for (auto& [tv, candidates] : mts) {
++        if (candidates.size() == 1) {
++            subst.emplace(tv, *candidates.begin());
++        }
++    }
++    if (subst.empty()) {
++        return caps;
++    }
++    for (auto& cap : caps) {
++        // Per capability, never on the whole FuncTy: instantiation reduces against
++        // GetAllGenericTys, which is typeArgs-only and therefore blind to capTys.
++        auto inst = tyMgr.GetInstantiatedTy(cap, subst);
++        if (Ty::IsTyCorrect(inst)) {
++            cap = inst;
++        }
++    }
++    return caps;
++}
++
+ std::vector<Ptr<Ty>> GetDeclCapturesCapTys(const Decl& decl)
+ {
+     // Checked exceptions: the 'captures' clause types of a class or struct declaration
+diff --git a/src/Sema/TypeCheckUtil.h b/src/Sema/TypeCheckUtil.h
+index 7ee20ed5..36aefede 100644
+--- a/src/Sema/TypeCheckUtil.h
++++ b/src/Sema/TypeCheckUtil.h
+@@ -190,6 +190,15 @@ std::vector<Ptr<AST::Ty>> GetFuncBodyParamTys(const AST::FuncBody& fb);
+ std::vector<Ptr<AST::Ty>> ExpandCapabilityList(const std::vector<OwnedPtr<AST::Type>>& capTypes);
+ 
+ std::vector<Ptr<AST::Ty>> GetFuncBodyCapTys(const AST::FuncBody& fb);
++
++/**
++ * Checked exceptions: the capability list of @p accessor (its elaborated 'throws' clause),
++ * instantiated for a use site whose receiver has type @p receiverTy. @p receiverTy may be null
++ * (unqualified reference), in which case the list is returned verbatim: the declaration's own
++ * type parameters are already the ones in scope. Entries that failed elaboration are dropped.
++ */
++std::vector<Ptr<AST::Ty>> GetInstantiatedAccessorCapTys(
++    TypeManager& tyMgr, const AST::FuncDecl& accessor, Ptr<AST::Ty> receiverTy);
+ /**
+  * Checked exceptions: get the exception capability tys of @p decl 's elaborated 'captures'
+  * clause (proposal 3.9). Empty when @p decl is not a class/struct or has no clause; entries
+-- 
+2.54.0
+
