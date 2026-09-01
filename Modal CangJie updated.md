@@ -1,1 +1,0 @@
-/home/penguin/Vault/Projects/CJ/CJ Effect System Proj/Wiki/Modal CangJie updated.md

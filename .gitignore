@@ -17,3 +17,9 @@ cases_without_level.txt
 .cache/
 cangjie_tools/
 cangjie_docs/
+
+# The proposal texts are symlinks into a private vault; the published copy of the
+# checked-exceptions text lives in proposal/. The Modal text is not ours to publish.
+/Checked exceptions for CangJie.md
+/Checked exceptions for Cangjie.md
+/Modal CangJie updated.md
