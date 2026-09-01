@@ -1,0 +1,57 @@
+{
+  "upload_type": "software",
+  "title": "Capability-based checked exceptions for Cangjie: a compiler prototype",
+  "version": "dissertation-2026",
+  "language": "eng",
+  "access_right": "open",
+  "license": "apache-2.0",
+  "creators": [
+    {
+      "name": "Stoyan, Andrey",
+      "orcid": "0009-0004-6935-1447"
+    }
+  ],
+  "keywords": [
+    "checked exceptions",
+    "capabilities",
+    "effect systems",
+    "type systems",
+    "compilers",
+    "Cangjie",
+    "exception handling",
+    "static verification"
+  ],
+  "description": "<p>An implementation, in the real Cangjie compiler and standard library, of capability-based checked exceptions: throwing a checked exception of type <code>E</code> requires a capability of type <code>CanThrow&lt;E&gt;</code>, produced only by a <code>try</code>-<code>catch</code> handling <code>E</code> and carried down the call stack as an implicit, compile-time-erased parameter declared by a <code>throws</code> clause. Capabilities are inferred where the declaration allows it and vanish entirely after type checking, so the discipline costs nothing at run time, changes no ABI, and puts no effect polymorphism in user signatures. The same mechanism checks effect-handler requirements through a <code>performs</code> clause and <code>CanPerform</code>.</p><p>The deposit contains the design document the implementation follows, the engineering record (architecture, the rulings and decisions taken, the running proposal-vs-implementation gap ledger, the test baseline), the containerised build and test driver, and the complete delta of the work as <code>git format-patch</code> series against the upstream Cangjie repositories: 97 patches over four repositories, 303 files, roughly 9,700 inserted lines, together with the upstream commit each series applies to.</p><p><strong>What the archive does not contain.</strong> The four modified repositories are referenced as git submodules, and a source archive carries no submodule content. The code itself is therefore reached either through the repositories listed under related identifiers, or by reconstructing it from upstream with the included patch series, for which <code>patches/README.md</code> gives the commands.</p><p><strong>State of the work.</strong> The checking pipeline is built end to end - clauses, elaboration, capability-aware subtyping and override checking, the demand/supply pass, inference, cross-package metadata, migration annotations for the standard library - and is gated by a suite of 164 test files of its own, green alongside the compiler's full semantic, incremental-compilation and macro suites. One soundness item is known-open and identified in the record: an inferred capability list does not reach the expression type, so a function value formed inside a discharging <code>try</code>, stored outward and called after it, is accepted and throws uncaught. Escape analysis of every kind is out of scope by design ruling; it belongs to the parallel Modal Cangjie proposal. The guarantee delivered here is complete demand/supply checking plus machine-verified documentation of what each declaration may throw, not the full lifetime guarantee.</p>",
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/penguin-boxx/cangjie-capabilities/tree/dissertation-2026",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://github.com/penguin-boxx/cangjie-compiler-capabilities",
+      "relation": "hasPart",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://github.com/penguin-boxx/cangjie-test-capabilities",
+      "relation": "hasPart",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://github.com/penguin-boxx/cangjie-runtime-capabilities",
+      "relation": "hasPart",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://github.com/penguin-boxx/cangjie-stdx-capabilities",
+      "relation": "hasPart",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://gitcode.com/Cangjie",
+      "relation": "isDerivedFrom",
+      "scheme": "url"
+    }
+  ]
+}
