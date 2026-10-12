@@ -12,9 +12,7 @@ entirely after type checking — no runtime cost, no ABI change, and no effect-p
 signatures in user code. The same mechanism checks effect-handler requirements through a
 `performs` clause and `CanPerform`.
 
-The work is a prototype in the honest sense: the checking pipeline is built end to end and
-gated by a test suite of its own, one soundness item is known-open, and three planned
-batches are unstarted. Section [State](#state) says exactly which.
+The working tree implements declaration-local contract completion during Sema. The final compiler passes all 295 checked-exceptions/effect drivers, including 105 active rewrite cases, and all 49 compiler unit suites. All 6,315 broad integration tests and the std/stdx rebuilds also pass. See [State](#state) and the [gap ledger](notes/gap-analysis.md) for the scope and validation status.
 
 ## What is in this repository
 
@@ -67,55 +65,21 @@ in [`notes/test-baseline.md`](notes/test-baseline.md).
 
 ## What the prototype does
 
-- **Clauses.** `throws E1, E2` and `performs T` on functions, methods, constructors,
-  property accessors, operators, extensions and interface members; on functional types
-  (`(A) throws (E) -> R`); in any order with `where`; `throws ()` is legal.
-- **Types.** Capability lists are canonicalized and take part in type identity, while
-  staying out of type-argument inference and overload resolution — as the design requires.
-  Function subtyping is permutation- and length-insensitive over the lists; overriding and
-  redefinition check pointwise subsumption.
-- **Checking.** A pass after type checking walks each body against a stack of supplies
-  (the callable's own list, each `catch` pattern, a literal's expected type, class
-  captures, `handle`) and discharges the demands: `throw`, every call after generic
-  substitution, default-value expressions, field initializers, and the implicit calls —
-  `close()` of try-with-resources, `iterator()`/`next()` of `for-in`.
-- **Inference.** Declarations that may omit their list get one computed bottom-up over the
-  intra-package call graph, one SCC pass with Kleene iteration, cycles diagnosed rather
-  than approximated.
-- **Migration and escape.** `@AssumeThrows` on imports and declarations, `unsafeCanThrow`,
-  `UncheckedException`, and a `--enable-chexc off/warn/error` axis with its own warning
-  group, so an unannotated corpus keeps compiling.
-- **Cross-package.** Lists are serialized into `cjo` metadata from signature data, never as
-  materialized parameters, and incremental compilation invalidates on the right edits.
-- **Standard library.** The checked flows of `std` (fs, io, and the escape hatch in
-  `std.core`) and several `stdx` packages are annotated; the whole of `std` and `stdx`
-  builds under checking.
+- **Clauses.** `throws E1, E2` and `performs T` on functions, methods, constructors, property headers and accessors, operators, extensions, and interface members; on functional types (`(A) throws (E) -> R`); in any order with `where`. `throws ()` is legal, and abstract contexts permit bodyless accessors.
+- **Types.** Normalized capability lists participate in type identity and full function subtyping. Ordinary generic variables preserve whole functional types; capability-only variables are excluded from inference. Overload identity and override pairing erase capabilities recursively, and completed override contracts are checked separately.
+- **Checking.** The final read-only pass checks typed bodies against lexical supplies: callable requirements, handlers, expected literal types, and receiver captures. It validates calls, throws, defaults, field initializers, and implicit resource and iterator calls without initiating inference or repairing types.
+- **Inference.** Sema completes each eligible declaration once, in dependency order, before publishing its final capability-bearing type. Re-entering an active inferred contract is an error; written complete contracts permit recursion. Nested omitted clauses capture enclosing supplies, while nested `throws ...` declarations infer independently.
+- **Migration.** Existing `@AssumeThrows` behavior, `unsafeCanThrow`, and `UncheckedException` remain available. Exception-only compatibility mismatches follow the configured warning/error severity; ordinary typing failures, inference cycles, and missing effects remain errors. `stdx.effect.unsafeCanPerform` supplies its command capability inside the qualified intrinsic body.
+- **Cross-package.** Completed lists are serialized into `cjo` metadata without runtime parameters or scheduler state. Incremental compilation conservatively invalidates the package when an inferred contract may change, including through a nested body.
+- **Standard library.** Existing checked flows in std and stdx remain annotated, socket properties use header clauses, and recursive internal helpers have complete written contracts. Both libraries build at warning level; broader API annotation remains outside this migration.
 
 ## State
 
-Development ran as a queue of batches, each gated before it was committed.
+The current implementation replaces package-wide inference and post-Sema repair with declaration-local completion. It includes property-header clauses and bodyless abstract accessors, non-Modal constructor and receiver captures, corrected inference visibility, and `stdx.effect.unsafeCanPerform`. `CAPABILITY_CHECK` remains read-only validation of demands and completed override contracts. Capability metadata and runtime erasure retain their existing representation.
 
-- **Landed: T1–T4** — correctness fixes from the external review, text synchronization
-  (free clause order, the `unsafeCanThrow` rename, `resume throwing` against the try's own
-  catches), `where`-bound coverage, and inference reach (field initializers into
-  constructors, the `for-in` protocol).
-- **In progress: T5, inference completion.** Written but not gated, and therefore not in
-  the pinned compiler. It closes the one **known-open soundness hole**: an inferred
-  capability list does not reach the expression type, so a function value formed inside a
-  discharging `try`, stored outward and called after it, compiles at `error` and throws
-  uncaught at run time. Recorded as I35 in the gap analysis, with the probe that
-  demonstrates it and the design in `notes/inference-completion-design.md`.
-- **Not started: T6–T8** — the checked-effects axis, clauses on properties, and a cleanup
-  tail.
-- **Out of scope by ruling:** escape analysis of every kind — capability regions and
-  capture sets belong to the parallel Modal Cangjie proposal. Consequently the prototype
-  accepts both canonical escapes of a try-scoped capability; the guarantee it delivers
-  today is checked documentation plus complete demand/supply checking, not the full
-  lifetime guarantee.
+The final compiler passes all 295 checked-exceptions/effect drivers and all 49 compiler unit suites, including resolver, Sema, LSP/cjd, macro, and serialization coverage. The original rewrite baseline was 60 passing and 31 failing; all 105 current active rewrite cases pass. All 46 std and 38 stdx Cangjie modules were rebuilt at warning level with the final compiler. The full configured Sema, incremental, macro, and module gate passes all 6,315 tests. The migration is complete within the agreed active scope.
 
-[`notes/gap-analysis.md`](notes/gap-analysis.md) is the single ledger of everything
-separating the implementation from the proposal and the proposal from a stabilizable
-design; it is the document to read before trusting any claim above.
+Modal modes, escape analysis, origin propagation, a separate checked-effects axis, and expanded assumption-import semantics remain deferred. Historical T1–T8 records describe earlier implementations and do not override this migration's accepted scope. [`notes/gap-analysis.md`](notes/gap-analysis.md) records the final gates, compiler identity, and deferred scope.
 
 ## Building and testing
 
