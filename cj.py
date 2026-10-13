@@ -236,13 +236,11 @@ cp -R output/common/linux_{args.build_type}_$ARCH/runtime {WORK}/cangjie_compile
 
 
 def build_std(args):
-    # The stdlib sources carry `throws` clauses (migration phase 2), which only parse with the
-    # feature enabled; warn severity keeps not-yet-annotated flows building. Permanent since the
-    # first clause landed -- building without these flags fails at parse.
+    # Preserve and check both capability kinds at Warn while enabling handler syntax.
     script = f"""set -ex
 source {WORK}/cangjie_compiler/output/envsetup.sh
 python3 build.py build -t {args.build_type} \\
-    --build-args=--experimental --build-args=--enable-checked-exceptions=warn \\
+    --build-args=--experimental --build-args=--enable-eh --build-args=--enable-checked-exceptions=warn --build-args=--enable-checked-effects=warn \\
     --target-lib={WORK}/cangjie_runtime/runtime/output \\
     --target-lib=$OPENSSL_PATH
 python3 build.py install
@@ -254,12 +252,11 @@ python3 build.py install
 
 
 def build_stdx(args):
-    # Same flags as std: stdx is the next migration ring, so it builds with checking on at `warn`
-    # severity -- every capability a public stdx API needs is reported, nothing blocks the build.
+    # Use the same independent Warn policies as std.
     script = f"""set -ex
 source {WORK}/cangjie_compiler/output/envsetup.sh
 python3 build.py build -t {args.build_type} \\
-    --build-args=--experimental --build-args=--enable-checked-exceptions=warn \\
+    --build-args=--experimental --build-args=--enable-eh --build-args=--enable-checked-exceptions=warn --build-args=--enable-checked-effects=warn \\
     --include={WORK}/cangjie_compiler/include \\
     --target-lib=$OPENSSL_PATH
 python3 build.py install

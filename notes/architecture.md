@@ -1,6 +1,6 @@
 # Checked exceptions: dependency-ordered contract checking
 
-This document describes the declaration-local checked-exception architecture and its integration requirements. Its semantic reference is [Checked exceptions for Cangjie](../Checked%20exceptions%20for%20Cangjie.md), sections 3–5 as restricted by the non-Modal implementation scope in §6.5. The working implementation now completes contracts during Sema and removes post-Sema inference, expression-type completion, and subtype replay. Validation status is recorded in the acceptance section and [gap ledger](gap-analysis.md).
+This document describes the declaration-local checked-exception architecture and its integration requirements. Its semantic reference is [Checked exceptions for Cangjie](../Checked%20exceptions%20for%20Cangjie.md), sections 3, 5, and 6, with Modal integration deferred under §6.5. The working implementation now completes contracts during Sema and removes post-Sema inference, expression-type completion, and subtype replay. The section 6 extension below describes the implemented independent checking policies, producer metadata, and consumer-local assumption views; its acceptance results are recorded separately from the earlier migration baseline. Validation status is recorded in the acceptance section and [gap ledger](gap-analysis.md).
 
 In this document, a declaration's **contract** means the complete static type information needed to check its uses. For a function, this includes parameter and result types, generic constraints, and capability requirements, including those nested in other types. A **contract dependency** exists when checking one declaration needs that information from another. These are architectural terms introduced here; the compiler already handles declaration-type dependencies through synthesis on use. The rewrite extends that mechanism to capability inference and makes signature completeness explicit.
 
@@ -274,7 +274,7 @@ Try-with-resources initializers and implicit closing execute within the protecte
 
 Keep exception and command requirements separate in coverage and diagnostics. `resume throwing` uses the scopes at the suspended operation: its own try's catches plus enclosing scopes, not catches nested inside the called performer. Exception classification uses the operand's static type: `Error` is untracked, `UncheckedException` subtypes need no capability, and a value statically typed as `Exception` still does. Generic substitution removes unchecked requirements without changing whether a generic class is a capturing class.
 
-Preserve the current diagnostic batching by site and kind: the diagnostic engine deduplicates by position and severity. Checking level controls reporting, not whether an inferred contract has to be complete.
+Preserve the current diagnostic batching by site and kind: the diagnostic engine deduplicates by position and severity. On each enabled axis, warning versus error level controls reporting, not whether a contract has to be complete. An off axis has empty effective lists and no obligations; syntactic and clause well-formedness validation still runs.
 
 ### Required extension boundary for Modal
 
@@ -331,7 +331,104 @@ An inferred callee and the same callee with an equivalent written list must beha
 
 Keep existing candidate filtering, diagnostic suppression, contextual checking, and constraint transactions. Collect capability demands only from the accepted typed body, so speculative lambda checking does not mutate a live capability accumulator and needs no new capability transaction. Declaration completion itself is independent of the caller's candidate context and may be reused; verify that existing diagnostic suppression and caches do not hide a failed completion or retain a provisional type. Apply cheap name/arity/parameter-shape filters before forcing candidate bodies, but complete a signature before any candidate operation that consumes its inferred components. Available handlers must never select a candidate or turn a cyclic candidate into an acceptable one.
 
-Use final `FuncTy::capTys` as the single source for completed requirements. Audit helpers such as `GetInstantiatedAccessorCapTys`, which currently prefer written clause nodes, so inferred source accessors and imported accessors both retain their full list. Remove collector fallbacks that silently recover missing expression requirements from declaration clauses or the old inference map; such fallbacks conceal violations of the completed-input invariant. Type-changing import-assumption behavior, if implemented, belongs at the existing import/reference type boundary rather than in the residual walker; the broader checking-axis work of §6 is not added to this rewrite.
+Use final `FuncTy::capTys` as the single source for completed requirements. Audit helpers such as `GetInstantiatedAccessorCapTys`, which currently prefer written clause nodes, so inferred source accessors and imported accessors both retain their full list. Remove collector fallbacks that silently recover missing expression requirements from declaration clauses or the old inference map; such fallbacks conceal violations of the completed-input invariant. Import assumptions are applied at the existing declaration-use and value-read type boundaries before ordinary typing consumes their types, as specified in the section 6 extension below. The residual walker consumes the resulting effective contracts and must not compensate for missing type information with formation-site demands.
+
+## Section 6 extension: checking policy and package boundaries
+
+**Scope extension, 2026-10-12:** implement §6 compatibility, metadata, and assumption-import semantics on top of the completed declaration-local architecture. Keep the existing scheduler and concrete type operations. The implementation now uses independent checking levels, retains original producer metadata, and elaborates consumer-local assumption views during Sema. The handler feature flag is a prerequisite rather than a checking policy. The declaration scheduler and read-only final validator remain unchanged. The optional closed-build verifier of §6.3.4 remains future tooling; ordinary package compilation must not claim its verdict.
+
+### One policy, two independent axes
+
+Represent package checking policy with two instances of the same `Off | Warn | Error` level: exceptions and effects. Retain the existing effect-handler feature flag as a separate prerequisite for checked effects. `--enable-checked-exceptions <level>` requires experimental enablement; `--enable-checked-effects <level>` requires the effect-handler feature. Test the specified separate-argument spelling; any retained prototype shorthand is compatibility syntax. Modal enablement is an independent package fact, currently false.
+
+| Level, independently for each kind | Effective requirements and serialized lists | Capability violations | Trust |
+|---|---|---|---|
+| Off | Empty, including nested functional lists and that kind's `captures` entries | No obligation or capability-component rejection on that axis | Unchecked boundary |
+| Warn | Complete, canonical lists; infer exceptions normally | Warnings in `checked-exceptions` or `checked-effects` | Trusted, even if warnings were suppressed or absent |
+| Error | Complete, canonical lists; infer exceptions normally | Errors | Verified requirements; without Modal, escape remains unverified |
+
+Parse clauses unconditionally and validate syntax, alias expansion, entry kinds, and well-formedness before filtering disabled entries. `throws Int64` remains an error with checking off or at warn. Ordinary type errors retain their severity. No command inference is introduced. Replace the coarse `SetCapTysInert`/`enableEH` decisions with kind-aware policy at elaboration, imported-type projection, and diagnostic boundaries; keep the policy out of ordinary joins and interning, which consume concrete effective lists. Filtering an axis must not erase capturing-type identity or future Modal restrictions. Keeping `FuncTy::capTys` with shared kind-aware filtering/comparison helpers is sufficient; section 6 does not require splitting the type representation or rewriting joins. If a representation split becomes useful later, keep it behind those helpers.
+
+Reuse the existing capability diagnostic helpers and committed type-compatibility checks. They need to distinguish ordinary incompatibility from exception-list and effect-list incompatibilities, so a mixed failure can report an error on one axis and a warning on the other. Warning suppression affects reporting only: it must not erase types, stop inference, change serialized trust, or make ordinary overload applicability handler-dependent. Extend the existing warning-level compatibility mechanism rather than adding another subtype relation or replay pass. Functional-cast restrictions consult both levels: any error-level axis rejects, warning-only active axes warn in their respective groups, and both off impose no capability cast restriction. Ordinary Modal errors will keep their own severity when integration arrives.
+
+### Metadata is a package fact; types are consumer views
+
+Extend the existing `CompilationOptions` package metadata and AST writer/loader. Store both checking levels and Modal enablement, with compatible schema defaults for older artifacts; absent capability metadata means unchecked on that axis. Do not reinterpret the prototype's historical `enableEH` bit as proof of error-level checked effects. Preserve the existing metadata-version checks where a schema cannot be interpreted safely.
+
+Record completed signatures of exported and subpackage-visible internal declarations, including inferred internal lists and functional clauses nested anywhere in signatures. Filter disabled producer axes recursively when serializing; retain capturing status in an independent declaration flag even when the filtered capture list is empty. Existing capture/constructor encoding may be reused if the loader reconstructs equivalent constructor requirements. Public omission remains authoritative empty, not inferred. `Warn` lists are consumed exactly like `Error` lists for typing; a warning-producing dependency is allowed and trusted, not silently upgraded to verified or rejected.
+
+Keep producer levels available through the import manager independently of the consumer's effective types. A consumer with checking off on one axis reads that component as empty even from a checked producer; an enabled consumer preserves recorded lists only from an enabled producer. Do not mutate shared imported declarations or interned types when projecting these views. The type factory and existing substitution machinery build canonical views, while metadata remains the source of producer trust. Consumer-local assumptions are applied only after checking the producer's level on the corresponding axis.
+
+```text
+producer completed signature + producer policy
+    → writer: omit disabled requirement components; preserve capturing status
+    → .cjo: signature + exception/effect levels + Modal bit
+    → loader/import manager: retain producer facts
+    → consumer policy projection + consumer assumption view
+    → ordinary substitution, contextual typing, joins, and capability resolution
+```
+
+A dynamically dispatched call uses the statically selected declaration's effective contract. Do not union possible implementations or add runtime capability checks. Dispatch to an unchecked implementation, unchecked callers invoking checked exports, and callbacks invoked by unchecked code remain unchecked invocation boundaries. ABI erasure and reflection stay unchanged.
+
+### Assumptions elaborate types before use
+
+Collect and validate package-wide assumptions once after imports and annotation types have been resolved, before any declaration contract is consumed. Extend the existing import-annotation AST/parser and package-name map to both kinds. Key by the dependency's actual package identity, not import spelling or file; union canonical expanded lists across all annotated imports. Unannotated and member imports elsewhere use that same view. A subpackage has its own key. Reject annotations on individual-member imports and on dependencies at Warn or Error on the annotation's axis, even when their recorded lists happen to be empty. An enabled other axis does not prevent the assumption. `@AssumeThrows` defaults to `Exception`; its explicit empty list is invalid. `@AssumePerforms` requires a nonempty explicit command list. Both annotations may share one package import. They impose per-call requirements and never synthesize an assumed `captures` declaration.
+
+Use one Sema-owned package assumption map and a small effective-use-type helper, shared by ordinary references, member access, accessors, constructors, and resolved implicit operations. Reuse normal type construction, substitution, and canonicalization. Imported types are already complete, so this adds no scheduling or pending-type mechanism. Do not introduce global type-manager state keyed by source imports; the map belongs to the consuming package. A cache is optional and must include the package view and use kind if profiling justifies it.
+
+| Use of an assumed dependency | Type/requirement view |
+|---|---|
+| Direct function, method, accessor, constructor, or implicit protocol call | Add the assumption to that call's effective requirement list. |
+| Function reference or bound method | Produce a functional type with the assumed list; formation alone demands nothing. |
+| Functional field read | Add the list to the obtained function type; the field read itself is not a call. |
+| Property read | The getter call demands the list; its obtained functional result also retains the list for later invocation. |
+| Call returning another function | The outer call demands the list; the returned function type carries its own assumed list. |
+| Field write, setter argument, or ordinary argument | Keep the dependency's original accepted value type; a setter call separately demands its assumed list. |
+| Function inside a nominal type argument | Do not descend into the argument or widen it; an extracted callback remains clause-free on the off producer axis. |
+
+The read transformation follows covariant result/value positions, including tuples and successive functional results; it does not widen callback parameters, writable storage, or nominal type arguments. Reuse existing type-shape traversal rather than implementing a second subtyping engine. Apply the view before generic inference, joins, bindings, and contextual compatibility, and preserve it through ordinary local value flow. An inferred factory returning an assumed method reference therefore publishes the callback's requirement without itself requiring a capability. A user-defined generic identity then preserves this already-derived whole type. Do not reinterpret its result as a fresh unannotated dependency signature and erase the assumption.
+
+```cangjie
+// Dependency package legacy, compiled with exception checking off:
+package legacy
+public class Registry {
+    public init() {}
+    public func work(): Unit {}
+}
+```
+
+```cangjie
+// Separate consuming package, exception checking at error:
+@AssumeThrows[AE]
+import legacy.*
+class AE <: Exception {}
+
+func obtain(r: Registry) { r.work } // () throws AE -> Unit; obtain requires nothing
+func use(r: Registry): Unit throws AE {
+    let callback = obtain(r)       // no requirement at reference formation
+    callback()                    // demands AE here
+}
+```
+
+Remove `ImposeAssumedOnValue` and the late `AddAssumedDemands` compensation once every declaration-use path consumes the effective view. The current claim that paying at formation is merely stricter is insufficient: a callback formed under a handler can be invoked later with an incorrectly empty type. New tests must distinguish this unsound loss from harmless extra diagnostics. The collector and final validator should consume the same effective callable requirements, including implicit calls not yet materialized in the AST.
+
+Assumptions are consumer-local claims, never amendments to the dependency's metadata. Only their consequences in the consumer's own completed signatures are exported. For example, an inferred callback result may record `throws AE`, while a third package importing the original dependency still sees its original empty list. Future verification evidence must preserve that the intermediate package used trusted assumptions; ordinary clause serialization alone cannot certify that provenance.
+
+### Incremental checking and future verification
+
+Reuse the existing conservative package invalidation path. Include both checking levels, assumption imports and their expanded aliases, and dependency clause/capture metadata in cache validity. Changes in any of these must recheck dependent signatures even when source bodies and erased symbols are unchanged. Test both enabling an axis and changing a producer from Off to Warn, as well as changes in imported returned-function clauses. Retain original producer metadata for invalidation even when the current consumer projects one axis away.
+
+The full guarantee requires entry through checked `main`, an error-level closed build with Modal, coherent dependency signatures, no fabricated capabilities or trusted premises, and no unchecked invocation boundary, including reflection, parameter-typed casts, unchecked implementations, and callbacks invoked by unchecked code. Effects additionally require checked-effects at error throughout the executing closure on a supported backend. A successful ordinary error-level build proves none of these whole-build premises by itself; current non-Modal builds establish only checked requirements under the manual capture-lifetime precondition.
+
+No new whole-build analysis or persistent boundary graph is needed for this language implementation. Reserve a separately versioned tooling record for a future verifier: package levels/Modal status, dependency identities and clause/capture fingerprints used during checking, trusted-input use, fabricated capabilities, and unchecked invocation boundaries. Keeping original import facts and the explicit resolver ownership interface makes these records possible without altering type semantics. This is an evidence requirement for future tooling, not a claim that those records or the verifier exist today. A closed-build verifier must also check signature coherence against linked artifacts; ABI compatibility cannot establish it.
+
+Without Modal, preserve the existing resolver ownership seam but allow capturing values to leave their supplying scope, including via callback storage, returns, and thread transfer. Those operations have no escape diagnostic in §6.5. Tests may form and transport such values without invoking them after their handler has ended; acceptance must not depend on a missing-handler runtime failure. Enabling Modal later adds mode and escape checks to the same effective contracts. Package trust and requirement projection must never disable its capturing-type restrictions.
+
+### Implementation sequence and acceptance
+
+Implement shared per-axis policy and diagnostics first, then versioned metadata projection, then the package-wide assumption view at Sema boundaries. Remove late assumption compensation only when reference, call, accessor, and implicit-operation paths use that view. Finish with incremental invalidation and cross-package tests. This keeps changes concentrated in existing options/diagnostics, import/Sema boundaries, and AST serialization; the declaration scheduler, resolver, generic solver, joins, and backend need no replacement.
+
+The [section 6 acceptance inventory](../cangjie_test/testsuites/LLT/compiler/CheckedExceptions/rewrite/compat/README.md) separates current gaps from passing controls. Existing effect fixtures must explicitly opt into checked effects; effect-handler enablement alone no longer requests static checking. The historical 295-driver result in the gap ledger predates this scope extension. Focused option, serializer, and import-view unit tests cover independent levels, producer trust and historical defaults, capturing status with an empty list, absence of imported-type mutation, and package isolation during on-use completion. Future Modal compatibility remains a review obligation until integration exists.
 
 ## Deferred Modal integration
 
@@ -390,11 +487,11 @@ For mutable arguments the checker also tracks storage origin. Suppose `holder` d
 | `CapabilityInferencer`, `BuildCallGraph`, SCC/Kleene loop | Removed. Declaration-local completion rejects recursive inference dependencies. |
 | `CapabilityChecker`, `CollectResidualDemands`, miss handlers | Use explicit lexical contexts and structured supplied/residual/missing resolution for collection and final reporting. |
 | `CompleteInferredCapabilityTypes`, `CapabilityTypeCompleter`, `WidenCapabilities` | Removed. Final contracts are published before consumers use them. |
-| `CapabilitySubtypeReplay`, `CollectUnadmitted` | Removed. Ordinary complete-type checks decide compatibility, with exception-only warning handling at committed checks. |
+| `CapabilitySubtypeReplay`, `CollectUnadmitted` | Removed. Ordinary complete-type checks decide compatibility, with independent exception/effect severity at committed checks. |
 | `LocalTypeArgumentSynthesis`, joins, substitutions | Preserve whole functional arguments and normalize substituted lists; capability-only variables remain excluded from inference. |
 | Lambda checking and overload candidate snapshots | Retain contextual typing and transactions; collect demands from accepted typed bodies. |
 | Final capability pass and recorded override pairs | Read-only demand and override validation over completed signatures. |
-| Serialization, erasure, CHIR/backend | Consume completed contracts and preserve the existing metadata encoding and erased ABI. |
+| Serialization, erasure, CHIR/backend | The declaration-local migration retained metadata encoding and erased ABI. Section 6 extends metadata policy/status fields and projection; ABI erasure remains unchanged. |
 
 `CompileStage::CAPABILITY_CHECK` runs after Sema and before desugaring. Per-declaration collection runs inside Sema before publishing an inferred signature, including for LSP and cjd clients that stop before later stages. Future escape validation will need to run before desugaring destroys protected-body structure.
 
@@ -402,13 +499,13 @@ For mutable arguments the checker also tracks storage origin. Suppose `holder` d
 
 ### Implementation boundaries
 
-Keep persistent new state limited to inferred-callable readiness and the active diagnostic stack. Reuse the final type as the result and existing body-checking state as the body state. Give the reusable resolver an explicit, locally owned scope context and return supply/residual ownership; these are required extension points, not a persistent capture analysis. Do not add expression summaries or a dependency graph merely for future work. If profiling later shows repeated initializer walks matter, optimize that measured cost separately.
+For declaration completion, keep persistent new state limited to inferred-callable readiness and the active diagnostic stack. The section 6 extension separately adds the package checking policy and consumer-local assumption map to existing package/import state. Reuse the final type as the result and existing body-checking state as the body state. Give the reusable resolver an explicit, locally owned scope context and return supply/residual ownership; these are required extension points, not a persistent capture analysis. Do not add expression summaries or a dependency graph merely for future work. If profiling later shows repeated initializer walks matter, optimize that measured cost separately.
 
-The implementation collects declaration-local residuals from accepted typed bodies during Sema. A readiness table and active request stack guard inferred contracts before cache shortcuts and consumers. Constructor source checks run at the callable boundary before on-use typing can desugar the body. The final capability pass only validates demands and recorded override pairs; the SCC solver, inferred-list side map, expression completion, and subtype replay have been removed. The final compiler passes 295 checked-exceptions/effect drivers, including all 105 active rewrite cases, and all 49 compiler unit suites. Both std and stdx have been rebuilt at warning level, including structured macro support. The full configured Sema, incremental, macro, and module gate passes all 6,315 tests. The migration is complete within the agreed active scope; the gap ledger records the compiler identity, final gate results, and existing test exclusions.
+The implementation collects declaration-local residuals from accepted typed bodies during Sema. A readiness table and active request stack guard inferred contracts before cache shortcuts and consumers. Constructor source checks run at the callable boundary before on-use typing can desugar the body. The final capability pass only validates demands and recorded override pairs; the SCC solver, inferred-list side map, expression completion, and subtype replay have been removed. Section 6 acceptance on 2026-10-13 passes all 365 checked-exception/effect drivers, including all 175 active rewrite cases and 70 compatibility cases, and all 49 compiler unit suites. Both std and stdx have been invalidated and rebuilt with both checking axes at Warn, including structured macro support. The full configured Sema, incremental, macro, and module gate passes all 6,315 cases against that compiler and SDK. The gap ledger records compiler identity, final gate results, and existing test exclusions. The declaration-local scheduler, read-only final validator, and erased ABI remain unchanged by the section 6 extension.
 
 ## Acceptance tests and rewrite gates
 
-The executable specification added for this rewrite is [CheckedExceptions/rewrite](../cangjie_test/testsuites/LLT/compiler/CheckedExceptions/rewrite/README.md). It maps the active cases to sections 3 and 5 under §6.5 and records the baseline against the current compiler. Every active rewrite driver, including revised nested-clause cases and newly added regressions, must pass for acceptance; the original count of 91 is a baseline, not a fixed gate. The 21 Modal-dependent specifications are preserved as `.cj.disabled` files under `deferred-modal/`, outside LLT discovery; they are not current failures or acceptance requirements. Section 4 is entirely deferred. The [2026-10-12 coverage audit](../cangjie_test/testsuites/LLT/compiler/CheckedExceptions/rewrite/COVERAGE.md) maps sections 3 and 5 to existing and new cases, records the current baseline, and separates source-level coverage from resolver-unit-test obligations.
+The executable specification added for this rewrite is [CheckedExceptions/rewrite](../cangjie_test/testsuites/LLT/compiler/CheckedExceptions/rewrite/README.md). It maps the active cases to sections 3, 5, and 6 under §6.5 and records the baseline against the current compiler. Every active rewrite driver, including revised nested-clause cases and newly added regressions, must pass for acceptance; the original count of 91 is a baseline, not a fixed gate. The 21 Modal-dependent specifications are preserved as `.cj.disabled` files under `deferred-modal/`, outside LLT discovery; they are not current failures or acceptance requirements. Section 4 is entirely deferred. The [2026-10-12 coverage audit](../cangjie_test/testsuites/LLT/compiler/CheckedExceptions/rewrite/COVERAGE.md) maps sections 3 and 5 to existing and new cases, records the current baseline, and separates source-level coverage from resolver-unit-test obligations.
 
 The suite requires positive and negative behavior, equivalent written/inferred contracts, declaration-order independence, useful cycle errors, and actual execution where appropriate. Negative cases assert a semantic diagnostic in addition to rejection, so rejection at an unrelated site cannot accidentally satisfy a negative test. Deferred escape specifications retain their semantic assertions for eventual activation. Existing section-specific parse, types, scopes, captures, unchecked, aliases, performs, serialization, and ABI suites remain regression gates; new tests supplement rather than replace them.
 

@@ -1,3 +1,22 @@
+## Section 6 compatibility and migration — complete, 2026-10-13
+
+The implementation realizes the updated architecture’s section 6 scope: independent exception/effect Off, Warn, and Error policies; kind-specific diagnostics and recursive disabled-axis projection; producer policy and capturing identity in metadata; and consumer-local `@AssumeThrows`/`@AssumePerforms` views before Sema consumes imported types. References and covariant callback results carry assumptions without formation demands, while calls, accessors, constructors, and implicit protocol operations demand their effective contracts. Function inputs, writable storage, and nominal arguments retain the dependency’s accepted types. Imported declarations and interned types remain unchanged. Declaration-local completion and read-only final validation remain intact; late assumption compensation and factory-global capability filtering have been removed.
+
+Assumptions are owned by each consuming package and keyed by actual dependency identity. On-use completion switches to the declaration’s package context and restores the caller’s context. Incremental validity includes original producer policies, nested clauses and captures, assumptions and aliases, even for an unchecked consumer; ordinary unchecked dependencies retain existing fine-grained invalidation. New focused unit checks cover policy combinations, option prerequisites, pure projection, producer trust and old metadata defaults, empty capturing identity, package isolation, and cross-package on-use context restoration.
+
+The checked-exception/effect gate passes 365/365 drivers, including all 70 section 6 compatibility cases and all 175 active rewrite cases. The final review added command-subclass-bound metadata and unit regressions after detecting loss of a generic effect component bounded by a Command subclass. All 49 compiler unit suites pass. All 46 std and 38 stdx module archives were invalidated and rebuilt with both axes at Warn, including AST/macro libraries and the expanded annotation round trip. The six incremental regressions found in the first broad run now pass; the complete configured integration gate passes all 6,315 drivers against the same corrected compiler and rebuilt SDK. No new exclusions or expected failures were added.
+
+| Section 6 final gate | Result |
+|---|---|
+| `compiler/CheckedExceptions` and `compiler/Sema/effect`, including all 175 active rewrite drivers and all 70 compatibility cases | 365/365 pass |
+| Full configured `compiler/Sema`, `compiler/IncrementalCompilation`, `compiler/Macro`, and `compiler/Modules` | 6,315/6,315 pass |
+| Compiler unit suites, including 10 new policy, metadata, projection, and context regressions | 49/49 suites pass |
+| std and stdx rebuilds with exceptions and effects at Warn, including AST/macro libraries | All 46 std and 38 stdx module archives rebuilt |
+
+Validation uses Docker image `cangjie-dev`, `cjc 1.0.0` targeting `x86_64-unknown-linux-gnu`, Clang 15.0.7, CMake 3.22.1, and Python 3.10.12. Compiler executable SHA-256: `1e80d5bdfd3757921d0d444a0daca73a3fae79c6741a102c014646d1b86309c4`, compiler source commit `e2b52b83` (the executable was built from its matching working tree over `43abc5df`) using unchanged installed LLVM backend artifacts. Logs: `logs/section6-sdk-final-v3.log`, `logs/section6-units-final-v3.log`, `logs/section6-cache-final.log`, `logs/section6-feature-final-v3.log`, and `logs/section6-broad-final-v4.log`.
+
+Modal modes, escape and origin analysis, the 21 Modal specifications, optional closed-build verification and its evidence records, and broader public-library annotation remain deferred. Non-Modal checking establishes capability requirements under the manual capture-lifetime precondition; it does not establish a closed-build guarantee. The earlier migration and prototype records below are historical.
+
 ## Declaration-local migration — complete, 2026-10-12
 
 The declaration-local implementation has removed SCC inference, the inferred-list side map, expression repair, `WidenCapabilities`, and subtype replay. Contracts complete during Sema; `CAPABILITY_CHECK` only validates demands and completed overrides. Nested omission captures lexically, `throws ...` infers independently, and nested inference never waits for an active outer inferred list. Properties, non-Modal captures, visibility, structured macro contracts, and `stdx.effect.unsafeCanPerform` are implemented. Recursive internal library helpers and generated deriving validation helpers have written contracts; broader public-library annotation remains outside this migration.
@@ -18,7 +37,7 @@ Validation uses Docker image `cangjie-dev`, `cjc 1.0.0` targeting `x86_64-unknow
 
 # Historical proposal ↔ implementation gap analysis
 
-The ledger below is retained as historical investigation and prototype evidence. Its milestone checkboxes and implementation gaps describe earlier compiler states; use the migration status above for the current implementation and validation gate. Modal, escape/origin analysis, the separate checked-effects axis, expanded assumption-import semantics, and broader public-library annotation remain outside this migration.
+The ledger below is retained as historical investigation and prototype evidence. Its milestone checkboxes and implementation gaps describe earlier compiler states; use the section 6 status above for the current implementation and validation gate. The separate checked-effects axis and expanded assumption-import semantics are now implemented; Modal, escape/origin analysis, optional closed-build verification, and broader public-library annotation remain deferred.
 
 **Single source of truth** for what separates the `chexc` prototype from the proposal, and
 the proposal from a stabilizable design. Two parts: what the **implementation** must change,

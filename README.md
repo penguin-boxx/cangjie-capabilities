@@ -1,4 +1,4 @@
-# Capability-based checked exceptions for Cangjie — the compiler prototype
+# Capability-based checked exceptions for Cangjie — compiler implementation
 
 This repository collects one result: a working implementation, in the real Cangjie
 compiler and standard library, of the design in
@@ -12,7 +12,7 @@ entirely after type checking — no runtime cost, no ABI change, and no effect-p
 signatures in user code. The same mechanism checks effect-handler requirements through a
 `performs` clause and `CanPerform`.
 
-The working tree implements declaration-local contract completion during Sema. The final compiler passes all 295 checked-exceptions/effect drivers, including 105 active rewrite cases, and all 49 compiler unit suites. All 6,315 broad integration tests and the std/stdx rebuilds also pass. See [State](#state) and the [gap ledger](notes/gap-analysis.md) for the scope and validation status.
+The working tree implements declaration-local contract completion during Sema and the proposal’s section 6 checking policies, metadata, and consumer-local assumptions. See [State](#state) and the [gap ledger](notes/gap-analysis.md) for the scope and validation status.
 
 ## What is in this repository
 
@@ -38,7 +38,7 @@ git clone --recurse-submodules https://github.com/penguin-boxx/cangjie-capabilit
 Upstream for all five components is `https://gitcode.com/Cangjie/<name>.git`; the four
 changed ones are published, with full history, under the same GitHub account.
 
-## The result in numbers
+## Historical prototype snapshot
 
 | | commits | delta against upstream |
 |---|---|---|
@@ -63,23 +63,25 @@ The feature's own suite is 164 test files in twelve groups — `parse`, `types`,
 Baseline, exclusions and the reasoning about which suite catches which class of defect are
 in [`notes/test-baseline.md`](notes/test-baseline.md).
 
-## What the prototype does
+## What the compiler implements
 
 - **Clauses.** `throws E1, E2` and `performs T` on functions, methods, constructors, property headers and accessors, operators, extensions, and interface members; on functional types (`(A) throws (E) -> R`); in any order with `where`. `throws ()` is legal, and abstract contexts permit bodyless accessors.
 - **Types.** Normalized capability lists participate in type identity and full function subtyping. Ordinary generic variables preserve whole functional types; capability-only variables are excluded from inference. Overload identity and override pairing erase capabilities recursively, and completed override contracts are checked separately.
 - **Checking.** The final read-only pass checks typed bodies against lexical supplies: callable requirements, handlers, expected literal types, and receiver captures. It validates calls, throws, defaults, field initializers, and implicit resource and iterator calls without initiating inference or repairing types.
 - **Inference.** Sema completes each eligible declaration once, in dependency order, before publishing its final capability-bearing type. Re-entering an active inferred contract is an error; written complete contracts permit recursion. Nested omitted clauses capture enclosing supplies, while nested `throws ...` declarations infer independently.
-- **Migration.** Existing `@AssumeThrows` behavior, `unsafeCanThrow`, and `UncheckedException` remain available. Exception-only compatibility mismatches follow the configured warning/error severity; ordinary typing failures, inference cycles, and missing effects remain errors. `stdx.effect.unsafeCanPerform` supplies its command capability inside the qualified intrinsic body.
-- **Cross-package.** Completed lists are serialized into `cjo` metadata without runtime parameters or scheduler state. Incremental compilation conservatively invalidates the package when an inferred contract may change, including through a nested body.
+- **Checking policy.** Exceptions and effects independently use Off, Warn, or Error. Disabled components are erased during elaboration and import projection; enabled lists remain canonical even with warnings suppressed. Malformed clauses, ordinary typing failures, and inference cycles remain errors. Handler syntax is enabled separately with `--enable-eh`. `unsafeCanThrow`, `UncheckedException`, and `stdx.effect.unsafeCanPerform` retain their existing behavior.
+- **Cross-package.** Metadata records both producer checking levels and capturing status. Sema derives pure consumer views and applies package-wide `@AssumeThrows` and `@AssumePerforms` before typing consumes them. References carry requirements without demanding them; calls and property getters demand them. Incremental invalidation includes original dependency policies and contracts, assumption imports, and aliases. Runtime parameters and scheduler state are not serialized.
 - **Standard library.** Existing checked flows in std and stdx remain annotated, socket properties use header clauses, and recursive internal helpers have complete written contracts. Both libraries build at warning level; broader API annotation remains outside this migration.
 
 ## State
 
-The current implementation replaces package-wide inference and post-Sema repair with declaration-local completion. It includes property-header clauses and bodyless abstract accessors, non-Modal constructor and receiver captures, corrected inference visibility, and `stdx.effect.unsafeCanPerform`. `CAPABILITY_CHECK` remains read-only validation of demands and completed override contracts. Capability metadata and runtime erasure retain their existing representation.
+The current implementation replaces package-wide inference and post-Sema repair with declaration-local completion. It includes property-header clauses and bodyless abstract accessors, non-Modal constructor and receiver captures, corrected inference visibility, and `stdx.effect.unsafeCanPerform`. `CAPABILITY_CHECK` remains read-only validation of demands and completed override contracts. Capability metadata retains the existing clause encoding and adds compatible policy and capturing-status fields. Runtime erasure and ABI remain unchanged.
 
-The final compiler passes all 295 checked-exceptions/effect drivers and all 49 compiler unit suites, including resolver, Sema, LSP/cjd, macro, and serialization coverage. The original rewrite baseline was 60 passing and 31 failing; all 105 current active rewrite cases pass. All 46 std and 38 stdx Cangjie modules were rebuilt at warning level with the final compiler. The full configured Sema, incremental, macro, and module gate passes all 6,315 tests. The migration is complete within the agreed active scope.
+Section 6 acceptance on 2026-10-13 passes all 365 checked-exception/effect drivers, including all 175 active rewrite cases and 70 compatibility cases, and all 49 compiler unit suites. All 46 std and 38 stdx Cangjie modules were invalidated and rebuilt with both checking axes at Warn using the same final compiler. The full configured Sema, incremental, macro, and module integration gate passes all 6,315 cases. The original rewrite baseline was 60 passing and 31 failing; the compatibility extension originally passed 15 of 63 new cases. The gap ledger records compiler identity and validation logs.
 
-Modal modes, escape analysis, origin propagation, a separate checked-effects axis, and expanded assumption-import semantics remain deferred. Historical T1–T8 records describe earlier implementations and do not override this migration's accepted scope. [`notes/gap-analysis.md`](notes/gap-analysis.md) records the final gates, compiler identity, and deferred scope.
+Modal modes, escape analysis, origin propagation, the optional closed-build verifier, and broader library API annotation remain deferred. Independent checked effects and expanded assumption-import semantics are implemented. Historical T1–T8 records describe earlier implementations and do not override this migration's accepted scope. [`notes/gap-analysis.md`](notes/gap-analysis.md) records the final gates, compiler identity, and deferred scope.
+
+Both checking levels default to Off. Use `--experimental --enable-checked-exceptions error` for exception checking and `--experimental --enable-eh --enable-checked-effects warn` for effect checking. Either axis can be enabled independently. Warn records complete contracts and package trust; suppressing a warning group changes reporting only.
 
 ## Building and testing
 
