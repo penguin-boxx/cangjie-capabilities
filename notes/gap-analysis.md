@@ -1,3 +1,20 @@
+## Standalone intraprocedural escape engine — complete, production activation deferred, 2026-10-13
+
+Implemented the §4.4 analysis engine, typed-AST flow builder, explicit Modal/capture-fact interfaces, successful-resolution observer, and dormant final-stage hook. Source identities distinguish clause parameters, receivers, protected bodies, and intrinsics. The engine separates value dependencies from storage provenance, tracks locals and tuple components precisely, conservatively propagates through heap aliases and calls, and checks stores, results, returns, mutable calls, resource cleanup, and resumption transfers without changing AST types or contracts. Return and protected-body result checks observe resource mutations before the boundary is crossed.
+
+Tests were written before the implementation: `logs/escape-red.log` records the initial missing-interface failure; `logs/escape-flow-red.log`, `logs/escape-mutation-red.log`, and `logs/escape-cleanup-red.log` record failing regressions before their corresponding fixes. The final engine suite has 44 passing tests, including an 80-hop loop propagation case with no fixed round limit. Two additional resolver/Sema tests verify selected-origin identity and accepted-body observation without AST-type mutation. Five additional Modal source specifications remain disabled, bringing the deferred set to 26.
+
+| Standalone-engine final gate | Result |
+|---|---|
+| `CapabilityEscapeTest` | 44/44 pass |
+| Compiler unit suites, including resolver/Sema and the new engine suite | 50/50 pass, serial run |
+| All `compiler/CheckedExceptions` and `compiler/Sema/effect` drivers | 365/365 pass |
+| Production escape checking without Modal | Remains disabled; existing non-Modal escape fixtures pass |
+
+Validation used the existing `cangjie-dev` Docker image and installed SDK dependencies, rebuilding the changed compiler translation units, compiler libraries, executable, and unit binaries while reusing unchanged LLVM backend artifacts. The compiler source commit is `8ba40526`; the final compiler executable SHA-256 is `9e800c494b026b642e233105c59458a4829aae2577ac702ff02599ee793ec8bc`. Logs: `logs/escape-build-final.log`, `logs/escape-unit-final.log`, `logs/escape-resolver-final.log`, `logs/escape-units-serial-final.log`, and `logs/escape-feature-final.log`. An initial concurrent unit run hit the previously observed `MacroTest.NoErrorInLSPMacro` macro-server failure; rerunning all 50 suites serially passed without source changes.
+
+This completes the standalone-engine scope, not end-to-end §4 enforcement. `TypeChecker::GetModalEscapeFacts` returns null in this compiler. A real provider must publish complete accepted capture/mode facts, semantic storage and call operations, authoritative generated-body ownership, and resumption behavior before production activation. No Modal syntax, mode inference, new switch, metadata representation, runtime allocation, ABI, or library API was introduced. Full Modal/SDK activation gates remain for that integration; their results are not implied by the standalone gate.
+
 ## Section 6 compatibility and migration — complete, 2026-10-13
 
 The implementation realizes the updated architecture’s section 6 scope: independent exception/effect Off, Warn, and Error policies; kind-specific diagnostics and recursive disabled-axis projection; producer policy and capturing identity in metadata; and consumer-local `@AssumeThrows`/`@AssumePerforms` views before Sema consumes imported types. References and covariant callback results carry assumptions without formation demands, while calls, accessors, constructors, and implicit protocol operations demand their effective contracts. Function inputs, writable storage, and nominal arguments retain the dependency’s accepted types. Imported declarations and interned types remain unchanged. Declaration-local completion and read-only final validation remain intact; late assumption compensation and factory-global capability filtering have been removed.
@@ -15,7 +32,7 @@ The checked-exception/effect gate passes 365/365 drivers, including all 70 secti
 
 Validation uses Docker image `cangjie-dev`, `cjc 1.0.0` targeting `x86_64-unknown-linux-gnu`, Clang 15.0.7, CMake 3.22.1, and Python 3.10.12. Compiler executable SHA-256: `1e80d5bdfd3757921d0d444a0daca73a3fae79c6741a102c014646d1b86309c4`, compiler source commit `e2b52b83` (the executable was built from its matching working tree over `43abc5df`) using unchanged installed LLVM backend artifacts. Logs: `logs/section6-sdk-final-v3.log`, `logs/section6-units-final-v3.log`, `logs/section6-cache-final.log`, `logs/section6-feature-final-v3.log`, and `logs/section6-broad-final-v4.log`.
 
-Modal modes, escape and origin analysis, the 21 Modal specifications, optional closed-build verification and its evidence records, and broader public-library annotation remain deferred. Non-Modal checking establishes capability requirements under the manual capture-lifetime precondition; it does not establish a closed-build guarantee. The earlier migration and prototype records below are historical.
+Modal integration and production escape enforcement, the 26 Modal specifications, optional closed-build verification and its evidence records, and broader public-library annotation remain deferred. The 2026-10-13 standalone escape engine and explicit Modal/capture-fact interfaces implement local origin propagation and validation under supplied facts; they do not activate escape checking in the non-Modal compiler. See the standalone-engine section of `architecture.md` for its interface contract and activation gate. Non-Modal checking establishes capability requirements under the manual capture-lifetime precondition; it does not establish a closed-build guarantee. The earlier migration and prototype records below are historical.
 
 ## Declaration-local migration — complete, 2026-10-12
 
